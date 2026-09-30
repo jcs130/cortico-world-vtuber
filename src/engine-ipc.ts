@@ -30,6 +30,9 @@ export interface EngineConfigSnapshot {
   speechCapSec?: number;
   maxActRoundsPerTurn?: number;
   silenceRemindSec?: number;
+  silenceRemind2Sec?: number;
+  silenceRemind3Sec?: number;
+  silenceLines?: [string, string, string];
   mutedText?: string;
   obsDelaySec?: number;
   delayedSources?: string[];

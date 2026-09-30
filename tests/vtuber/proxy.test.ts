@@ -95,6 +95,22 @@ describe('传给子进程的一次性载荷', () => {
     expect(init.ttsRuntimeDir).toBe('');
     expect(init.ttsRuntimeRelease).toBe('');
   });
+
+  it('静默提醒档位和自定义文字进入子进程配置快照', () => {
+    const proxy = new VtuberWorldProxy({
+      silenceRemindSec: () => 45,
+      silenceRemind2Sec: () => 0,
+      silenceRemind3Sec: () => 0,
+      silenceLines: () => ['先检查任务', '', ''],
+    });
+    const init = (proxy as unknown as { buildInit(): { config: Record<string, unknown> } }).buildInit();
+    expect(init.config).toMatchObject({
+      silenceRemindSec: 45,
+      silenceRemind2Sec: 0,
+      silenceRemind3Sec: 0,
+      silenceLines: ['先检查任务', '', ''],
+    });
+  });
 });
 
 describe('VtuberWorldProxy(演出引擎子进程)', () => {

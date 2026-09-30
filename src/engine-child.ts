@@ -159,6 +159,9 @@ function configGetters(initial: EngineConfigSnapshot): Partial<VtuberWorldOption
   if ('speechCapSec' in initial) out.speechCapSec = () => snap.speechCapSec as number;
   if ('maxActRoundsPerTurn' in initial) out.maxActRoundsPerTurn = () => snap.maxActRoundsPerTurn as number;
   if ('silenceRemindSec' in initial) out.silenceRemindSec = () => snap.silenceRemindSec as number;
+  if ('silenceRemind2Sec' in initial) out.silenceRemind2Sec = () => snap.silenceRemind2Sec as number;
+  if ('silenceRemind3Sec' in initial) out.silenceRemind3Sec = () => snap.silenceRemind3Sec as number;
+  if ('silenceLines' in initial) out.silenceLines = () => snap.silenceLines as [string, string, string];
   if ('mutedText' in initial) out.mutedText = () => snap.mutedText ?? '';
   if ('obsDelaySec' in initial) out.obsDelaySec = () => snap.obsDelaySec as number;
   if ('delayedSources' in initial) out.delayedSources = () => snap.delayedSources ?? [];
