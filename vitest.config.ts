@@ -1,11 +1,13 @@
 import { fileURLToPath } from 'node:url';
+import { realpathSync } from 'node:fs';
 import { defineConfig } from 'vitest/config';
 
 /**
  * 开发期 `cortico/*` 指向同级的框架 checkout(`../BOT/src/`)。生产里这层由框架的
  * 模块钩子做,包内一行不改;别名与 tsconfig 的 `paths` 必须同步改。
  */
-const FRAMEWORK_SRC = fileURLToPath(new URL('../BOT/src/', import.meta.url));
+// Vite 校验的是 junction 的真实路径;别名替换还需要结尾的斜杠。
+const FRAMEWORK_SRC = realpathSync(fileURLToPath(new URL('../BOT/src/', import.meta.url))).replaceAll('\\', '/') + '/';
 
 export default defineConfig({
   resolve: {
