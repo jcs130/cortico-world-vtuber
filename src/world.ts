@@ -1128,13 +1128,12 @@ export const SHUTDOWN_DRAIN_MAX_MS = 10_000;
 export const VTS_STALL_STREAK = 4;
 
 /**
- * 交接后推进她上下文的开口提示(internal worlds.note,flush 档)。交接归档把她自己的
- * 演出调用整条摘掉,新 session 里没有一条 vtuber_act 的用法示范;这一条替代示范,
- * 把「上文没有不等于没说过」和「现在就开口」说在她读到新一批事件之前。
+ * 交接后提醒她旧台词仍可能在播放(internal worlds.note,flush 档)。交接归档把她自己的
+ * 演出调用整条摘掉,新 session 里看不到那些台词;先核对现场再决定是否开口。
  */
 export const HANDOFF_NOTE =
   '[演出] 上下文刚交接。你之前的 vtuber_act 调用和回执已随上文清空,交接笔记里也没有它们,' +
-  '看不到不等于没说过。观众还在听,现在就调 vtuber_act 开口和他们互动。';
+  '看不到不等于没说过。过去的台词可能还在播放;先核对当前演出状态和最新事实,有新内容再开口,不要重播旧台词。';
 
 /** 已注册的演出工具声明(schema);World 与子进程代理共用,handler 各自绑定。
  * 用法说明只写在 ENV_PROMPT.md(可编辑)与这里的 description,不再另开前缀段。 */
