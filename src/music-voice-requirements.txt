@@ -1,0 +1,14 @@
+# Isolated v1 CLI only. GUI, training and CUDA dependencies intentionally absent.
+torch==2.11.0
+torchaudio==2.11.0
+numpy==1.26.4
+scipy==1.13.1
+librosa==0.10.2
+munch==4.0.0
+einops==0.8.0
+transformers==4.46.3
+huggingface-hub==0.36.2
+safetensors==0.7.0
+soundfile==0.12.1
+PyYAML==6.0.3
+descript-audio-codec==1.0.0

@@ -1,0 +1,147 @@
+# Reference-conditioned singing
+
+The optional `voiceConversion` pipeline belongs to the generic VTuber music
+gateway. It has no Minecraft or server-specific dependency.
+
+## Pipeline
+
+1. Review the original song request.
+2. Generate a new composition with ACE-Step from text and lyrics.
+3. Decode the lossless generated audio and check its duration/activity.
+4. Separate vocals with the locally cached `HDEMUCS_HIGH_MUSDB_PLUS` model.
+5. Convert **only vocals** with Seed-VC v1 200M 44.1 kHz SVC using an
+   authorized reference recording, 30–50 steps, F0 conditioning enabled,
+   automatic F0 adjustment disabled, length adjustment 1.0.
+6. Mix converted vocals into the original residual backing. Limit peak to
+   0.92; preserve the timeline. Allow at most 100 ms of hop rounding at the
+   tail; no time stretching. Do not add the source singer back into the mix.
+7. Transcribe and review the **final mixed audio**, then verify lyric coverage
+   and real word timestamps. Only an accepted final result enters the catalog.
+
+`generationMode: "text-to-music"` requires a template without `LoadAudio`,
+`ReferenceTimbreAudio` or the experimental `ACEStep15TimbreWithCodes` wrapper.
+This keeps composition generation independent of the voice-conversion stage.
+The legacy `reference-timbre` mode remains available without SVC; it is not
+evidence of consistent singer identity.
+
+The request API cannot choose local files, Python executables, models or shell
+commands. Those are private deployment settings. The gateway launches its
+fixed worker script with an argument array and `shell=False`.
+
+## Local dependencies and private configuration
+
+The gateway itself remains a standard-library service with its existing
+Whisper environment. SVC runs in a separate CPU Python environment containing
+PyTorch/torchaudio, NumPy, soundfile, transformers, librosa, PyYAML and the
+dependencies of the pinned upstream Seed-VC checkout. The tested CPU runtime
+is torch/torchaudio **2.11.0**, transformers **4.46.3**. Earlier local torch 2.4
+CPU numerical failures must not be masked by replacing NaNs with zero.
+
+Supply an unmodified upstream checkout and cached models; the worker never
+downloads them. `assetRoot` layout:
+
+```text
+seed-vc/                       # unmodified Git checkout
+models/Plachta--Seed-VC/        # SVC checkpoint and YAML
+models/nvidia--bigvgan_v2_44khz_128band_512x/
+models/lj1995--VoiceConversionWebUI/rmvpe.pt
+models/funasr--campplus/campplus_cn_common.bin
+models/openai--whisper-small/preprocessor_config.json
+```
+
+The multilingual OpenAI Whisper small checkpoint is reused as the speech
+encoder through its official strict encoder key mapping. Model learned
+parameters are checked for missing/mismatched weights. The adapter does not
+modify upstream files.
+
+Private gateway JSON adds:
+
+```json
+{
+  "generationMode": "text-to-music",
+  "voiceConversion": {
+    "enabled": true,
+    "backend": "seed-vc-v1-200m-svc",
+    "pythonFile": "/absolute/isolated/python",
+    "assetRoot": "/absolute/private/svc-assets",
+    "manifestFile": "/absolute/private/model-manifest.json",
+    "manifestSha256": "REPLACE_WITH_ACTUAL_SHA256",
+    "upstreamRevision": "REPLACE_WITH_PINNED_GIT_COMMIT",
+    "separatorCheckpoint": "/absolute/private/hdemucs_high_trained.pt",
+    "separatorSha256": "REPLACE_WITH_ACTUAL_SHA256",
+    "whisperCheckpoint": "/absolute/private/small.pt",
+    "whisperSha256": "REPLACE_WITH_ACTUAL_SHA256",
+    "referenceFile": "/absolute/private/original-reference.wav",
+    "referenceSha256": "REPLACE_WITH_ACTUAL_SHA256",
+    "referenceAuthorized": true,
+    "referenceKind": "original-speech",
+    "steps": 30,
+    "referenceSeconds": 15,
+    "semiToneShift": 0,
+    "timeoutSec": 3600
+  }
+}
+```
+
+The model manifest is a JSON array of seven rows, each containing
+`directory`, `file`, `bytes`, `sha256` and optional upstream repository/revision
+information. Its own hash is pinned. All seven cached files, the separator,
+Whisper and reference are checked before processing. Seed-VC revision and
+tracked-file cleanliness are checked too. Missing/changed assets fail closed.
+
+Reference recordings must contain 1–30 seconds of finite, audible material.
+Only leading/trailing silence is trimmed. Short original speech is not
+repeated or re-synthesized to pretend there is more identity information.
+`referenceKind` explicitly distinguishes original speech, recorded singing
+and TTS speech. Zero semitone shift preserves the source melody/register;
+cross-register experiments may use an explicitly labelled shift, never a
+hidden automatic octave change.
+
+## Async jobs, cancellation and publication
+
+Submission remains immediate; a single background worker processes the queue.
+SVC stage messages use the existing `validating` state, so existing World
+clients can keep polling without a main-program reload. A low-priority CPU
+subprocess uses two threads and no CUDA. Conversion can take several minutes;
+it is not a real-time speech stage. HTTP, TTS and gameplay do not await it.
+
+Cancellation/timeout terminates only the owned child. It never interrupts
+shared ComfyUI, evicts GPU models or changes game connections. Conversion
+failure goes to review; no silent fallback to the original singer. Interrupted
+validation remains quarantined on restart, avoiding duplicate conversion or
+publication. Known generation prompt IDs still resume without resubmission.
+
+Each job keeps progress, worker logs, float source/converted vocal stems,
+backing, a synchronized playback vocal stem and `voice-provenance.json`.
+Published entries include `vocalFile` for lip sync, `voiceConditioned:true`,
+`singingVoiceVerified:false` and `voiceProvenanceFile`. The waveform and
+provenance are staged before the atomic catalog update.
+
+`voiceConditioned` means the conversion ran with the recorded reference.
+It does **not** mean a listener accepted the target singer identity.
+`singingVoiceVerified` cannot be set true by this generator. Acceptance needs
+longer dry-vocal and mixed listening across songs/registers; any speaker
+similarity metric is supporting evidence. CAMPPlus is part of conditioning,
+so its similarity score is not an independent acceptance test.
+
+## Focused verification
+
+```text
+python tests/vtuber/music-generation-gateway-test.py
+python tests/vtuber/music-voice-test.py
+```
+
+Real auditions should preserve identical source, seed, steps, backing and
+pitch when comparing references, expose both dry vocals and mixes, and keep
+the source singer as a baseline. Do not relax final transcript/lyric checks
+or automatically play diagnostic samples to pass a test.
+
+## Method sources
+
+- [Seed-VC official SVC instructions](https://github.com/Plachtaa/seed-vc)
+- [Seed-VC paper: reference conditioning and F0](https://arxiv.org/html/2411.09943v1)
+- [Seed-VC independent evaluation encoders](https://github.com/Plachtaa/seed-vc/blob/main/eval.py)
+- [ACE-Step reference audio semantics](https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md)
+
+Seed-VC's upstream repository is archived; this is a pinned, locally tested
+backend rather than a claim that it is the newest available method.
