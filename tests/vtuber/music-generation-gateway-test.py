@@ -231,20 +231,41 @@ class GatewayTest(unittest.TestCase):
 
     def test_voice_conversion_publishes_separate_vocals_and_honest_provenance(self):
         self.enable_voice()
-        paths = []
-        self.services.transcribe = lambda path: (paths.append(path) or transcript_for(REQUEST["lyrics"]))
+        mix = transcript_for(REQUEST["lyrics"])
+        vocals = transcript_for(REQUEST["lyrics"])
+        for segment in vocals["segments"]:
+            segment["start"] += 0.25
+            segment["end"] += 0.25
+            for word in segment["words"]:
+                word["start"] += 0.25
+                word["end"] += 0.25
+        self.services.transcribe = lambda path: copy.deepcopy(vocals if path.name == "vocals.wav" else mix)
         ready = self.await_state(self.gateway.enqueue(REQUEST)["jobId"])
         self.assertEqual(ready["state"], "ready")
         self.assertTrue(ready["voiceConditioned"])
         self.assertFalse(ready["singingVoiceVerified"])
-        self.assertEqual(paths[0].name, "song.wav")
         catalog = json.loads((self.music / "catalog.json").read_text(encoding="utf-8"))
         track = catalog["tracks"][0]
+        captions = json.loads((self.music / track["lyricsFile"]).read_text(encoding="utf-8"))["lines"]
+        self.assertEqual(captions[0]["atMs"], round(vocals["segments"][0]["words"][0]["start"] * 1000))
+        self.assertEqual(self.services.reviews[-1][2], mix)
         self.assertTrue((self.music / track["vocalFile"]).is_file())
         self.assertTrue((self.music / track["voiceProvenanceFile"]).is_file())
         self.assertFalse(track["singingVoiceVerified"])
         (self.music / track["vocalFile"]).unlink()
         self.assertEqual(self.gateway.get(ready["jobId"])["state"], "review")
+
+    def test_safe_mix_cannot_publish_unverified_converted_vocal_lyrics(self):
+        self.enable_voice()
+        mix = transcript_for(REQUEST["lyrics"])
+        vocals = transcript_for("另一段完全不同的演唱\n这不是输入的歌词")
+        self.services.transcribe = lambda path: copy.deepcopy(vocals if path.name == "vocals.wav" else mix)
+        job = self.await_state(self.gateway.enqueue(REQUEST)["jobId"])
+        self.assertEqual(job["state"], "review")
+        self.assertFalse((self.music / "catalog.json").exists())
+        self.assertEqual(self.services.reviews[-1][2], mix)
+        saved = json.loads((self.state / "artifacts" / job["jobId"] / "asr-vocals.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved, vocals)
 
     def test_voice_failure_never_uses_original_singer_as_fallback(self):
         self.enable_voice()

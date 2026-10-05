@@ -836,7 +836,13 @@ class MusicGenerationGateway:
             transcript = validate_transcript(self.services.transcribe(audio))
             atomic_json(artifacts / "asr.json", transcript)
             review_decision(self.services.review("audio", request, transcript))
-            lines = align_lyrics(request["lyrics"], transcript, duration, self.cfg["validation"])
+            lyric_transcript = transcript
+            if job.get("voiceConditioned") is True:
+                # Review the complete mix; align captions against the converted vocal
+                # stem so instrumental passages cannot supply lyric timestamps.
+                lyric_transcript = validate_transcript(self.services.transcribe(artifacts / "vocals.wav"))
+                atomic_json(artifacts / "asr-vocals.json", lyric_transcript)
+            lines = align_lyrics(request["lyrics"], lyric_transcript, duration, self.cfg["validation"])
         except (Rejected, NeedsReview):
             raise
         except Exception:
