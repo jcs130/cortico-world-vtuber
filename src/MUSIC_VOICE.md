@@ -124,6 +124,34 @@ longer dry-vocal and mixed listening across songs/registers; any speaker
 similarity metric is supporting evidence. CAMPPlus is part of conditioning,
 so its similarity score is not an independent acceptance test.
 
+## Production operation
+
+Keep the song gateway independent of the World, speech adapter and game
+connection. Windows deployments can run `scripts/music-gateway-watch.ps1`
+with `-ConfigPath` and `-PythonExe`. The watcher adopts an already healthy
+gateway, restarts it when its port is closed, and backs off after failed
+launches. An occupied but unhealthy port is logged and left running; it
+never kills an existing process. A named mutex prevents duplicate watchers.
+Use `-Once` for a bounded health/adoption check. A deployment may register
+the watcher as a hidden, user-level logon task.
+
+A listener's choice of reference/pipeline is a deployment preference. Store
+its timestamp, the exact accepted sample hash and the reference hash with
+the private deployment, not in the extension's defaults. An explicitly
+accepted audition can be curated into the deployment's library with a
+matching vocal stem and lyric timestamps; retain the raw transcription and
+any lyric uncertainty. Archive older methods' catalog entries if the live
+library should use only the selected voice, preserving all original assets.
+This is separate from approving a generated job: the gateway still applies
+its full content/audio/lyric checks to each new song, and does not turn an
+unreviewed job into a playable one because another song sounded good.
+
+Submit new compositions asynchronously. The presenter can keep playing or
+talking while they process, then use the real `ready` receipt and catalog
+ID to queue an intro, the song and an outro in one play operation. Conversion
+can take several minutes on CPU; it must not become a synchronous wait or
+claim immediate completion.
+
 ## Focused verification
 
 ```text
