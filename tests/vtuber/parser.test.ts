@@ -113,6 +113,38 @@ describe('ScriptParser', () => {
     expect(chars.speech).toEqual(whole.speech);
   });
 
+  it('情绪标记交给网关，只有标记时暂存到下一句而不单独合成', () => {
+    const script = '【点头】(紧张@0.6)我看见怪物了。 （开心@0.5）继续走。(calm)';
+    const whole = parseAll(script);
+    expect(whole.speech.map((s) => s.piece.text)).toEqual(['(紧张@0.6)我看见怪物了。 (开心@0.5)继续走。(calm)']);
+    expect(parseAll(script, 1).speech).toEqual(whole.speech);
+    expect(parseAll('【点头】(紧张@0.6)', 1).speech).toEqual([]);
+    expect(parseAll('【点头】(紧张@0.6)【微笑】我来了。', 1).speech[0].piece.text)
+      .toBe('(紧张@0.6)我来了。');
+    expect(parseAll('数学里的(2+3)要保留').speech[0].piece.text).toBe('数学里的(2+3)要保留');
+  });
+
+  it('圆括号中的完整词表动作进入演出锚点，语音正文不含动作', () => {
+    const script = '(开心@0.5)你好。（看向屏幕,前倾）我看看弹幕。(看一眼弹幕)继续。';
+    const expected = parseAll('(开心@0.5)你好。<看向屏幕,前倾>我看看弹幕。<看一眼弹幕>继续。');
+    expect(parseAll(script)).toEqual(expected);
+    expect(parseAll(script, 1)).toEqual(expected);
+    expect(expected.speech[0].piece.anchors).toHaveLength(2);
+    expect(expected.speech[0].piece.anchors[0].commands).toHaveLength(2);
+    expect(expected.speech[0].piece.anchors[1].commands).toMatchObject([
+      { kind: 'perform', entry: { clipId: 'glance_danmaku' } },
+    ]);
+  });
+
+  it('含有事实、未知词或未闭合的圆括号保留，不误触发动作', () => {
+    for (const text of ['坐标(-3,64,5)', '这是（看向屏幕时发现箱子）',
+      '物品（等级 II）', '（前倾,未知事实）', '（微笑,,前倾）', '（看向屏幕']) {
+      const parsed = parseAll(text, 1);
+      expect(parsed.speech[0].piece.text).toBe(text);
+      expect(parsed.speech[0].piece.anchors).toEqual([]);
+    }
+  });
+
   it('脚本以文本开头时补无标签 beat;换行标记 atLineStart', () => {
     const r = parseAll('先说话。\n【前倾】再靠近。');
     expect(r.beats).toHaveLength(2);

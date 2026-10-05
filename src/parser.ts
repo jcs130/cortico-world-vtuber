@@ -10,8 +10,10 @@
  *     播放时按标注/估计时间点插入演出;标签原位在正文里化作一个空格;
  *   - […] VoxCPM2 语气词:白名单内的按规范写法透传进 TTS 文本(音频里是一段
  *     真实发声),表外的整块剥离。
+ *   - (情绪@强度):保留给 TTS 网关调节语气;只有标记而无台词时暂存,
+ *     不单独合成一片音频。
  *   正文累计至少 40 个字符后,句末标点串结束即提前吐片送 TTS。
- *   裸半角括号通过超长、跨行和流末三条路径按字面输出。
+ *   圆括号内完整命中演出词表时作为非阻断动作；其他内容按字面输出。
  */
 import type { PerformancePack, TagCommand } from './pack.ts';
 import { resolveVoiceTag } from './voice-tags.ts';
@@ -39,6 +41,22 @@ export interface SpeechPiece {
  * 裸括号("3<5"、颜文字),整段按字面输出。【】不设上限,维持旧行为。
  */
 const INLINE_TAG_MAX = 32;
+const MOOD_NAMES = new Set([
+  'calm', 'happy', 'angry', 'sad', 'afraid', 'surprised', 'gentle',
+  'playful', 'warm', 'serious', '平静', '开心', '生气', '难过',
+  '害怕', '惊讶', '温柔', '俏皮', '温暖', '严肃', '紧张',
+]);
+
+export function isMoodTag(raw: string): boolean {
+  const match = /^[（(]([\p{L}_-]{1,24})(?:@([01](?:\.\d{1,2})?))?[)）]$/u.exec(raw);
+  return match !== null && (match[2] !== undefined || MOOD_NAMES.has(match[1].toLowerCase()));
+}
+
+/** Recognized mood metadata carries no spoken text; factual parentheses remain text. */
+export function isMoodOnlyText(text: string): boolean {
+  return text !== '' && text.replace(/[（(][^()（）\n]{1,32}[)）]/gu,
+    (part) => isMoodTag(part) ? '' : part).trim() === '';
+}
 
 /**
  * 自动切片的最小清洗后正文长度。已送入 TTS 的片段无法撤回；短句等待完整收集，长句达到阈值后提前流水化。
@@ -115,6 +133,10 @@ export class ScriptParser {
   private angleOpenCh = '<';
   /** [] 缓冲(VoxCPM2 语气词) */
   private squareBuf: string | null = null;
+  /** 情绪标记缓冲;只有识别成标记才剥离,普通括号仍按正文输出。 */
+  private moodBuf: string | null = null;
+  private moodOpenCh = '(';
+  private pendingMood = '';
   /** 上一个输出字符是否为换行,用于计算下一指令块的 atLineStart。 */
   private lastWasNewline = true;
   /** 当前 beat 的指令块后是否还没出现过非空白文本 */
@@ -137,6 +159,7 @@ export class ScriptParser {
     this.tagBuf = null;
     this.spillAngle();
     this.spillSquare();
+    this.spillMood();
     this.flushSpeech();
     // 收尾的孤立标签:没有后续文本,按"演出先行"处理
     if (this.pendingBeat && this.noTextSinceTag) this.pendingBeat.aloneOnLine = true;
@@ -194,6 +217,30 @@ export class ScriptParser {
       }
       return;
     }
+    if (this.moodBuf !== null) {
+      if (ch === ')' || ch === '）') {
+        const candidate = this.moodOpenCh + this.moodBuf + ch;
+        this.moodBuf = null;
+        if (isMoodTag(candidate)) {
+          for (const c of `(${candidate.slice(1, -1)})`) this.emitText(c);
+        } else {
+          const inner = candidate.slice(1, -1);
+          const words = inner.split(/[,，、]/).map(word => word.trim());
+          if (words.every(word => this.pack.resolveTag(word) !== null)) this.closeAnchor(inner);
+          else for (const c of candidate) this.emitText(c);
+        }
+      } else if (ch === '(' || ch === '（') {
+        this.spillMood();
+        this.moodBuf = '';
+        this.moodOpenCh = ch;
+      } else if (ch === '\n' || ch === '【' || this.moodBuf.length >= INLINE_TAG_MAX) {
+        this.spillMood();
+        this.feedChar(ch);
+      } else {
+        this.moodBuf += ch;
+      }
+      return;
+    }
     if (ch === '【') {
       this.flushSpeech();
       this.tagBuf = '';
@@ -206,6 +253,11 @@ export class ScriptParser {
     }
     if (ch === '[') {
       this.squareBuf = '';
+      return;
+    }
+    if (ch === '(' || ch === '（') {
+      this.moodBuf = '';
+      this.moodOpenCh = ch;
       return;
     }
     this.emitText(ch);
@@ -255,6 +307,13 @@ export class ScriptParser {
     const buf = this.squareBuf;
     this.squareBuf = null;
     for (const c of '[' + buf) this.emitText(c);
+  }
+
+  private spillMood(): void {
+    if (this.moodBuf === null) return;
+    const buf = this.moodBuf;
+    this.moodBuf = null;
+    for (const c of this.moodOpenCh + buf) this.emitText(c);
   }
 
   /**
@@ -311,8 +370,13 @@ export class ScriptParser {
     this.speechBuf = '';
     this.pendingAnchors = [];
     this.sentenceFlushPending = false;
-    if (!text && anchors.length === 0) return;
-    for (const a of anchors) a.charOffset = Math.min(a.charOffset, text.length);
+    const moodOnly = isMoodOnlyText(text);
+    if (moodOnly) this.pendingMood = text;
+    const prefixLength = this.pendingMood.length;
+    const spoken = moodOnly || !text ? '' : this.pendingMood + text;
+    if (!moodOnly && text) this.pendingMood = '';
+    if (!spoken && anchors.length === 0) return;
+    for (const a of anchors) a.charOffset = Math.min(a.charOffset + (spoken ? prefixLength : 0), spoken.length);
     // 脚本以文本开头(第一个指令块之前):补一个无标签 beat
     if (!this.beatOpen) {
       this.beatIndex++;
@@ -321,8 +385,8 @@ export class ScriptParser {
     }
     this.emitPendingBeat();
     this.sink.onSpeech(this.beatIndex, {
-      text,
-      endsWithEllipsis: /(……|…|\.\.\.)$/.test(text),
+      text: spoken,
+      endsWithEllipsis: /(……|…|\.\.\.)$/.test(spoken),
       anchors,
     });
   }
