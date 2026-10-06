@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""IndexTTS adapter v12: reference prosody with bounded optional emotion mixing.
+"""IndexTTS adapter: reference prosody, phrase pronunciation and segment streaming.
 
 Layer 1: Stage direction tags (unchanged — LLM's own choice)
 Layer 2: StartLux-Decision API (NEW — 18ms vs regex guessing)
@@ -14,13 +14,14 @@ from corti_speech_style import (
     bounded_number, emotion_mix_vector, normalize_level_speech, strip_stage_directions,
 )
 from stream_audio import SegmentedPcmSource, read_pcm_header, sentence_segments, tempo_chunks, wav_stream_header
+from pronunciation import normalize_pronunciation
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 PORT = int(os.environ.get('CORTI_TTS_PORT', '8010'))
 if not 1 <= PORT <= 65535:
     raise ValueError('CORTI_TTS_PORT must be an integer between 1 and 65535')
-ADAPTER_VERSION = '14-voice-cues'
+ADAPTER_VERSION = '15-polyphone-pinyin'
 INDEXTTS_BASE = os.environ.get('CORTICO_INDEXTTS_URL', 'http://127.0.0.1:8087').rstrip('/')
 INDEXTTS = INDEXTTS_BASE + '/tts_raw'
 INDEXTTS_STREAM = INDEXTTS_BASE + '/tts_stream'
@@ -245,7 +246,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise
                 error.close()
                 def synthesize(segment):
-                    part = dict(payload, input=segment)
+                    part = dict(payload, input=normalize_pronunciation(segment))
                     part.pop('max_text_tokens_per_segment', None)
                     req = urllib.request.Request(
                         INDEXTTS, data=json.dumps(part).encode('utf-8'),
@@ -310,6 +311,7 @@ class Handler(BaseHTTPRequestHandler):
                 'reference_prosody': True,
                 'voice_cue_policy': 'emotion-hints',
                 'native_acoustic_cues': False,
+                'pronunciation_policy': 'phrase-pinyin',
             }).encode(), 'application/json')
         else:
             self._send(404, b'{"error":"not found"}', 'application/json')
@@ -370,7 +372,9 @@ class Handler(BaseHTTPRequestHandler):
             effective_mood = mood if vec is not None else None
             speed = gspeed * MOOD_SPEED.get(effective_mood, 1.0)
 
-            payload = {'input': clean, 'voice': voice, 'language': 'Chinese'}
+            # Keep mood classification and dedup on readable text; phonetic hints
+            # are solely a synthesis concern, including both streaming paths.
+            payload = {'input': normalize_pronunciation(clean), 'voice': voice, 'language': 'Chinese'}
             if vec is not None:
                 payload['mood'] = mood
                 payload['emo_vector'] = vec

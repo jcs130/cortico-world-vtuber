@@ -1,4 +1,4 @@
-# IndexTTS Adapter — `indextts_adapter.py` and `corti_speech_style.py`
+# IndexTTS Adapter — `indextts_adapter.py`, `corti_speech_style.py`, `pronunciation.py`
 
 This adapter exposes `POST /v1/audio/speech`, `POST /v1/audio/speech/stream`
 and a read-only `GET /health`, using an already-running IndexTTS gateway.
@@ -42,6 +42,14 @@ more prosody context; smaller segments can begin speaking sooner.
 - Recognized stage directions are removed. Ordinary parentheses containing
   facts, item properties and coordinates are retained. Existing pronunciation
   markup such as `<行|XING2>` is retained.
+- Unambiguous phrases receive IndexTTS 2.5 phonetic hints just before synthesis:
+  `长大` / `生长` use `<长|ZHANG3>`; `长短` / `长度` use `<长|CHANG2>`.
+  The longest matching phrase wins (`长大衣` uses `CHANG2`). Bare `长` and
+  ambiguous `长得` remain untouched, as do explicit hints, code and URLs.
+  The same hints reach whole-utterance, native streaming and legacy segment
+  synthesis. Emotion classification and duplicate checks still use plain text;
+  caller text and subtitles are not changed. No additional model call is added.
+  Syntax follows [IndexTTS pronunciation control](https://github.com/index-tts/index-tts).
 - Complete VoxCPM acoustic cues (`[sigh]`, `[laughing]`, `[breath]`, `[Uhm]`,
   `[Shh]`, `Question-*`, `Confirmation-en`, `Surprise-*`, `Dissatisfaction-hnn`)
   are removed before either IndexTTS endpoint receives text. Known emotional
@@ -56,7 +64,7 @@ more prosody context; smaller segments can begin speaking sooner.
 
 ```powershell
 python -m unittest discover -v
-python -m py_compile indextts_adapter.py corti_speech_style.py stream_audio.py
+python -m py_compile indextts_adapter.py corti_speech_style.py pronunciation.py stream_audio.py
 ```
 
 Tests make no real synthesis requests and start no listener. A local ffmpeg
@@ -96,10 +104,13 @@ python indextts_adapter.py
 ```
 
 For detached Windows startup, use the existing deployment supervisor or a
-hidden `Start-Process` helper. A launcher needs both Python source files in the
-same directory. Inspect `/health` for `version: "14-voice-cues"` and the
+hidden `Start-Process` helper. A launcher needs all four Python source files in the
+same directory. Inspect `/health` for `version: "15-polyphone-pinyin"` and the
 expected port before changing CortiV's `worlds.vtuber.ttsUrl` to that instance.
 The adapter's POST endpoint is `/v1/audio/speech`; `ttsUrl` is its base URL.
+The VTuber client captures this URL at creation; saving another URL does not
+switch an existing client. Updating the adapter on the existing URL needs only
+an adapter reload, after in-flight speech completes and interruption is authorized.
 
 ## Gateway configuration
 

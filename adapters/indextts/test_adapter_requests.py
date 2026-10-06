@@ -148,6 +148,25 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(payload["input"], text)
         self.adapter.urllib.request.urlopen.assert_called_once()
 
+    def test_pronunciation_hints_reach_synthesis_without_entering_mood_or_dedup(self):
+        text = '小麦长大了，看看木板的长短。'
+        payload, _ = self.request(text)
+        self.assertEqual(payload['input'], '小麦<长|ZHANG3>大了，看看木板的<长|CHANG2>短。')
+        self.adapter.classify_mood_decision.assert_called_once_with(text)
+        self.assertTrue(self.adapter.is_repeat(text))
+        self.assertEqual(payload['voice'], 'taozi')
+
+    def test_stream_keeps_readable_text_and_sends_phonetic_input(self):
+        self.handler.path = '/v1/audio/speech/stream'
+        self.handler._stream = Mock()
+        raw = json.dumps({'input': '（平静）树苗正在生长，枝条的长度不同。'}).encode('utf-8')
+        self.handler.headers = {'Content-Length': str(len(raw))}
+        self.handler.rfile = io.BytesIO(raw)
+        self.handler.do_POST()
+        payload, _, clean, _ = self.handler._stream.call_args.args
+        self.assertEqual(clean, '树苗正在生长，枝条的长度不同。')
+        self.assertEqual(payload['input'], '树苗正在生<长|ZHANG3>，枝条的<长|CHANG2>度不同。')
+
     def test_health_reports_version_port_and_bounded_mix(self):
         self.adapter.load_prefs.return_value = {"voice": "taozi", "emotion_mix": 10}
         self.handler.path = "/health"
@@ -161,6 +180,7 @@ class RequestTests(unittest.TestCase):
         self.assertTrue(health["reference_prosody"])
         self.assertEqual(health['voice_cue_policy'], 'emotion-hints')
         self.assertFalse(health['native_acoustic_cues'])
+        self.assertEqual(health['pronunciation_policy'], 'phrase-pinyin')
 
     def test_empty_stream_probe_returns_without_synthesis(self):
         self.handler.path = '/v1/audio/speech/stream'

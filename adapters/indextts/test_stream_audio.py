@@ -30,6 +30,47 @@ class Fragmented:
 
 
 class StreamTests(unittest.TestCase):
+    def test_legacy_gateway_fallback_preserves_pronunciation_per_segment(self):
+        import urllib.error
+        from pronunciation import normalize_pronunciation
+        adapter = load_adapter()
+        original = adapter.urllib.request.urlopen
+        requests = []
+        def respond(request, **kwargs):
+            import json
+            payload = json.loads(request.data)
+            requests.append(payload)
+            if request.full_url == adapter.INDEXTTS_STREAM:
+                raise urllib.error.HTTPError(request.full_url, 404, 'legacy gateway', {}, None)
+            output = io.BytesIO()
+            with wave.open(output, 'wb') as wav:
+                wav.setparams((1, 2, 22050, 0, 'NONE', ''))
+                wav.writeframes(b'\x01\x00' * 12)
+            return io.BytesIO(output.getvalue())
+        adapter.urllib.request.urlopen = Mock(side_effect=respond)
+        handler = object.__new__(adapter.Handler)
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+        handler.log_message = Mock()
+        handler._send = Mock()
+        handler._chunk = Mock()
+        handler.wfile = io.BytesIO()
+        text = '小麦正在长大，树苗也在生长。木板有长短，测量一下长度。'
+        annotated = normalize_pronunciation(text)
+        try:
+            handler._stream({'voice': 'taozi', 'input': annotated, 'max_text_tokens_per_segment': 56}, 1.0, text, 16)
+        finally:
+            adapter.urllib.request.urlopen = original
+        self.assertEqual(''.join(payload['input'] for payload in requests[1:]), annotated)
+        self.assertEqual([payload['input'] for payload in requests[1:]],
+                         [normalize_pronunciation(segment) for segment in sentence_segments(text, 16)])
+        self.assertGreater(len(requests), 2)
+        self.assertTrue(all(payload['voice'] == 'taozi' for payload in requests))
+        self.assertTrue(all('max_text_tokens_per_segment' not in payload for payload in requests[1:]))
+        handler._send.assert_not_called()
+        self.assertEqual(handler.wfile.getvalue(), b'0\r\n\r\n')
+
     def test_sentence_boundaries_preserve_input_without_midword_splitting(self):
         text = '先收好钓竿，再去岸上看看。魔力有12.5点。这里有伙伴，我去打个招呼。'
         segments = sentence_segments(text, 16)
