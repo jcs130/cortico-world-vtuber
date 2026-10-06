@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""IndexTTS adapter: reference prosody, phrase pronunciation and segment streaming.
+"""IndexTTS adapter: reference prosody, contextual pronunciation and segment streaming.
 
 Layer 1: Stage direction tags (unchanged — LLM's own choice)
 Layer 2: StartLux-Decision API (NEW — 18ms vs regex guessing)
@@ -14,7 +14,7 @@ from corti_speech_style import (
     bounded_number, emotion_mix_vector, strip_stage_directions,
 )
 from stream_audio import SegmentedPcmSource, read_pcm_header, sentence_segments, tempo_chunks, wav_stream_header
-from pronunciation import normalize_pronunciation
+from pronunciation import initialize_pronunciation, normalize_pronunciation, pronunciation_health, pronunciation_segments
 from spoken_text import normalize_spoken_text
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -22,7 +22,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 PORT = int(os.environ.get('CORTI_TTS_PORT', '8010'))
 if not 1 <= PORT <= 65535:
     raise ValueError('CORTI_TTS_PORT must be an integer between 1 and 65535')
-ADAPTER_VERSION = '16-readable-speech'
+ADAPTER_VERSION = '17-context-pronunciation'
 INDEXTTS_BASE = os.environ.get('CORTICO_INDEXTTS_URL', 'http://127.0.0.1:8087').rstrip('/')
 INDEXTTS = INDEXTTS_BASE + '/tts_raw'
 INDEXTTS_STREAM = INDEXTTS_BASE + '/tts_stream'
@@ -247,14 +247,14 @@ class Handler(BaseHTTPRequestHandler):
                     raise
                 error.close()
                 def synthesize(segment):
-                    part = dict(payload, input=normalize_pronunciation(segment))
+                    part = dict(payload, input=segment)
                     part.pop('max_text_tokens_per_segment', None)
                     req = urllib.request.Request(
                         INDEXTTS, data=json.dumps(part).encode('utf-8'),
                         headers={'Content-Type': 'application/json'})
                     with urllib.request.urlopen(req, timeout=90) as audio:
                         return audio.read()
-                response = SegmentedPcmSource(sentence_segments(clean, max_chars), synthesize)
+                response = SegmentedPcmSource(pronunciation_segments(payload['input'], max_chars), synthesize)
                 self.log_message('stream uses legacy segment synthesis: max_chars=%d', max_chars)
             rate = read_pcm_header(response)
             chunks = tempo_chunks(response, rate, speed, FFMPEG)
@@ -312,7 +312,8 @@ class Handler(BaseHTTPRequestHandler):
                 'reference_prosody': True,
                 'voice_cue_policy': 'emotion-hints',
                 'native_acoustic_cues': False,
-                'pronunciation_policy': 'phrase-pinyin',
+                'pronunciation_policy': pronunciation_health()['policy'],
+                'pronunciation': pronunciation_health(),
                 'spoken_text_policy': 'chinese-levels-fields-numbers',
             }).encode(), 'application/json')
         else:
@@ -415,6 +416,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
+    initialize_pronunciation()
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
     print(f'[adapter {ADAPTER_VERSION}] Segment streaming + reference prosody on :{PORT} -> {INDEXTTS}')
     print(f'[adapter {ADAPTER_VERSION}] Decision server: {DECISION_URL} (timeout {DECISION_TIMEOUT}s), prefs={PREFS}')

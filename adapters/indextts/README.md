@@ -53,13 +53,23 @@ more prosody context; smaller segments can begin speaking sooner.
 - Recognized stage directions are removed. Ordinary parentheses containing
   facts, item properties and coordinates are retained. Existing pronunciation
   markup such as `<行|XING2>` is retained.
-- Unambiguous phrases receive IndexTTS 2.5 phonetic hints just before synthesis:
-  `长大` / `生长` use `<长|ZHANG3>`; `长短` / `长度` use `<长|CHANG2>`.
-  The longest matching phrase wins (`长大衣` uses `CHANG2`). Bare `长` and
-  ambiguous `长得` remain untouched, as do explicit hints, code and URLs.
-  The same hints reach whole-utterance, native streaming and legacy segment
-  synthesis. Emotion classification and duplicate checks still use plain text;
-  caller text and subtitles are not changed. No additional model call is added.
+- Prepared local G2PW resources resolve polyphonic characters in the complete
+  utterance, after dictionary phrase matching. Context-dependent homographs such
+  as `长得` and `一行` bypass a dictionary's default reading. Only readings in the character's
+  Mandarin lexicon are accepted. Explicit hints, code and URLs remain intact.
+  Ordinary, native streaming and compatibility synthesis share the resolved
+  input; compatibility segments retain the selected readings from earlier
+  clauses. Emotion classification, duplicate checks and subtitles use plain text.
+  Context analysis uses CPU inference and no conversational LLM request.
+  Optional `CORTICO_PRONUNCIATION_DECISION_URL` enables a local SystemOne choice
+  classifier for unresolved common homographs. `polyphonic_readings.json` gives
+  each candidate's meaning. Each query marks its own target in a clause, with
+  preceding context available; different uses of the same character do not share
+  one classifier state. Dictionary readings
+  remain authoritative. Choices below 0.8 confidence, invalid choices or a
+  0.6-second total review budget retain G2PW's reading; `/health` exposes selector failures.
+  A dependency or inference failure uses the small unambiguous phrase fallback;
+  `/health` reports availability, last analysis time and fallback count.
   Syntax follows [IndexTTS pronunciation control](https://github.com/index-tts/index-tts).
 - Complete VoxCPM acoustic cues (`[sigh]`, `[laughing]`, `[breath]`, `[Uhm]`,
   `[Shh]`, `Question-*`, `Confirmation-en`, `Surprise-*`, `Dissatisfaction-hnn`)
@@ -71,7 +81,18 @@ more prosody context; smaller segments can begin speaking sooner.
 - The normal speech endpoint retains whole-utterance synthesis. Neither
   endpoint combines different utterances or adds filler words or facts.
 
+On Windows, start with `python -X utf8 indextts_adapter.py` (or set
+`PYTHONUTF8=1`) so upstream model resources are read as UTF-8.
+
 ## Offline tests
+
+Optional contextual pronunciation requires `requirements-pronunciation.txt`,
+the upstream [G2PW ONNX model](https://github.com/GitYCC/g2pW) and a local
+`bert-base-chinese` tokenizer directory. Set `CORTICO_G2PW_MODEL_DIR` and
+`CORTICO_G2PW_TOKENIZER_DIR` before starting the adapter. Resources are prepared
+by the operator; requests never download them. The upstream DataLoader is set
+to zero workers to avoid process creation on each Windows request. Tests use
+an offline converter fixture and need no weights or network.
 
 ```powershell
 python -m unittest discover -v
@@ -115,8 +136,10 @@ python indextts_adapter.py
 ```
 
 For detached Windows startup, use the existing deployment supervisor or a
-hidden `Start-Process` helper. A launcher needs all five Python source files in the
-same directory. Inspect `/health` for `version: "16-readable-speech"` and the
+hidden `Start-Process` helper. A launcher needs all five Python source files and
+`polyphonic_readings.json` in the
+same directory. Inspect `/health` for `version: "17-context-pronunciation"`,
+`pronunciation.context_ready: true` and the
 expected port before changing CortiV's `worlds.vtuber.ttsUrl` to that instance.
 The adapter's POST endpoint is `/v1/audio/speech`; `ttsUrl` is its base URL.
 The VTuber client captures this URL at creation; saving another URL does not

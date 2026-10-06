@@ -180,7 +180,8 @@ class RequestTests(unittest.TestCase):
         self.assertTrue(health["reference_prosody"])
         self.assertEqual(health['voice_cue_policy'], 'emotion-hints')
         self.assertFalse(health['native_acoustic_cues'])
-        self.assertEqual(health['pronunciation_policy'], 'phrase-pinyin')
+        self.assertEqual(health['pronunciation_policy'], 'phrase-pinyin-fallback')
+        self.assertFalse(health['pronunciation']['context_ready'])
 
     def test_empty_stream_probe_returns_without_synthesis(self):
         self.handler.path = '/v1/audio/speech/stream'
