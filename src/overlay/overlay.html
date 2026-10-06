@@ -10,6 +10,15 @@
   <div id="stage" class="stage">
     <div id="danmaku-layer" class="danmaku-layer" aria-hidden="true"></div>
     <div id="tag-toasts" class="tag-toasts" aria-hidden="true"></div>
+    <div id="music-card" class="music-card" hidden aria-live="polite">
+      <div class="music-heading">♫ <span id="music-title"></span></div>
+      <div id="music-time" class="music-time"></div>
+      <progress id="music-progress" class="music-progress" max="1" value="0" aria-label="歌曲播放进度"></progress>
+    </div>
+    <div id="music-lyrics" class="music-lyrics" hidden aria-live="polite">
+      <div id="music-lyric-current" class="music-lyric-current"></div>
+      <div id="music-lyric-next" class="music-lyric-next"></div>
+    </div>
     <div id="bubbles" class="bubbles" aria-live="polite"></div>
   </div>
   <script src="/overlay/app.js"></script>

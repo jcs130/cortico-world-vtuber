@@ -11,9 +11,91 @@
   const bubblesEl = document.getElementById('bubbles');
   const tagToastsEl = document.getElementById('tag-toasts');
   const danmakuLayer = document.getElementById('danmaku-layer');
+  const musicCard = document.getElementById('music-card');
+  const musicTitle = document.getElementById('music-title');
+  const musicTime = document.getElementById('music-time');
+  const musicProgress = document.getElementById('music-progress');
+  const musicLyrics = document.getElementById('music-lyrics');
+  const musicLyricCurrent = document.getElementById('music-lyric-current');
+  const musicLyricNext = document.getElementById('music-lyric-next');
+  let music = null;
+  let musicTimer = null;
+  let speechUntil = 0;
+  let foregroundTimer = null;
+
+  function musicTimeText(ms) {
+    const sec = Math.floor(Math.max(0, ms) / 1000);
+    return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+  }
+
+  function updateMusicProgress() {
+    if (!music) return;
+    const duration = Math.max(0, Number(music.durationMs) || 0);
+    const elapsed = music.startedAt === null ? 0 : Math.min(duration, Math.max(0, Date.now() - Number(music.startedAt)));
+    musicTime.textContent = musicTimeText(elapsed) + ' / ' + musicTimeText(duration);
+    musicProgress.value = duration > 0 ? elapsed / duration : 0;
+    updateMusicLyrics(elapsed);
+  }
+
+  function updateMusicLyrics(elapsed = 0) {
+    const cues = music?.lyrics || [];
+    const enabled = layerOn('subtitles') && cues.length > 0 && elapsed < music.durationMs;
+    const current = enabled ? cues.find(cue => cue.atMs <= elapsed && elapsed < cue.endMs) : null;
+    const next = enabled ? cues.find(cue => cue.atMs > elapsed) : null;
+    musicLyricCurrent.textContent = current?.text || '';
+    musicLyricNext.textContent = next?.text || '';
+    musicLyrics.hidden = !enabled || (!current && !next);
+    document.body.classList.toggle('lyrics-on', enabled);
+  }
+
+  function onMusic(current, snapshot = false) {
+    // 排队中的下一首与其它歌曲的终态，不应撤掉正在播放的卡片。
+    if (!snapshot && current && current.status === 'queued') return;
+    if (!snapshot && current && current.status !== 'playing' && music
+      && current.playbackId !== music.playbackId) return;
+    if (musicTimer !== null) clearInterval(musicTimer);
+    musicTimer = null;
+    music = current && current.status === 'playing' ? current : null;
+    musicCard.hidden = !music;
+    if (!music) { updateMusicLyrics(); publishForegroundAudio(); return; }
+    musicTitle.textContent = (music.aiGenerated ? 'AI生成 · ' : '') + music.title;
+    updateMusicProgress();
+    musicTimer = setInterval(updateMusicProgress, 250);
+    publishForegroundAudio();
+  }
 
   const params = new URLSearchParams(location.search);
   if (params.get('bg') === 'dim') document.body.classList.add('bg-dim');
+  if (params.get('ingame') === '1') document.body.classList.add('ingame');
+  const foregroundParentOrigin = (() => {
+    if (params.get('ingame') !== '1' || window.parent === window || !document.referrer) return null;
+    try {
+      const parent = new URL(document.referrer);
+      return ['http:', 'https:'].includes(parent.protocol) ? parent.origin : null;
+    } catch { return null; }
+  })();
+
+  // Only timing flags cross the iframe boundary. The parent chooses its mixer.
+  function publishForegroundAudio() {
+    if (!foregroundParentOrigin) return;
+    const now = Date.now();
+    const playing = !!music && music.status === 'playing' && music.startedAt !== null
+      && now < Number(music.startedAt) + Number(music.durationMs);
+    window.parent.postMessage({ type: 'mc-viewer.foreground-audio',
+      detail: { speech: now < speechUntil, music: playing } }, foregroundParentOrigin);
+  }
+
+  function trackSpeechTiming(msg) {
+    const cues = Array.isArray(msg.cues) ? msg.cues : [];
+    const remaining = Math.max(0, ...cues.map(cue => {
+      const at = Number(cue?.atMs);
+      const speak = Number(cue?.speakMs);
+      const duration = Number.isFinite(speak) && speak > 0 ? speak : Number(cue?.durMs);
+      return Number.isFinite(at) && Number.isFinite(duration) ? Math.min(120_000, at + duration) : 0;
+    }));
+    speechUntil = Date.now() + remaining;
+    publishForegroundAudio();
+  }
   /** URL 覆盖:'0'/'false' 关,'1'/'true' 开,缺省 null = 跟服务端配置 */
   function paramFlag(name) {
     const v = params.get(name);
@@ -53,6 +135,7 @@
     else s.removeProperty('--sub-font');
     if (!layerOn('subtitles')) clearSubtitles();
     refitCurrent();
+    if (music) updateMusicProgress();
   }
 
   let cueTimers = [];
@@ -116,6 +199,7 @@
       el = document.createElement('div');
       el.className = 'bubble';
       el.dataset.text = text;
+      if (document.body.classList.contains('ingame')) el.dataset.speaker = (params.get('speaker') || '').slice(0, 24);
       el.innerHTML = '<span class="body"></span>';
       body = el.querySelector('.body');
       // 先整句排版把字号定下来(避免增量过程中字号跳动),再清空按发声进度放字
@@ -151,6 +235,7 @@
    * 每次都是仍在显示区间内的全部 cue:未触发的定时器全部清掉按新批重排。
    */
   function onSubtitle(msg) {
+    trackSpeechTiming(msg);
     if (!layerOn('subtitles')) return;
     for (const t of cueTimers) clearTimeout(t);
     cueTimers = [];
@@ -167,6 +252,8 @@
 
   /** 她被打断/音频被切:还没上屏的 cue 作废,增量冻在当前前缀,字幕提前淡出 */
   function onSubtitleCut() {
+    speechUntil = 0;
+    publishForegroundAudio();
     for (const t of cueTimers) clearTimeout(t);
     cueTimers = [];
     stopReveal();
@@ -217,7 +304,8 @@
   es.onmessage = (ev) => {
     let msg;
     try { msg = JSON.parse(ev.data); } catch { return; }
-    if (msg.type === 'snapshot') { applyConfig(msg.overlay); return; }
+    if (msg.type === 'snapshot') { applyConfig(msg.overlay); onMusic(msg.music, true); return; }
+    if (msg.type === 'music') { onMusic(msg.music); return; }
     if (msg.type === 'overlay.config') { applyConfig(msg.config); return; }
     if (msg.type === 'subtitle') { onSubtitle(msg); return; }
     if (msg.type === 'subtitle.cut') { onSubtitleCut(); return; }
@@ -227,4 +315,15 @@
   };
 
   window.addEventListener('resize', refitCurrent);
+  if (foregroundParentOrigin) {
+    publishForegroundAudio();
+    foregroundTimer = setInterval(publishForegroundAudio, 1000);
+  }
+  window.addEventListener('pagehide', () => {
+    speechUntil = 0;
+    onMusic(null);
+    if (foregroundTimer !== null) clearInterval(foregroundTimer);
+    foregroundTimer = null;
+    es.close();
+  });
 })();

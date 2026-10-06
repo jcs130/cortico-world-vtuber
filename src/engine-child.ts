@@ -155,6 +155,9 @@ function configGetters(initial: EngineConfigSnapshot): Partial<VtuberWorldOption
     out.audioSecondary = () => snap.audioSecondary ?? VTUBER_DEFAULTS.audioSecondary;
   }
   if ('alignEnabled' in initial) out.alignEnabled = () => snap.alignEnabled === true;
+  if ('musicDir' in initial) out.musicDir = () => snap.musicDir ?? VTUBER_DEFAULTS.musicDir;
+  if ('musicVolume' in initial) out.musicVolume = () => snap.musicVolume ?? VTUBER_DEFAULTS.musicVolume;
+  if ('musicGenerationUrl' in initial) out.musicGenerationUrl = () => snap.musicGenerationUrl ?? VTUBER_DEFAULTS.musicGenerationUrl;
   if ('streamEnabled' in initial) out.streamEnabled = () => snap.streamEnabled === true;
   if ('speechCapSec' in initial) out.speechCapSec = () => snap.speechCapSec as number;
   if ('maxActRoundsPerTurn' in initial) out.maxActRoundsPerTurn = () => snap.maxActRoundsPerTurn as number;
@@ -221,6 +224,7 @@ async function handleInit(init: EngineInit): Promise<EngineReady> {
     clips: m.clipsConsole() as unknown as Record<string, unknown>,
     overlay: m.overlayConsole() as unknown as Record<string, unknown>,
     model: m.modelConsole() as unknown as Record<string, unknown>,
+    music: m.musicConsole() as unknown as Record<string, unknown>,
   };
   statusTimer = setInterval(pushStatus, 300);
   statusTimer.unref?.();

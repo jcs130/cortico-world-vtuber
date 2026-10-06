@@ -10,7 +10,7 @@ import type { StreamEvent } from 'cortico/protocol/open-responses/index.ts';
  * - 语音经 DeviceAudioSink 直接写本机声卡;对外只有演出流(SSE 出)与
  *   弹幕输入(WS 进)两个自有接口,见 perform-stream.ts。
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,6 +50,8 @@ import {
 } from './orchestrator.ts';
 import { PerfDiagnostics, type TraceOptions } from './diagnostics.ts';
 import { PerformStream } from './perform-stream.ts';
+import { MusicLibrary, musicVolume, type MusicPlayback, type MusicPlayOptions, type MusicQueueState, type MusicState } from './music.ts';
+import { MusicGenerationClient, type MusicGenerationJob, type MusicGenerationRequest } from './music-generation.ts';
 import { describeSilence, silenceData } from './silence-scan.ts';
 import { DEFAULT_TIMEOUT_RANGE_MS, type StateChannel } from './states.ts';
 import { computeSubtitleCues } from './subtitle-cues.ts';
@@ -61,6 +63,7 @@ import {
   samplesToPcm16Wav,
   StreamingEnvelope,
   TtsClient,
+  TtsSkipped,
   type TtsPiece,
   type TtsStreamSink,
   type TtsSynthProfile,
@@ -165,6 +168,10 @@ export const VTUBER_DEFAULTS = {
   audioMirrorSystem: true,
   /** 副输出设备;`default` = 当前系统默认 */
   audioSecondary: 'default',
+  /** Deployment-owned catalog.json and pre-generated WAV files; empty disables music. */
+  musicDir: '',
+  musicVolume: 0.65,
+  musicGenerationUrl: '',
   /**
    * 逐字对齐:每片过 Qwen3-ForcedAligner 拿逐单元时间点,<> 锚点按标注时刻
    * 触发,同时兼当 TTS 质量门。需要 TTS server 带 --aligner-lm/--aligner-audio
@@ -483,7 +490,20 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
         title: '音频主输出',
         'x-hot': true,
         'x-options': 'playback-primary',
-        description: 'TTS 主设备。虚拟线(CABLE Input)给 OBS 采;系统默认或 none=不出声。热改下一片语音生效。',
+        description: '语音与歌曲共用的主设备。系统默认或 none=不出声。热改下一片音频生效。',
+      },
+      'worlds.vtuber.musicDir': {
+        type: 'string', title: '歌曲目录', 'x-hot': true,
+        'x-path': { kind: 'directory' },
+        description: '部署私有曲库目录：catalog.json 与预生成 WAV。留空停用；更改后下一次列目录或点歌生效。',
+      },
+      'worlds.vtuber.musicVolume': {
+        type: 'number', title: '歌曲音量', minimum: 0, maximum: 1, 'x-hot': true,
+        description: '歌曲输出增益（默认 0.65）；每首开始播放时读取，不改变台词音量。',
+      },
+      'worlds.vtuber.musicGenerationUrl': {
+        type: 'string', title: '原创歌曲生成服务', 'x-hot': true,
+        description: '提供后台生成、内容审核和音频验证的 HTTP(S) 服务地址。留空停用；服务模型和凭据由部署管理。',
       },
       'worlds.vtuber.audioMirrorSystem': {
         type: 'boolean',
@@ -710,6 +730,12 @@ export const VTUBER_PANEL_DECLS: readonly WorldPanelDecl[] = [
     getMethods: ['state', 'units'],
   },
   {
+    id: 'music',
+    title: '歌曲播放',
+    description: '预生成曲库、歌曲排队与停止；与台词共用音频输出。',
+    getMethods: ['state'],
+  },
+  {
     id: 'log',
     title: '演出日志',
     description: '轮 / 拍 / TTS / 音频回执等关键事件。',
@@ -740,6 +766,9 @@ export interface VtuberWorldOptions {
   audioMirrorSystem?: () => boolean;
   /** 副输出设备;`default` = 系统默认。开流时求值 */
   audioSecondary?: () => string;
+  musicDir?: () => string;
+  musicVolume?: () => number;
+  musicGenerationUrl?: () => string;
   /** 逐字对齐开关;每次合成时求值以支持控制台热调 */
   alignEnabled?: () => boolean;
   /** 流式输出开关;每片求值。真流式还要 server 能力在场(health 的 streaming 标志) */
@@ -814,6 +843,14 @@ export interface SavedVoice {
   path: string;
   /** 转码前的源格式；输入为 WAV 时是 null。 */
   converted: string | null;
+}
+
+export interface VtuberMusicConsole {
+  state(): Promise<MusicState>;
+  play(trackId: string, options?: MusicPlayOptions): Promise<{ ok: boolean; message: string } & MusicQueueState>;
+  stop(): { ok: boolean; message: string } & MusicQueueState;
+  generate(request: MusicGenerationRequest, requestKey?: string): Promise<{ ok: boolean; message: string; job?: MusicGenerationJob }>;
+  cancelGeneration(jobId: string): Promise<{ ok: boolean; message: string; job?: MusicGenerationJob }>;
 }
 
 export interface VtuberVtsConsole {
@@ -1142,7 +1179,7 @@ export const VTUBER_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
     name: 'vtuber_act',
     tags: ['speak'],
     description:
-      'ONLY way the audience hears or sees you. Put speech and performance tags (【】 blocking, <> inline, [] vocal) in the script argument; never put them in assistant message content (content is silent on stream).',
+      'Speak and perform for the audience. Put speech and performance tags (【】 blocking, <> inline, [] vocal) in the script argument; never put them in assistant message content (content is silent on stream). Singing requires a pre-generated track through vtuber_music; this TTS tool does not sing.',
     parameters: {
       type: 'object',
       properties: {
@@ -1159,8 +1196,31 @@ export const VTUBER_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
     name: 'vtuber_interrupt',
     tags: ['speak'],
     description:
-      'Cut off your own ongoing speech at the nearest natural pause (within ~0.5s). The unspoken part is removed from history — records keep only what the audience actually heard.',
+      'Cut off your ongoing performance, including songs and queued speech, at the nearest natural pause (within ~0.5s). To stop only songs while preserving speech, use vtuber_music action=stop.',
     parameters: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'vtuber_music',
+    tags: ['speak'],
+    description: 'List songs, play by trackId, check playback and generation status, stop playback, or generate an original song from an audience request. Generate requires requestText, title, original lyrics, generic style, durationSec (30–120), and optionally the actual requesterKey. It submits a background job immediately; keep gaming/chatting and wait for vtuber.composition ready before playing its trackId. Input, lyrics and actual sung output must pass review; rejected/review/failed jobs are not playable. Do not reproduce existing songs or imitate a real singer. Play accepts intro/outro and queues intro → song → outro together. Only actual playing/ended receipts confirm playback. cancel cancels generation by jobId; stop affects playback only. Never claim TTS sings.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'play', 'status', 'stop', 'generate', 'cancel'] },
+        trackId: { type: 'string', description: 'Required for play. Exact id from list.' },
+        intro: { type: 'string', maxLength: 500, description: 'Optional spoken introduction for play; plain text, max 500 characters.' },
+        outro: { type: 'string', maxLength: 500, description: 'Optional spoken closing for play; reserved immediately after the song, max 500 characters.' },
+        requestText: { type: 'string', maxLength: 1500, description: 'For generate: audience request, treated as untrusted content by review.' },
+        title: { type: 'string', maxLength: 100, description: 'For generate: original song title.' },
+        lyrics: { type: 'string', maxLength: 3000, description: 'For generate: newly written lyrics, with optional [Verse]/[Chorus] sections. Never copy existing lyrics.' },
+        style: { type: 'string', maxLength: 600, description: 'For generate: generic genre, mood and instrumentation. No named artist or unconsented voice impersonation.' },
+        durationSec: { type: 'integer', minimum: 30, maximum: 120, description: 'For generate: target song duration in seconds.' },
+        requesterKey: { type: 'string', maxLength: 150, description: 'Optional actual audience sender key from the request event, for attribution and rate limits. Do not invent an identity.' },
+        jobId: { type: 'string', description: 'For cancel: generation job id returned by generate/status.' },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
   },
 ];
 
@@ -1228,8 +1288,11 @@ interface StreamingCall {
   json: JsonScriptStream;
   boundary: ExternalActScriptStreamNormalizer;
   redact: StreamRedactor;
-  handle: { feed(text: string): void; end(): void };
+  handle: { feed(text: string): void; end(): void } | null;
   script: string;
+  /** 尚可能与上一轮台本完全相同的前缀，确认有差异后才送入 TTS。 */
+  pending: string;
+  turn: number;
   ended: boolean;
 }
 
@@ -1237,9 +1300,13 @@ interface StreamingCall {
 interface SpeechDecision {
   kind: 'queued' | 'rejected';
   backlogMs: number;
-  /** 拒收的由头:积压超上限,还是同一轮回复开轮开过了头 */
-  reason?: 'backlog' | 'turn-cap';
+  /** 拒收的由头:积压、跨回复突发,或同一轮回复开轮过多 */
+  reason?: 'backlog' | 'burst' | 'turn-cap' | 'duplicate';
 }
+
+const SPEECH_BURST_WINDOW_MS = 10_000;
+const SPEECH_BURST_MAX_TURNS = 2;
+const SPEECH_DUPLICATE_WINDOW_MS = 5 * 60_000;
 
 /**
  * 单个 LLM 轮内的演出轮数上限。轮首之后免受积压闸的分段调用仍受此上限约束，
@@ -1316,6 +1383,10 @@ export class VtuberWorld implements World {
   private readonly backend: VtsBackend;
   private readonly audio: DeviceAudioSink;
   private performer: Performer | null = null;
+  private readonly musicLibrary: MusicLibrary;
+  private readonly musicVolumeOpt?: () => number;
+  private readonly musicGeneration: MusicGenerationClient;
+  private musicRequestEpoch = 0;
   /** 演出包:词表与曲线。人格资产,由 bot 目录提供 */
   private pack: PerformancePack;
   private readonly packDir: string;
@@ -1367,6 +1438,10 @@ export class VtuberWorld implements World {
   private roundContent = '';
   /** 本 LLM 轮已开的 act 数；分段调用免积压闸，仍受同轮次数上限限制。 */
   private turnActCalls = 0;
+  /** 跨 LLM 回复的首段演出滚动账，防止短音频/合成失败时连续开新轮。 */
+  private recentActTurns: number[] = [];
+  private tapTurnSerial = 0;
+  private recentScripts: Array<{ script: string; at: number; turn: number | null }> = [];
   /**
    * 本 LLM 轮的 tap 是否已见到 vtuber_interrupt。同轮工具串行执行，interrupt 可在 act handler 前清空积压，tap 缓存的积压水位因此不能用于拒绝该 act。
    * interrupt 因零积压早退时同样不设此闸；标志随 turnActCalls 在 finishTapRound 清零。
@@ -1389,6 +1464,13 @@ export class VtuberWorld implements World {
   /** 杂谈/游戏模式的弹幕攒批(听弹幕模式逐条即时,不进这里) */
 
   constructor(opts: VtuberWorldOptions = {}) {
+    this.musicLibrary = new MusicLibrary(() => opts.musicDir?.() ?? VTUBER_DEFAULTS.musicDir);
+    this.musicVolumeOpt = opts.musicVolume;
+    this.musicGeneration = new MusicGenerationClient({
+      url: () => opts.musicGenerationUrl?.() ?? VTUBER_DEFAULTS.musicGenerationUrl,
+      notificationFile: opts.diagDir ? join(opts.diagDir, 'music-generation-notified.json') : undefined,
+      onJob: (job) => this.onComposition(job),
+    });
     this.timezone = opts.timezone ?? 'Asia/Shanghai';
     this.botName = opts.botName ?? 'bot';
     this.decaySec = opts.decaySec;
@@ -1411,6 +1493,7 @@ export class VtuberWorld implements World {
         status: this.statusLine(),
         // 初始快照包含当前 overlay 配置;后续变更通过 overlay.config 事件发送。
         overlay: this.overlayCfg,
+        music: this.performer?.musicState().current ?? null,
       }),
       onDanmakuIn: (text, from) => this.onDanmakuIn(text, from),
     });
@@ -1802,22 +1885,40 @@ export class VtuberWorld implements World {
   /**
    * 流式合成一片。收流后跑一次全量对齐附 units(<> 锚点与口径都靠它);
    * 音频已经播出去了,质量门在这条路上只记录不重试。
-   * 流式端点失败(老 server/中途异常)回落整段合成,以"单块流"的形状交回,
-   * 演出无感;主动打断(signal)原样上抛。
+   * 尚未交付 PCM 的端点失败可回落整段合成。已交付音频的中途异常原样上抛,
+   * 演出层收束当前播放,避免把同一句从头再播;主动打断(signal)原样上抛。
    */
   private async synthStreamAligned(text: string, sink: TtsStreamSink, signal: AbortSignal, maxDurationMs?: number): Promise<TtsPiece> {
     let piece: TtsPiece;
+    let deliveredPcmBytes = 0;
     try {
-      piece = await this.ttsClient.synthStream(text, sink, { signal, maxDurationMs });
+      piece = await this.ttsClient.synthStream(text, {
+        begin: sink.begin,
+        pcm: (chunk) => {
+          deliveredPcmBytes += chunk.length;
+          sink.pcm(chunk);
+        },
+      }, { signal, maxDurationMs });
       this.ttsOk = true;
     } catch (err) {
       if (signal.aborted) throw err;
+      if (err instanceof TtsSkipped) throw err;
+      if (deliveredPcmBytes > 0) {
+        this.ttsOk = false;
+        this.tracePerf('TTS', '流式音频中途失败,当前片收束', {
+          level: 'warn',
+          event: 'stream-failed-after-audio',
+          detail: String(err).slice(0, 80),
+          data: { deliveredPcmBytes },
+        });
+        throw err;
+      }
       this.tracePerf('TTS', `流式失败,回落整段:${String(err).slice(0, 60)}`);
       try {
-        piece = await this.ttsClient.synth(text);
+        piece = await this.ttsClient.synth(text, undefined, signal);
         this.ttsOk = true;
       } catch (err2) {
-        this.ttsOk = false;
+        if (!(err2 instanceof TtsSkipped)) this.ttsOk = false;
         throw err2;
       }
       const decoded = decodeWav(piece.wav);
@@ -2033,6 +2134,74 @@ export class VtuberWorld implements World {
       this.log.warn('诊断导出失败', { err: String(err) });
       return null;
     }
+  }
+
+  musicConsole(): VtuberMusicConsole {
+    const queue = (): MusicQueueState => this.performer?.musicState() ?? { current: null, queue: [], last: null };
+    return {
+      state: async () => {
+        try { return { tracks: await this.musicLibrary.list(), ...queue(), volume: musicVolume(this.musicVolumeOpt?.()), generation: this.musicGeneration.state() }; }
+        catch (error) { return { tracks: [], ...queue(), volume: musicVolume(this.musicVolumeOpt?.()), generation: this.musicGeneration.state(), error: error instanceof Error ? error.message : '歌曲目录不可读' }; }
+      },
+      play: async (trackId, options = {}) => {
+        const epoch = this.musicRequestEpoch;
+        try {
+          if (!this.performer) throw new Error('演出引擎未启动');
+          if (typeof trackId !== 'string' || !trackId) throw new Error('play 必须提供 trackId');
+          const prepared = await this.musicLibrary.prepare(trackId);
+          if (epoch !== this.musicRequestEpoch || !this.performer) throw new Error('点歌已取消');
+          this.cancelSilenceRemind();
+          const accepted = this.performer.enqueueMusic(prepared, () => musicVolume(this.musicVolumeOpt?.()), options);
+          return { ok: true, message: `歌曲「${accepted.title}」已排入，尚未完成播放。`, ...queue() };
+        } catch (error) {
+          return { ok: false, message: error instanceof Error ? error.message : '点歌失败', ...queue() };
+        }
+      },
+      stop: () => {
+        this.musicRequestEpoch++;
+        const count = this.performer?.stopMusic() ?? 0;
+        return { ok: true, message: count ? `已停止/移除 ${count} 首歌曲，台词队列保留。` : '没有正在播放或排队的歌曲。', ...queue() };
+      },
+      generate: async (request, requestKey = randomUUID()) => {
+        try {
+          const job = await this.musicGeneration.submit(request, requestKey);
+          return { ok: true, message: '原创歌曲已在后台受理，尚未完成生成或播放。游戏与聊天可继续。', job };
+        } catch (error) { return { ok: false, message: error instanceof Error ? error.message : '原创歌曲暂时无法受理。' }; }
+      },
+      cancelGeneration: async (jobId) => {
+        try { return { ok: true, message: '已请求取消歌曲生成，现有播放保持。', job: await this.musicGeneration.cancel(jobId) }; }
+        catch (error) { return { ok: false, message: error instanceof Error ? error.message : '取消歌曲生成失败。' }; }
+      },
+    };
+  }
+
+  private async onComposition(job: MusicGenerationJob): Promise<void> {
+    if (!this.host) throw new Error('演出 World 未运行。');
+    if (job.state === 'ready') {
+      const prepared = await this.musicLibrary.prepare(job.trackId!);
+      if (!prepared.track.aiGenerated) throw new Error('生成曲目缺少 AI 标识。');
+    }
+    const labels = { ready: '原创 AI 歌曲已生成并通过内容审核和音频验证，尚未播放',
+      rejected: '这次点歌或唱词未通过审核，没有可播放的新曲目', review: '这次歌曲需要人工复核，不会自动播放',
+      failed: '这次歌曲生成失败，没有加入曲库', cancelled: '这次歌曲生成已取消' };
+    const message = labels[job.state as keyof typeof labels];
+    this.stream.emit('composition', { job });
+    await this.host.pushEvent({ ts: nowIso(this.timezone), source: this.id, type: 'vtuber.composition',
+      origin: 'external', senderKey: 'vtuber.music',
+      text: `[原创歌曲] ${message}。jobId=${job.jobId}${job.requesterKey ? `，点歌来源标识=${JSON.stringify(job.requesterKey)}` : ''}${job.state === 'ready' ? `，「${job.title}」trackId=${job.trackId}。可择时使用 vtuber_music play 演唱，开场说明 AI 生成，结束后接回聊天` : ''}。`,
+      meta: { composition: { ...job } },
+    }, { trigger: 'flush' });
+  }
+
+  private onMusic(playback: MusicPlayback): void {
+    this.stream.emit('music', { kind: 'music', music: playback });
+    const label = { queued: '已排入', playing: '正在播放', ended: '已播放结束', stopped: '已停止', failed: '播放失败' }[playback.status];
+    void this.host?.pushEvent({
+      ts: nowIso(this.timezone), source: this.id, type: 'vtuber.music', origin: 'external', senderKey: 'vtuber.music',
+      text: `[歌曲状态] 「${playback.title}」${label}${playback.error ? `：${playback.error}` : ''}。`,
+      meta: { music: { ...playback } },
+    }, { trigger: playback.status === 'ended' || playback.status === 'failed' ? 'flush' : 'piggyback' })
+      .catch(() => this.log.warn('歌曲状态事件投递失败', { trackId: playback.trackId }));
   }
 
   performConsole(): VtuberPerformConsole {
@@ -2391,6 +2560,9 @@ export class VtuberWorld implements World {
         return { ...this.ttsProfile };
       },
       test: async (text?: string, profile?: Partial<TtsProfile>) => {
+        if (this.performer && (this.performer.status().playing || this.performer.status().queuedBeats > 0)) {
+          return { message: '演出队列正在使用音频，空闲后再试听。', wav: null };
+        }
         const line = (text ?? '').trim().slice(0, 200) || '语音链路测试,一二三。';
         // 试听 profile 仅用于本次合成，不写回生效档案。
         const audition = profile ? this.clampProfile({ ...this.ttsProfile, ...profile }) : null;
@@ -2400,11 +2572,16 @@ export class VtuberWorld implements World {
           piece = await this.ttsClient.synth(line, audition ? this.synthProfileOf(audition) : undefined);
           this.ttsOk = true;
         } catch (err) {
+          if (err instanceof TtsSkipped) return { message: err.message, wav: null };
           this.ttsOk = false;
           return { message: `合成失败: ${err instanceof Error ? err.message : String(err)}`, wav: null };
         }
         const synthMs = Date.now() - t0;
-        void this.audio.play(piece).then(({ ended }) => ended).catch(() => {});
+        if (this.performer && (this.performer.status().playing || this.performer.status().queuedBeats > 0)) {
+          return { message: '合成完成时音频已被演出队列占用，空闲后再试听。', wav: null };
+        }
+        if (this.performer) this.performer.enqueuePreparedSpeech(piece);
+        else void this.audio.play(piece).then(({ ended }) => ended).catch(() => {});
         const voice = audition?.refAudio ?? this.ttsProfile.refAudio;
         return {
           message: `合成 OK:${Math.round(piece.durationMs)}ms 音频,耗时 ${synthMs}ms;声线 ${
@@ -2610,6 +2787,7 @@ export class VtuberWorld implements World {
     this.host = host;
     await this.stream.start(host.log);
     this.streamUp = true;
+    await this.musicGeneration.start();
     void this.probeStreaming();
     this.performer = new Performer({
       pack: () => this.pack,
@@ -2622,7 +2800,7 @@ export class VtuberWorld implements World {
             this.noteSpeechRate(text, piece.durationMs, profileKey);
             return piece;
           } catch (err) {
-            this.ttsOk = false;
+            if (!signal?.aborted && !(err instanceof TtsSkipped)) this.ttsOk = false;
             throw err;
           }
         },
@@ -2656,6 +2834,7 @@ export class VtuberWorld implements World {
       log: host.log,
       broadcastFloorMs: () => this.broadcastFloor(),
       onDrained: () => this.armSilenceRemind(),
+      onMusic: (playback) => this.onMusic(playback),
       stateTimeouts: (channel) => this.stateTimeoutMs(channel),
       trace: (area, msg, opts) => this.tracePerf(area, msg, opts),
       onCue: (cues) => this.stream.emit('cue', { cues }),
@@ -2714,6 +2893,7 @@ export class VtuberWorld implements World {
   }
 
   async stop(): Promise<void> {
+    this.musicGeneration.stop();
     // 停机前等待整个演出队列，包括正在播放与尚未播放的片段。
     if (this.performer) {
       const waited = await this.performer.drainQueue(SHUTDOWN_DRAIN_MAX_MS);
@@ -2801,18 +2981,45 @@ export class VtuberWorld implements World {
   }
 
   tools(): ToolDef[] {
-    const [act, interrupt] = VTUBER_TOOL_DECLS;
+    const [act, interrupt, music] = VTUBER_TOOL_DECLS;
     return [
       {
         ...act,
         handler: async (args, ctx) => {
           if (typeof args.script !== 'string') return '[vtuber_act 失败] script 必须是字符串，本轮没有播出。';
-          return this.handleAct(args.script, ctx.callId ?? null, ctx.signal);
+          const result = await this.handleAct(args.script, ctx.callId ?? null, ctx.signal, ctx.round ?? null);
+          // A rejected performance cannot become a new reason to keep speaking
+          // in the same model wake. The next real game event may start a turn.
+          if (result.startsWith('[未排入]')) return { text: result, failed: true, endsTurn: true };
+          return result;
         },
       },
       {
         ...interrupt,
         handler: async (_args, ctx) => this.handleInterrupt(ctx.callId ?? null),
+      },
+      {
+        ...music,
+        handler: async (args, ctx) => {
+          const panel = this.musicConsole();
+          // Lyric clocks belong to the UI/SSE. Agent receipts retain metadata and actual playback state.
+          const receipt = (value: unknown): string => JSON.stringify(value, (key, item) => key === 'lyrics' ? undefined : item);
+          if (args.action === 'list' || args.action === 'status') return receipt(await panel.state());
+          if (args.action === 'stop') return receipt(panel.stop());
+          if (args.action === 'generate') {
+            const result = await panel.generate(args as unknown as MusicGenerationRequest, ctx.callId ?? randomUUID());
+            return result.ok ? receipt(result) : { text: receipt(result), failed: true };
+          }
+          if (args.action === 'cancel') {
+            const result = await panel.cancelGeneration(args.jobId as string);
+            return result.ok ? receipt(result) : { text: receipt(result), failed: true };
+          }
+          if (args.action === 'play') {
+            const result = await panel.play(args.trackId as string, { intro: args.intro as string | undefined, outro: args.outro as string | undefined });
+            return result.ok ? receipt(result) : { text: receipt(result), failed: true };
+          }
+          return { text: '[vtuber_music 失败] action 必须是 list/play/status/stop/generate/cancel。', failed: true };
+        },
       },
     ];
   }
@@ -2837,12 +3044,15 @@ export class VtuberWorld implements World {
       // 排队裁决在流开始的这一刻定夺:拒收就不开轮,增量直接不接
       const decision = this.decideSpeech(item.call_id);
       if (decision.kind === 'rejected') return;
-      const handle = this.performer.beginRound({ callId: item.call_id });
       const redact = new StreamRedactor(
         () => this.mutedTexts(),
         (text) => {
           call.script += text;
-          handle.feed(text);
+          if (call.handle) call.handle.feed(text);
+          else {
+            call.pending += text;
+            this.releaseDistinctScript(call);
+          }
         },
         (hit) =>
           this.tracePerf('禁播', `台本里滤掉禁播词:「${hit.slice(0, 30)}」`, { level: 'warn', tally: '禁播' }),
@@ -2851,9 +3061,11 @@ export class VtuberWorld implements World {
       const call: StreamingCall = {
         index: event.output_index,
         callId: item.call_id,
-        handle,
+        handle: null,
         redact,
         script: '',
+        pending: '',
+        turn: this.tapTurnSerial,
         ended: false,
         boundary,
         json: new JsonScriptStream((text) => boundary.feed(text)),
@@ -2876,10 +3088,24 @@ export class VtuberWorld implements World {
     if (aborted) this.abortStreaming();
     else this.closeStreaming();
     this.turnActCalls = 0;
+    this.tapTurnSerial++;
     this.turnInterruptSeen = false;
     const leaked = this.roundContent;
     this.roundContent = '';
     this.remindIfContentLeaked(leaked);
+  }
+
+  /** 完整重复台本先留在本地；出现第一个不同的字符，立刻恢复正常流式演出。 */
+  private releaseDistinctScript(call: StreamingCall): void {
+    if (call.handle || !call.pending) return;
+    const now = Date.now();
+    this.recentScripts = this.recentScripts.filter((entry) => now - entry.at < SPEECH_DUPLICATE_WINDOW_MS);
+    const possiblyDuplicate = this.recentScripts.some((entry) =>
+      entry.turn !== call.turn && entry.script.startsWith(call.pending));
+    if (possiblyDuplicate) return;
+    call.handle = this.performer?.beginRound({ callId: call.callId }) ?? null;
+    call.handle?.feed(call.pending);
+    call.pending = '';
   }
 
   /**
@@ -2893,6 +3119,8 @@ export class VtuberWorld implements World {
     if (!performer) return { kind: 'queued', backlogMs: 0 };
     const backlogMs = performer.speechBacklogMs();
     const first = firstOfTurn ?? this.turnActCalls === 0;
+    const now = Date.now();
+    this.recentActTurns = this.recentActTurns.filter((at) => now - at < SPEECH_BURST_WINDOW_MS);
     // 轮内计数只由流式 tap 推进——只有它认识"一轮回复"的边界(finishTapRound 清零)。
     // handler 兜底路径显式按轮首处理(firstOfTurn=true),它不隶属任何流式轮:让它
     // 也加一,下一轮真正的轮首就会被误判成"同轮续说"而整个绕过积压闸。
@@ -2915,6 +3143,13 @@ export class VtuberWorld implements World {
         event: 'reject',
         data: { reason, backlogMs: Math.round(backlogMs), capMs },
       });
+    } else if (first && this.recentActTurns.length >= SPEECH_BURST_MAX_TURNS) {
+      kind = 'rejected';
+      reason = 'burst';
+      this.tracePerf('闸门', '拒收:短时间内连续跨回复开演', {
+        level: 'warn', tally: '拒收', event: 'reject',
+        data: { reason, turns: this.recentActTurns.length, windowMs: SPEECH_BURST_WINDOW_MS },
+      });
     } else if (!first && nth > this.maxActRounds()) {
       // 同轮豁免的硬边界:一条回复复读工具调用时,这条是唯一还拦得住的闸
       kind = 'rejected';
@@ -2926,6 +3161,7 @@ export class VtuberWorld implements World {
         data: { reason, nth, maxActRounds: this.maxActRounds() },
       });
     }
+    if (kind === 'queued' && first) this.recentActTurns.push(now);
     const decision: SpeechDecision = { kind, backlogMs, reason };
     if (callId) {
       this.callDecisions.set(callId, decision);
@@ -3094,7 +3330,7 @@ export class VtuberWorld implements World {
     this.silenceTimer = setTimeout(() => {
       this.silenceTimer = null;
       const host = this.host;
-      if (!host || !this.performer || this.performer.speechBacklogMs() > 0) return;
+      if (!host || !this.performer || this.performer.audioBacklogMs() > 0 || this.performer.status().playing) return;
       const plan = this.silenceTierPlanMs();
       const tier = Math.min(this.silenceTier, plan.length - 1);
       const totalSec = Math.round(plan[tier] / 1000);
@@ -3189,7 +3425,27 @@ export class VtuberWorld implements World {
     call.json.end();
     const normalization = call.boundary.end();
     call.redact.flush();
-    call.handle.end();
+    const now = Date.now();
+    this.recentScripts = this.recentScripts.filter((entry) => now - entry.at < SPEECH_DUPLICATE_WINDOW_MS);
+    const duplicate = normalization.ok && !!call.script.trim() && !call.handle &&
+      this.recentScripts.some((entry) => entry.turn !== call.turn && entry.script === call.script);
+    if (duplicate) {
+      this.callDecisions.set(call.callId, { kind: 'rejected', backlogMs: 0, reason: 'duplicate' });
+      this.tracePerf('闸门', '拒收:跨回复重复台词，未送入 TTS', {
+        level: 'warn', tally: '拒收', event: 'reject', data: { reason: 'duplicate' },
+      });
+    } else {
+      if (!call.handle && call.pending) {
+        call.handle = this.performer?.beginRound({ callId: call.callId }) ?? null;
+        call.handle?.feed(call.pending);
+        call.pending = '';
+      }
+      call.handle?.end();
+      if (normalization.ok && call.script.trim()) {
+        this.recentScripts.push({ script: call.script, at: now, turn: call.turn });
+        if (this.recentScripts.length > 16) this.recentScripts.shift();
+      }
+    }
     if (normalization.ok) {
       if (normalization.normalized) {
         this.tracePerf('台本边界', 'normalized_act_script:已解包 JSON 单元素字符串数组', {
@@ -3224,7 +3480,7 @@ export class VtuberWorld implements World {
     call.json.end();
     call.boundary.abort();
     call.redact.discard();
-    call.handle.end();
+    call.handle?.end();
     this.recentStreamed.delete(call.callId);
     this.callDecisions.clear();
   }
@@ -3281,7 +3537,7 @@ export class VtuberWorld implements World {
   }
 
 
-  private async handleAct(script: string, callId: string | null, signal?: AbortSignal): Promise<string> {
+  private async handleAct(script: string, callId: string | null, signal?: AbortSignal, round: number | null = null): Promise<string> {
     let cleanupNote = '';
     const receipt = (text: string): string => text + cleanupNote;
     if (!this.performer) return receipt('[vtuber_act 失败] World 未启动');
@@ -3324,12 +3580,30 @@ export class VtuberWorld implements World {
         '要说话就把话写进 script 再调一次。'
       ));
     }
+    // Handler 轮号使用负值；缺少轮号时只沿用仍打开的 tap 轮，不能沿用已结束的轮。
+    const directTurn = round === null ? (this.turnActCalls > 0 ? this.tapTurnSerial : null) : -(round + 1);
+    const tappedDecision = callId ? this.callDecisions.get(callId) : undefined;
+    const now = Date.now();
+    this.recentScripts = this.recentScripts.filter((entry) => now - entry.at < SPEECH_DUPLICATE_WINDOW_MS);
+    if (!streamed && tappedDecision?.kind !== 'rejected' && this.recentScripts.some((entry) => entry.script === script
+      && (directTurn === null || entry.turn === null || entry.turn !== directTurn))) {
+      this.tracePerf('闸门', '拒收:整段提交重复台词，未送入 TTS', {
+        level: 'warn', tally: '拒收', event: 'reject', data: { reason: 'duplicate' },
+      });
+      return receipt('[未排入] 这句台词刚才已经排入过演出，这次没有送进 TTS。请先观察新的游戏结果或执行下一步行动，别重复提交同一段。');
+    }
     // tap 时刻已裁决的取回;没经 tap 的(直连/测试)此刻裁决,每次都按轮首处理
-    const decision = (callId ? this.callDecisions.get(callId) : undefined) ?? this.decideSpeech(callId, true);
+    const decision = tappedDecision ?? this.decideSpeech(callId, true);
     const backlogSec = Math.round(decision.backlogMs / 1000);
     // 这段本身要说多久:排队闸与回执都按它算,agent据此掂量一次说多少合适
     const selfSec = Math.round(this.performer.estimateScriptMs(script) / 1000);
     if (decision.kind === 'rejected') {
+      if (decision.reason === 'duplicate') {
+        return receipt('[未排入] 这句台词刚才已经说过，这次没有送进 TTS。请先观察新的游戏结果或执行下一步行动，别重复播同一段。');
+      }
+      if (decision.reason === 'burst') {
+        return receipt('[未排入] 最近 10 秒已开演 2 次，这一段没有播出。先结束这轮回复；有新的游戏结果后再说。');
+      }
       if (decision.reason === 'turn-cap') {
         return receipt((
           `[未排入] 这一次回复里你已经连着开了 ${this.maxActRounds()} 次 vtuber_act,` +
@@ -3348,6 +3622,8 @@ export class VtuberWorld implements World {
       const h = this.performer.beginRound({ callId });
       h.feed(cleaned);
       h.end();
+      this.recentScripts.push({ script, at: now, turn: directTurn });
+      if (this.recentScripts.length > 16) this.recentScripts.shift();
     }
     const note =
       decision.backlogMs > 0

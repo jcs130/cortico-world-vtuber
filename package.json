@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-vtuber",
-  "version": "0.1.0",
+  "version": "0.1.1-music.3",
   "type": "module",
   "description": "Cortico World: Live2D VTuber performance — VTube Studio wiring, streaming TTS, forced alignment, subtitle overlay",
   "license": "AGPL-3.0-or-later",
@@ -28,6 +28,7 @@
     "!src/voxcpm2-server",
     "dist",
     "scripts",
+    "adapters/indextts",
     "README.md",
     "THIRD_PARTY_NOTICES.md"
   ],

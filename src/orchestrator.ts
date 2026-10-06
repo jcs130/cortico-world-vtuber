@@ -9,7 +9,7 @@ import { countPauses, pauseMs, segmentUnits, type AlignedUnit, type PausePriors 
 import type { TraceOptions } from './diagnostics.ts';
 import { planCut, pcm16ToFloat, type CutClass, type CutPlan } from './interrupt-fade.ts';
 import type { GestureCue, IRFrame, Mixer } from './mixer.ts';
-import { ScriptParser, type Beat, type BeatCommand, type SpeechAnchor, type SpeechPiece } from './parser.ts';
+import { isMoodOnlyText, ScriptParser, type Beat, type BeatCommand, type SpeechAnchor, type SpeechPiece } from './parser.ts';
 import { describeSilence, silenceData, type SilenceReport } from './silence-scan.ts';
 import { StateMachines, type StateChannel } from './states.ts';
 import {
@@ -19,7 +19,7 @@ import {
   summarizeSubtitleCues,
   type SubtitleCue,
 } from './subtitle-cues.ts';
-import { decodeWav, type StreamingEnvelope, type TtsPiece, type TtsStreamSink } from './tts.ts';
+import { decodeWav, TtsSkipped, type StreamingEnvelope, type TtsPiece, type TtsStreamSink } from './tts.ts';
 import type { Channel, PerformancePack } from './pack.ts';
 
 const BOUNDARY_SAME_LINE_MS = 100;
@@ -169,7 +169,7 @@ export interface AudioStreamSession {
 
 export interface AudioSink {
   /** 送声卡播放;resolve 于实际开播,ended 于播毕 */
-  play(piece: TtsPiece): Promise<{ startedAt: number; ended: Promise<number> }>;
+  play(piece: TtsPiece, options?: { volume?: number; strict?: boolean }): Promise<{ startedAt: number; ended: Promise<number> }>;
   beginStream(sampleRate: number, text: string): AudioStreamSession;
   stop(fadeMs: number): void;
   /**
@@ -255,6 +255,8 @@ export interface PerformerDeps {
   speechRate?: () => SpeechRateHint;
   /** 队列耗尽(下降沿,每次见底报一次;新语音顶回后才允许再次触发)。 */
   onDrained?: () => void;
+  /** Pre-generated music lifecycle; no speech subtitles or TTS budget. */
+  onMusic?: (playback: import('./music.ts').MusicPlayback) => void;
   /** State 通道超时范围(ms;控制台热调);缺省用 states.ts 的默认档 */
   stateTimeouts?: (channel: StateChannel) => [number, number];
   /** 一束演出指令实际触发时的旁路通知(舞台页的标签提示等);reset 的 channel 为 'reset' */
@@ -343,10 +345,14 @@ interface PerfPiece {
   /** 非流式路径 */
   tts: TtsPiece | null;
   synthing: boolean;
+  /** Owned whole-piece song companion synthesis can be cancelled without touching other rounds. */
+  synthAbort?: AbortController | null;
   failed: boolean;
   played: boolean;
   /** 流式路径;null = 走非流式 */
   segs: StreamSeg[] | null;
+  music?: { playback: import('./music.ts').MusicPlayback; volume: () => number };
+  musicCompanion?: boolean;
 }
 
 interface PerfBeat {
@@ -596,6 +602,7 @@ export class Performer {
     this.stopped = true;
     if (this.ticker) clearInterval(this.ticker);
     this.ticker = null;
+    this.stopMusic(0);
     for (const r of this.rounds) r.dropped = true;
     this.abortLiveSynth(this.rounds);
     this.clearAnchorTimers();
@@ -609,11 +616,12 @@ export class Performer {
     this.anchorTimers.clear();
   }
 
-  /** 打断或停机时立即中止在途流式合成。 */
+  /** 打断或停机时立即中止指定轮的在途合成。 */
   private abortLiveSynth(rounds: readonly Round[]): void {
     for (const r of rounds) {
       for (const b of r.beats) {
         for (const p of b.pieces) {
+          p.synthAbort?.abort();
           if (!p.segs) continue;
           for (const s of p.segs) s.abort?.();
         }
@@ -682,7 +690,8 @@ export class Performer {
 
   statusLine(): string {
     const s = this.status();
-    const play = s.playing ? '正在说话' : s.queuedBeats > 0 ? `排队 ${s.queuedBeats} 拍` : '安静';
+    const music = this.musicState().current;
+    const play = music ? `正在播放歌曲「${music.title}」` : s.playing ? '正在说话' : s.queuedBeats > 0 ? `排队 ${s.queuedBeats} 拍` : '安静';
     return `[演出状态] ${play}`;
   }
 
@@ -735,6 +744,131 @@ export class Performer {
    */
   roundFence(): number {
     return this.roundSeq;
+  }
+
+  private readonly musicPieces = new Map<string, PerfPiece>();
+  /** Retained through an optional outro so song-only stop can cancel the whole owned block. */
+  private readonly musicGroups = new Map<string, PerfPiece>();
+  private lastMusic: import('./music.ts').MusicPlayback | null = null;
+
+  /** Console TTS auditions also use queue ownership, so song-only stop cannot cut an audition. */
+  enqueuePreparedSpeech(audio: TtsPiece): void {
+    if (this.stopped) throw new Error('演出引擎未启动');
+    const round: Round = { id: ++this.roundSeq, callId: null, beats: [], ended: true, dropped: false };
+    const piece: PerfPiece = {
+      round, beatIndex: 0, text: audio.text, endsWithEllipsis: false, anchors: [], preCommands: [],
+      tts: audio, synthing: false, failed: false, played: false, segs: null,
+    };
+    round.beats.push({ round, beat: { index: 0, commands: [], atLineStart: false, aloneOnLine: false }, pieces: [piece], open: false, cuesFired: false });
+    this.rounds.push(round);
+    this.gate.pulse();
+    void this.pump();
+  }
+
+  musicState(): import('./music.ts').MusicQueueState {
+    const jobs = [...this.musicPieces.values()].map((p) => p.music!.playback);
+    return {
+      current: (() => { const p = jobs.find((j) => j.status === 'playing'); return p ? { ...p } : null; })(),
+      queue: jobs.filter((j) => j.status === 'queued').map((j) => ({ ...j })),
+      last: this.lastMusic ? { ...this.lastMusic } : null,
+    };
+  }
+
+  enqueueMusic(prepared: import('./music.ts').PreparedMusic, volume: () => number, options: import('./music.ts').MusicPlayOptions = {}): import('./music.ts').MusicPlayback {
+    if (this.stopped) throw new Error('演出引擎未启动');
+    if (this.musicGroups.size >= 10) throw new Error('歌曲队列已满（最多 10 首）');
+    const speechText = (value: unknown): string => {
+      if (value === undefined) return '';
+      if (typeof value !== 'string' || value.length > 500 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)) {
+        throw new Error('intro/outro 必须是最多 500 字符的普通台词');
+      }
+      if (/(?:^|\n)\s*\[(?:system|developer|assistant|user|tool)\]/iu.test(value)) {
+        throw new Error('intro/outro 只能放对观众说的台词，不能复制内部角色消息或系统提示；本次未排入歌曲');
+      }
+      return value.trim();
+    };
+    if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('歌曲台词选项无效');
+    const intro = speechText(options.intro);
+    const outro = speechText(options.outro);
+    const round: Round = { id: ++this.roundSeq, callId: null, beats: [], ended: true, dropped: false };
+    const playback: import('./music.ts').MusicPlayback = {
+      kind: 'music', playbackId: `music-${round.id}`, trackId: prepared.track.id, title: prepared.track.title,
+      status: 'queued', durationMs: prepared.audio.durationMs, startedAt: null, volume: volume(), envelopeSource: prepared.track.envelopeSource,
+      ...(prepared.track.lyrics ? { lyrics: prepared.track.lyrics.map((line) => ({ ...line })) } : {}),
+      ...(prepared.track.aiGenerated ? { aiGenerated: true } : {}),
+    };
+    const piece: PerfPiece = {
+      round, beatIndex: intro ? 1 : 0, text: '', endsWithEllipsis: false, anchors: [], preCommands: [],
+      tts: prepared.audio, synthing: false, failed: false, played: false, segs: null, music: { playback, volume },
+    };
+    const append = (p: PerfPiece): void => {
+      const index = round.beats.length;
+      p.beatIndex = index;
+      round.beats.push({ round, beat: { index, commands: [], atLineStart: false, aloneOnLine: false }, pieces: [p], open: false, cuesFired: false });
+    };
+    const companion = (text: string): PerfPiece => ({
+      round, beatIndex: 0, text, endsWithEllipsis: /(?:…|\.\.\.)$/u.test(text), anchors: [], preCommands: [],
+      tts: null, synthing: false, failed: false, played: false, segs: null, musicCompanion: true,
+    });
+    // Construct all three beats before publishing the round: concurrent speech can only follow it.
+    if (intro) append(companion(intro));
+    append(piece);
+    if (outro) append(companion(outro));
+    this.musicPieces.set(playback.playbackId, piece);
+    this.musicGroups.set(playback.playbackId, piece);
+    this.rounds.push(round);
+    this.d.onMusic?.({ ...playback });
+    this.gate.pulse();
+    void this.synthPump();
+    void this.pump();
+    return { ...playback };
+  }
+
+  private finishMusic(piece: PerfPiece, status: 'ended' | 'stopped' | 'failed', error?: string): void {
+    const m = piece.music;
+    if (!m || !this.musicPieces.has(m.playback.playbackId)) return;
+    m.playback.status = status;
+    if (error) m.playback.error = error;
+    this.lastMusic = { ...m.playback };
+    this.musicPieces.delete(m.playback.playbackId);
+    this.d.onMusic?.({ ...m.playback });
+  }
+
+  /** Cancel owned intros/songs/outros, preserving unrelated speech and its synthesis. */
+  stopMusic(fadeMs = 150): number {
+    const songs = [...this.musicGroups.values()];
+    const rounds = new Set(songs.map((p) => p.round));
+    const ownsPlayback = this.currentPlayback !== null && rounds.has(this.currentPlayback.piece.round);
+    for (const p of songs) {
+      p.round.dropped = true;
+      for (const b of p.round.beats) for (const owned of b.pieces) {
+        owned.failed = true;
+        if (this.currentPlayback?.piece !== owned) owned.tts = null;
+        // A prepared stream may already own a session while startup is still pending.
+        for (const seg of owned.segs ?? []) seg.session?.abort();
+      }
+      this.finishMusic(p, 'stopped');
+      this.musicGroups.delete(p.music!.playback.playbackId);
+    }
+    this.abortLiveSynth([...rounds]);
+    if (ownsPlayback) {
+      this.clearAnchorTimers();
+      this.d.mixer.dropPendingProsody(this.now());
+      this.d.audio.stop(fadeMs);
+      this.d.onSubtitleCut?.();
+    }
+    this.gate.pulse();
+    return songs.length;
+  }
+
+  /** Audio occupancy includes songs, independently of the speech admission budget. */
+  audioBacklogMs(): number {
+    const now = this.now();
+    let total = this.speechBacklogMs();
+    for (const p of this.musicPieces.values()) {
+      total += Math.max(0, p.music!.playback.durationMs - (this.currentPlayback?.piece === p ? Math.max(0, now - this.currentPlayback.startedAt) : 0));
+    }
+    return total;
   }
 
   /** 控制台整段演出:立即抢占旧内容并开始新轮。 */
@@ -925,7 +1059,14 @@ export class Performer {
       if (playingInScope) this.d.audio.stop(fadeMs);
       return [];
     }
-    for (const r of live) r.dropped = true;
+    for (const r of live) {
+      r.dropped = true;
+      for (const b of r.beats) for (const p of b.pieces) if (p.music) {
+        this.finishMusic(p, 'stopped');
+        this.musicGroups.delete(p.music.playback.playbackId);
+        if (playing?.piece !== p) p.tts = null;
+      }
+    }
     this.abortLiveSynth(live);
     if (playingInScope) {
       this.clearAnchorTimers();
@@ -973,7 +1114,8 @@ export class Performer {
       this.d.audio.stop(fadeMs);
     }
     this.gate.pulse();
-    return live.map((r) => this.roundOutcome(r, cutInfo?.playing ?? null, cutInfo?.cutMs ?? null));
+    return live.filter((r) => !r.beats.some((b) => b.pieces.some((p) => p.music)))
+      .map((r) => this.roundOutcome(r, cutInfo?.playing ?? null, cutInfo?.cutMs ?? null));
   }
 
   /**
@@ -1226,7 +1368,7 @@ export class Performer {
     const now = this.now();
     let total = 0;
     for (const p of this.livePieces()) {
-      if (p.played || p.failed || p.text === '') continue;
+      if (p.music || p.played || p.failed || p.text === '') continue;
       const dur = this.pieceDurationMs(p);
       if (this.currentPlayback?.piece === p) {
         total += Math.max(0, dur - (now - this.currentPlayback.startedAt));
@@ -1326,10 +1468,14 @@ export class Performer {
     }
     const segs: StreamSeg[] = [];
     let prev = 0;
+    let pendingMood = '';
     for (const a of p.anchors) {
       const text = p.text.slice(prev, a.charOffset).trim();
-      if (text) {
-        const seg = mk(text);
+      const moodOnly = isMoodOnlyText(text);
+      if (moodOnly) pendingMood += text;
+      if (text && !moodOnly) {
+        const seg = mk(pendingMood + text);
+        pendingMood = '';
         seg.seamCommands = [...a.commands];
         segs.push(seg);
       } else if (segs.length > 0) {
@@ -1340,7 +1486,7 @@ export class Performer {
       prev = a.charOffset;
     }
     const tail = p.text.slice(prev).trim();
-    if (tail) segs.push(mk(tail));
+    if (tail && !isMoodOnlyText(tail)) segs.push(mk(pendingMood + tail));
     p.segs = segs;
   }
 
@@ -1391,9 +1537,12 @@ export class Performer {
 
   private async driveWholeSynth(next: PerfPiece): Promise<void> {
     next.synthing = true;
+    const ac = next.musicCompanion ? new AbortController() : null;
+    next.synthAbort = ac;
     const t0 = this.now();
     try {
-      next.tts = await this.d.tts.synth(next.text);
+      next.tts = await (ac ? this.d.tts.synth(next.text, ac.signal) : this.d.tts.synth(next.text));
+      if (ac?.signal.aborted || next.round.dropped) return;
       // 非流式没有流可掐:这一路只把预算与实测记下来,音频照原样播完。
       const hint = this.rateHint();
       const b = overrunBudget(next.text, hint.msPerUnit);
@@ -1408,10 +1557,18 @@ export class Performer {
       });
     } catch (err) {
       next.failed = true;
+      if (ac?.signal.aborted || next.round.dropped) return;
+      if (err instanceof TtsSkipped) {
+        this.trace('TTS', '服务端已跳过重复文本，本片未播出', {
+          event: 'speech-skipped', data: { reason: err.reason },
+        });
+        return;
+      }
       this.trace('TTS', `合成失败,跳过:「${next.text.slice(0, 18)}」 ${String(err).slice(0, 80)}`);
       this.d.log.warn('TTS 合成失败,该片跳过', { text: next.text.slice(0, 30), err: String(err) });
     } finally {
       next.synthing = false;
+      next.synthAbort = null;
     }
   }
 
@@ -1524,6 +1681,12 @@ export class Performer {
       seg.failed = true;
       seg.session?.abort();
       if (!piece.round.dropped && !this.stopped) {
+        if (err instanceof TtsSkipped) {
+          this.trace('TTS', '服务端已跳过重复文本，本段未播出', {
+            event: 'speech-skipped', data: { reason: err.reason },
+          });
+          return;
+        }
         this.trace('TTS', `流式合成失败,该段跳过:「${seg.text.slice(0, 18)}」 ${String(err).slice(0, 80)}`);
         this.d.log.warn('TTS 流式合成失败,该段跳过', { text: seg.text.slice(0, 30), err: String(err) });
       }
@@ -1594,6 +1757,11 @@ export class Performer {
           continue;
         }
         await this.performBeat(pb);
+        if (pb.round.dropped || pb.round.beats.every((b) => b.cuesFired && b.pieces.every((p) => p.played || p.failed))) {
+          for (const p of pb.round.beats.flatMap((b) => b.pieces)) {
+            if (p.music) this.musicGroups.delete(p.music.playback.playbackId);
+          }
+        }
       }
     } catch (err) {
       this.d.log.error('演出泵异常退出', { err: String(err) });
@@ -1641,6 +1809,11 @@ export class Performer {
     });
     this.fireCues(pb, anchor, gestureDelay);
     pb.cuesFired = true;
+
+    if (pb.pieces[0]?.music) {
+      await this.playMusic(pb.pieces[0]);
+      return;
+    }
 
     // gap:boundary_base 与阻断等待取大,再让位音频就绪。
     // 【】阻断块等待完整 clip 时长;<> 动作与语音并行。GAP_CAP 只封顶边界停顿。
@@ -1767,10 +1940,19 @@ export class Performer {
   private async playPiece(piece: PerfPiece): Promise<void> {
     const tts = piece.tts;
     if (!tts) return;
+    if (piece.musicCompanion) {
+      this.playing = true;
+      this.currentPlayback = { piece, startedAt: this.now() };
+    }
     try {
       const { startedAt, ended } = await this.d.audio.play(tts);
       this.playing = true;
       this.currentPlayback = { piece, startedAt };
+      if (piece.musicCompanion && (piece.round.dropped || this.stopped)) {
+        this.d.audio.stop(150);
+        this.prevEnd = await ended;
+        return;
+      }
       this.emitSubtitle(piece.text, tts.units ?? null, tts.durationMs, startedAt, 'open');
       this.d.mixer.speechStart((ms) => tts.envelope.at(ms), startedAt);
       this.scheduleAccentProsody(tts, startedAt);
@@ -1778,6 +1960,10 @@ export class Performer {
       const endTs = await ended;
       this.prevEnd = endTs;
     } catch (err) {
+      if (piece.musicCompanion && (piece.round.dropped || this.stopped)) {
+        this.prevEnd = this.now();
+        return;
+      }
       this.trace('播', `播放失败,按时长占位推进:${String(err).slice(0, 60)}`);
       this.d.log.warn('语音播放失败,按时长占位推进', { err: String(err) });
       this.prevEnd = this.now() + tts.durationMs;
@@ -1788,6 +1974,48 @@ export class Performer {
       piece.played = true;
       this.d.mixer.speechEnd();
       this.prevEndedWithEllipsis = piece.endsWithEllipsis;
+    }
+  }
+
+  private async playMusic(piece: PerfPiece): Promise<void> {
+    const audio = piece.tts;
+    const music = piece.music;
+    if (!audio || !music || piece.round.dropped || this.stopped) return;
+    // Register ownership before awaiting sink startup: stop may arrive during that await.
+    this.playing = true;
+    const owner: CurrentPlayback = { piece, startedAt: this.now() };
+    this.currentPlayback = owner;
+    try {
+      music.playback.volume = music.volume();
+      const { startedAt, ended } = await this.d.audio.play(audio, { volume: music.playback.volume, strict: true });
+      owner.startedAt = startedAt;
+      if (piece.round.dropped || this.stopped) {
+        this.d.audio.stop(150);
+      } else {
+        music.playback.startedAt = startedAt;
+        music.playback.status = 'playing';
+        this.d.onSubtitleCut?.();
+        this.d.mixer.speechStart((ms) => audio.envelope.at(ms), startedAt);
+        this.d.onMusic?.({ ...music.playback });
+      }
+      this.prevEnd = await ended;
+      this.finishMusic(piece, 'ended');
+    } catch (error) {
+      this.prevEnd = this.now();
+      this.finishMusic(piece, 'failed', error instanceof Error ? error.message : '歌曲播放失败');
+      // A failed song must not speak its success-oriented outro.
+      piece.round.dropped = true;
+      this.abortLiveSynth([piece.round]);
+      this.musicGroups.delete(music.playback.playbackId);
+      this.d.log.warn('歌曲播放失败', { trackId: music.playback.trackId });
+    } finally {
+      this.playing = false;
+      this.currentPlayback = null;
+      piece.played = true;
+      piece.tts = null;
+      this.d.mixer.speechEnd();
+      this.prevEndedWithEllipsis = false;
+      this.gate.pulse();
     }
   }
 
@@ -2047,7 +2275,7 @@ export class Performer {
         this.d.mixer.speechStart((ms) => envelope.at(ms), startedAt);
         accents = this.startStreamAccents(seg, startedAt);
       }
-      if (piece.anchors.length > 0 && (piece.segs?.length ?? 0) === 1) {
+      if ((this.d.alignEnabled?.() ?? false) && piece.anchors.length > 0 && (piece.segs?.length ?? 0) === 1) {
         anchors = this.startAnchorRunner(piece, seg, startedAt);
       }
       if (!seg.synthDone && (this.d.alignEnabled?.() ?? false)) {
@@ -2491,7 +2719,7 @@ export class Performer {
   private checkBacklog(now: number): void {
     if (now - this.lastBacklogAt < BACKLOG_POLL_MS) return;
     this.lastBacklogAt = now;
-    const level = this.speechBacklogMs() <= 0 ? 'empty' : 'ample';
+    const level = this.audioBacklogMs() <= 0 ? 'empty' : 'ample';
     if (level === this.backlogLevel) return;
     this.backlogLevel = level;
     if (level === 'empty') this.d.onDrained?.();

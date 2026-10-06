@@ -22,6 +22,8 @@ import { decodeWav } from '../../src/tts.ts';
 import { encodeAudio, fixtureProfileJson, makeRawWav, makeWav, recordingLogger, writeProfileDir, type LogLine } from './helpers.ts';
 
 const ffmpegExe = findFfmpeg();
+const receiptText = (value: unknown): string => typeof value === 'string'
+  ? value : (value as { text: string }).text;
 
 /** 面板声明里的局部 id(新式对象声明;字符串形态这个 World 已经不用了) */
 function panelIds(m: VtuberWorld): string[] {
@@ -342,6 +344,7 @@ describe('VtuberWorld', () => {
       vtsWsUrl: 'ws://127.0.0.1:1',
       ttsUrl: `http://127.0.0.1:${ttsPort}`,
       ttsVoicesDir: () => join(serverDir, 'voices'),
+      musicDir: () => existsSync(join(serverDir, 'catalog.json')) ? serverDir : '',
       onTtsProfile: (p) => savedProfiles.push(p),
       // 积压闸测试用最紧的上限;正常用例积压为 0,闸不介入
       speechCapSec: () => 3,
@@ -547,9 +550,78 @@ describe('VtuberWorld', () => {
     expect(host.logs.some((log) => log.msg.includes('invalid_script_shape'))).toBe(true);
   });
 
-  it('工具表只有 vtuber_act 与 vtuber_interrupt', () => {
-    expect(mod.tools().map((tool) => tool.name)).toEqual(['vtuber_act', 'vtuber_interrupt']);
-    expect(VTUBER_TOOL_DECLS.map((decl) => decl.name)).toEqual(['vtuber_act', 'vtuber_interrupt']);
+  it('工具表声明台词、打断与歌曲', () => {
+    expect(mod.tools().map((tool) => tool.name)).toEqual(['vtuber_act', 'vtuber_interrupt', 'vtuber_music']);
+    expect(VTUBER_TOOL_DECLS.map((decl) => decl.name)).toEqual(['vtuber_act', 'vtuber_interrupt', 'vtuber_music']);
+  });
+
+  it('歌曲工具与面板携带部署歌词时轴发布真实生命周期和重连快照，不调用 TTS 或伪造语音字幕', async () => {
+    const lyrics = [{ atMs: 0, endMs: 1000, text: 'Example lyric' }];
+    writeFileSync(join(serverDir, 'catalog.json'), JSON.stringify({ version: 1, tracks: [{ id: 'song', title: 'Example', wavFile: 'song.wav', lyricsFile: 'lyrics.json' }] }));
+    writeFileSync(join(serverDir, 'lyrics.json'), JSON.stringify({ version: 1, lines: lyrics }));
+    writeFileSync(join(serverDir, 'song.wav'), makeWav(new Array(16_000).fill(0.2)));
+    const music = mod.tools().find((tool) => tool.name === 'vtuber_music')!;
+    const list = JSON.parse(receiptText(await music.handler({ action: 'list' }, { role: 'main', log: host.log })));
+    expect(list.tracks[0]).toMatchObject({ id: 'song', durationMs: 1000 });
+    expect(list.tracks[0]).not.toHaveProperty('lyrics');
+    expect((await mod.musicConsole().state()).tracks[0].lyrics).toEqual(lyrics);
+    const accepted = JSON.parse(receiptText(await music.handler({ action: 'play', trackId: 'song' }, { role: 'main', log: host.log })));
+    expect(accepted.ok).toBe(true);
+    expect(accepted.queue[0]).toMatchObject({ trackId: 'song', status: 'queued', startedAt: null });
+    expect(accepted.queue[0]).not.toHaveProperty('lyrics');
+    await waitFor(() => stage.events.some((e) => e.type === 'music' && (e.music as { status: string }).status === 'playing'));
+    const observer = new StreamProbe();
+    try {
+      await observer.attach(mod.streamUrl, mod.danmakuUrl);
+      await waitFor(() => observer.events.some((e) => e.type === 'snapshot'));
+      expect(observer.events.find((e) => e.type === 'snapshot')!.music).toMatchObject({ trackId: 'song', status: 'playing', durationMs: 1000, lyrics });
+    } finally { observer.close(); }
+    await waitFor(() => host.events.some(({ e }) => e.type === 'vtuber.music' && (e.meta?.music as { status: string }).status === 'ended'));
+    expect((await mod.musicConsole().state()).last?.status).toBe('ended');
+    expect((await mod.musicConsole().state()).last?.lyrics).toEqual(lyrics);
+    for (const action of ['list', 'status', 'stop']) {
+      const text = receiptText(await music.handler({ action }, { role: 'main', log: host.log }));
+      expect(text).not.toContain('"lyrics"');
+      const data = JSON.parse(text);
+      if (action === 'stop') expect(data.last).toMatchObject({ trackId: 'song', status: 'ended', durationMs: 1000 });
+      else expect(data.tracks[0]).toMatchObject({ id: 'song', title: 'Example', durationMs: 1000 });
+    }
+    const rejected = await music.handler({ action: 'play', trackId: 'missing' }, { role: 'main', log: host.log });
+    expect(rejected).toMatchObject({ failed: true });
+    expect(receiptText(rejected)).not.toContain('"lyrics"');
+    expect(ttsBodies).toEqual([]);
+    expect(stage.events.filter((e) => e.type === 'subtitle')).toEqual([]);
+    expect(stage.events.filter((e) => e.type === 'music').every((e) => JSON.stringify(e.music).includes('"lyrics"'))).toBe(true);
+    expect(panelIds(mod)).toContain('music');
+  });
+
+  it('同一次点歌预留开场与收尾，普通台词只在专属尾声后播放', async () => {
+    writeFileSync(join(serverDir, 'catalog.json'), JSON.stringify({ version: 1, tracks: [{ id: 'song', title: 'Example', wavFile: 'song.wav' }] }));
+    writeFileSync(join(serverDir, 'song.wav'), makeWav(new Array(16_000).fill(0.2)));
+    const music = mod.tools().find((tool) => tool.name === 'vtuber_music')!;
+    const accepted = JSON.parse(receiptText(await music.handler({ action: 'play', trackId: 'song', intro: '开场。', outro: '收尾。' }, { role: 'main', log: host.log })));
+    expect(accepted.ok).toBe(true);
+    await waitFor(() => stage.events.some((e) => e.type === 'music' && (e.music as { status: string }).status === 'playing'));
+    const act = mod.tools().find((tool) => tool.name === 'vtuber_act')!;
+    await act.handler({ script: '普通台词。' }, { role: 'main', log: host.log, callId: 'after-song' });
+    await waitFor(() => stage.events.filter((e) => e.type === 'subtitle').length >= 3);
+    expect(stage.events.filter((e) => e.type === 'subtitle').map((e) => e.text)).toEqual(['开场。', '收尾。', '普通台词。']);
+    expect(ttsBodies.filter((body) => typeof body.input === 'string').map((body) => body.input)).toEqual(['开场。', '收尾。', '普通台词。']);
+    const musicEnd = stage.events.findIndex((e) => e.type === 'music' && (e.music as { status: string }).status === 'ended');
+    const outroStart = stage.events.findIndex((e) => e.type === 'subtitle' && e.text === '收尾。');
+    expect(musicEnd).toBeLessThan(outroStart);
+  });
+
+  it('专属收尾不另经普通speech时长预算拒绝，非法台词仍在受理前失败', async () => {
+    writeFileSync(join(serverDir, 'catalog.json'), JSON.stringify({ version: 1, tracks: [{ id: 'song', title: 'Example', wavFile: 'song.wav' }] }));
+    writeFileSync(join(serverDir, 'song.wav'), makeWav(new Array(1600).fill(0.2)));
+    const outro = '谢谢。'.repeat(100);
+    const panel = mod.musicConsole();
+    expect((await panel.play('song', { outro })).ok).toBe(true);
+    await waitFor(() => stage.events.some((e) => e.type === 'subtitle' && e.text === outro));
+    expect(ttsBodies.filter((body) => typeof body.input === 'string').map((body) => body.input)).toEqual([outro]);
+    expect((await panel.play('song', { outro: 'x'.repeat(501) })).ok).toBe(false);
+    expect((await panel.state()).queue).toEqual([]);
   });
 
   it('重启后从诊断目录恢复当前声线的历史语速样本', async () => {
@@ -667,8 +739,9 @@ describe('VtuberWorld', () => {
     const r1 = await act.handler({ script: long }, { role: 'main', log: host.log, callId: 'g1' });
     expect(r1).toContain('已排入演出');
     const r2 = await act.handler({ script: '第二段想插话。' }, { role: 'main', log: host.log, callId: 'g2' });
-    expect(r2).toContain('[未排入]');
-    expect(r2).toContain('vtuber_interrupt');
+    expect(receiptText(r2)).toContain('[未排入]');
+    expect(receiptText(r2)).toContain('vtuber_interrupt');
+    expect(r2).toMatchObject({ failed: true, endsTurn: true });
   });
 
   // 空调用排在闸后会拿到「你上一段话还有 N 秒没说完,这一段没有播出」——
@@ -684,7 +757,7 @@ describe('VtuberWorld', () => {
     expect(silent).not.toContain('未排入');
     // 有正文的照旧被拦
     const spoken = await act.handler({ script: '第二段想插话。' }, { role: 'main', log: host.log, callId: 'b3' });
-    expect(spoken).toContain('[未排入]');
+    expect(receiptText(spoken)).toContain('[未排入]');
   });
 
   // 本地演出未按预期完成的事实记录 warn，普通流水仍用 info。
@@ -700,7 +773,7 @@ describe('VtuberWorld', () => {
     expect(host.logs.some((l) => l.level === 'info')).toBe(true);
 
     const r2 = await act.handler({ script: '插一句。' }, { role: 'main', log: host.log, callId: 'q2' });
-    expect(r2).toContain('[未排入]');
+    expect(receiptText(r2)).toContain('[未排入]');
     const warns = host.logs.filter((l) => l.level === 'warn');
     expect(warns.map((l) => l.msg).join('\n')).toContain('拒收');
   });
@@ -767,12 +840,100 @@ describe('VtuberWorld', () => {
     // 轮结束后的新调用才重新过闸:此刻积压仍超限 → 拒收
     tap.onRoundEnd?.();
     const r3 = await act.handler({ script: '下一轮的话。' }, { role: 'main', log: host.log, callId: 't3' });
-    expect(r3).toContain('[未排入]');
+    expect(receiptText(r3)).toContain('[未排入]');
   });
 
   /** 开过的演出轮数(引擎的权威埋点,不是回执文案) */
   const roundsOpened = (): number =>
     mod.logConsole().entries().filter((e) => e.area === '轮' && e.msg.includes('开新轮')).length;
+
+  it('跨回复重复台词在送入 TTS 前拒收，新台词有差异时仍可流式开演', async () => {
+    const act = mod.tools().find((t) => t.name === 'vtuber_act');
+    if (!act) throw new Error('no act tool');
+    const tap = legacyTap(mod.outputTap());
+    (mod as any).performer.speechBacklogMs = () => 0;
+    const before = roundsOpened();
+    const send = async (id: string, script: string): Promise<string> => {
+      const args = JSON.stringify({ script });
+      tap.onDelta({ type: 'tool_call.begin', index: 0, id, name: 'vtuber_act' });
+      for (const ch of args) tap.onDelta({ type: 'tool_call.delta', index: 0, argsFragment: ch });
+      tap.onDelta({ type: 'tool_call.end', index: 0 });
+      const result = receiptText(await act.handler({ script }, { role: 'main', log: host.log, callId: id }));
+      tap.onRoundEnd?.();
+      return result;
+    };
+    expect(await send('original', '林间战况：发现僵尸。')).toContain('已开演(流式)');
+    expect(roundsOpened() - before).toBe(1);
+    expect(await send('duplicate', '林间战况：发现僵尸。')).toContain('这句台词刚才已经说过');
+    expect(roundsOpened() - before).toBe(1);
+    (mod as any).recentActTurns = [];
+    expect(await send('distinct', '林间战况：发现村民。')).toContain('已开演(流式)');
+    expect(roundsOpened() - before).toBe(2);
+  });
+
+  it('整段提交跨轮重复台词不新开演出；同轮分段和不同台词继续排入', async () => {
+    const act = mod.tools().find((t) => t.name === 'vtuber_act')!;
+    (mod as any).performer.speechBacklogMs = () => 0;
+    const before = roundsOpened();
+    const send = async (id: string, round: number, script: string) => receiptText(await act.handler(
+      { script }, { role: 'main', log: host.log, callId: id, round },
+    ));
+    const original = '材料已放进炉槽，输出还没有成品。';
+    expect(await send('direct-first', 10, original)).toContain('已排入演出');
+    expect(await send('direct-same-round', 10, original)).toContain('已排入演出');
+    expect(roundsOpened() - before).toBe(2);
+    expect(await send('direct-duplicate', 11, original)).toContain('已经排入过演出');
+    expect(roundsOpened() - before).toBe(2);
+    (mod as any).recentActTurns = [];
+    expect(await send('direct-distinct', 12, '原料已取回，我去看看花丛。')).toContain('已排入演出');
+    expect(roundsOpened() - before).toBe(3);
+  });
+
+  it('整段入口缺少 round 时仍检查重复，且与流式入口共用已提交台本', async () => {
+    const act = mod.tools().find((t) => t.name === 'vtuber_act')!;
+    const tap = legacyTap(mod.outputTap());
+    (mod as any).performer.speechBacklogMs = () => 0;
+    const before = roundsOpened();
+    const script = '先观察熔炉实际产物。';
+    expect(receiptText(await act.handler({ script }, { role: 'main', log: host.log, callId: 'without-round' })))
+      .toContain('已排入演出');
+    expect(receiptText(await act.handler({ script }, { role: 'main', log: host.log, callId: 'without-round-repeat' })))
+      .toContain('已经排入过演出');
+    tap.onDelta({ type: 'tool_call.begin', index: 0, id: 'stream-after-direct', name: 'vtuber_act' });
+    const args = JSON.stringify({ script });
+    for (const ch of args) tap.onDelta({ type: 'tool_call.delta', index: 0, argsFragment: ch });
+    tap.onDelta({ type: 'tool_call.end', index: 0 });
+    expect(receiptText(await act.handler({ script }, { role: 'main', log: host.log, callId: 'stream-after-direct' })))
+      .toContain('这句台词刚才已经说过');
+    expect(roundsOpened() - before).toBe(1);
+  });
+
+  it('跨多个 LLM 回复快速开演时第三段拒收，避免短音频引起复读风暴', async () => {
+    const act = mod.tools().find((t) => t.name === 'vtuber_act');
+    if (!act) throw new Error('no act tool');
+    const tap = legacyTap(mod.outputTap());
+    // 模拟网关极短音频或合成失败:积压水位立刻归零，旧积压闸无法拦截。
+    (mod as any).performer.speechBacklogMs = () => 0;
+    const before = roundsOpened();
+    const results = [];
+    for (let n = 0; n < 3; n++) {
+      const id = `burst-${n}`;
+      const script = `第 ${n + 1} 次战况。`;
+      const args = JSON.stringify({ script });
+      tap.onDelta({ type: 'tool_call.begin', index: 0, id, name: 'vtuber_act' });
+      for (const ch of args) tap.onDelta({ type: 'tool_call.delta', index: 0, argsFragment: ch });
+      tap.onDelta({ type: 'tool_call.end', index: 0 });
+      results.push(receiptText(await act.handler(
+        { script },
+        { role: 'main', log: host.log, callId: id },
+      )));
+      tap.onRoundEnd?.();
+    }
+    expect(results[0]).toContain('已开演(流式)');
+    expect(results[1]).toContain('已开演(流式)');
+    expect(results[2]).toContain('[未排入] 最近 10 秒已开演 2 次');
+    expect(roundsOpened() - before).toBe(2);
+  });
 
   // 同一回复可重复生成新的 tool_call id；同轮分段豁免也须限制开轮数量。
   it('同轮豁免有界:一条回复里复读 vtuber_act,开轮数不超过上限', async () => {
@@ -861,7 +1022,7 @@ describe('VtuberWorld', () => {
 
     // handler 取回同一条裁决(不再二次裁决、更不补演一遍)
     const r = await act.handler({ script: '插一句。' }, { role: 'main', log: host.log, callId: 'p1' });
-    expect(r).toContain('[未排入]');
+    expect(receiptText(r)).toContain('[未排入]');
     expect(roundsOpened()).toBe(before);
   });
 
@@ -897,14 +1058,16 @@ describe('VtuberWorld', () => {
     // 标志随轮清零:下一轮不带 interrupt 的轮首照旧过闸
     tap.onRoundEnd?.();
     await waitFor(() => (mod.statusLine() ?? '').includes('安静'));
-    const r3 = await act.handler({ script: long }, { role: 'main', log: host.log, callId: 'i3' });
+    // 本用例只验证 interrupt 后积压读数不会泄漏到下一轮；跨轮突发配额另有用例。
+    (mod as any).recentActTurns = [];
+    const r3 = await act.handler({ script: '新一轮进展。' + long }, { role: 'main', log: host.log, callId: 'i3' });
     expect(r3).toContain('已排入演出');
     tap.onDelta({ type: 'tool_call.begin', index: 0, id: 'i4', name: 'vtuber_act' });
     const args2 = JSON.stringify({ script: '这句该被拦。' });
     for (const ch of args2) tap.onDelta({ type: 'tool_call.delta', index: 0, argsFragment: ch });
     tap.onDelta({ type: 'tool_call.end', index: 0 });
     const r2 = await act.handler({ script: '这句该被拦。' }, { role: 'main', log: host.log, callId: 'i4' });
-    expect(r2).toContain('[未排入]');
+    expect(receiptText(r2)).toContain('[未排入]');
   });
 
   it('无新脚本输入时引擎不自开新轮:队列只减不增', async () => {
@@ -1256,7 +1419,7 @@ describe('VtuberWorld', () => {
     try {
       // 局部 id(不带 vtuber- 前缀):控制台按 provider + 局部 id 路由
       expect(panelIds(mod2))
-        .toEqual(['mount', 'model', 'overlay', 'clips', 'tts', 'align', 'log', 'diag']);
+        .toEqual(['mount', 'model', 'overlay', 'clips', 'tts', 'align', 'music', 'log', 'diag']);
       const c = mod2.vtsConsole();
       const st = await c.state();
       expect(st.connected).toBe(true);

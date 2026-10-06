@@ -9,6 +9,7 @@
  * 与对齐器共用 `segmentUnits` 切分。
  */
 import { countPauses, pauseMs, segmentUnits, VOICE_TAG_SCAN, type AlignedUnit, type PausePriors } from './align.ts';
+import { isMoodTag } from './parser.ts';
 import { resolveVoiceTag } from './voice-tags.ts';
 
 export interface SubtitleCue {
@@ -62,6 +63,13 @@ const GAP_HOLD_MS = 2000;
 
 /** [] 语气词(给 TTS 的发声指令)不进观众看的字幕 */
 const VOICE_TAG_RE = /\[[^\[\]\n]{1,31}\]/gu;
+/** 情绪标记留给 TTS 网关，字幕不显示；普通括号文字照常保留。 */
+const MOOD_CANDIDATE_RE = /[（(][^()（）\n]{1,32}[)）]/gu;
+
+function displayText(raw: string): string {
+  return raw.replace(VOICE_TAG_RE, (m) => (segmentUnits(m).length === 1 ? '' : m))
+    .replace(MOOD_CANDIDATE_RE, (m) => isMoodTag(m) ? '' : m).trim();
+}
 
 interface Chunk {
   /** 原文片段(未剥标签;单元下标按它算) */
@@ -148,6 +156,17 @@ function cutTokens(raw: string): string[] {
         continue;
       }
     }
+    if (cps[i] === '(') {
+      const close = cps.indexOf(')', i + 1);
+      if (close > i && close - i <= 32) {
+        const candidate = cps.slice(i, close + 1).join('');
+        if (isMoodTag(candidate)) {
+          out.push(candidate);
+          i = close;
+          continue;
+        }
+      }
+    }
     out.push(cps[i]);
   }
   return out;
@@ -203,7 +222,7 @@ export interface SubtitleChunk {
 export function subtitleChunks(text: string): SubtitleChunk[] {
   if (!text.trim()) return [];
   return chunkText(text)
-    .filter((c) => c.raw.replace(VOICE_TAG_RE, (m) => (segmentUnits(m).length === 1 ? '' : m)).trim().length > 0)
+    .filter((c) => displayText(c.raw).length > 0)
     .map((c) => ({ startUnit: c.startUnit, endUnit: c.endUnit }));
 }
 
@@ -224,7 +243,7 @@ export function computeSubtitleCues(text: string, opts: SubtitleCueOptions): Sub
       const pauseBeforeMs = pauseAcc;
       if (priors && c.endUnit >= alignedUnits) pauseAcc += pauseMs(countPauses(c.raw), priors);
       return {
-        display: c.raw.replace(VOICE_TAG_RE, (m) => (segmentUnits(m).length === 1 ? '' : m)).trim(),
+        display: displayText(c.raw),
         startUnit: c.startUnit,
         endUnit: c.endUnit,
         pauseBeforeMs,

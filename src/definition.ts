@@ -33,6 +33,9 @@ export interface VtuberConfigSection {
   audioDevice: string;
   audioMirrorSystem: boolean;
   audioSecondary: string;
+  musicDir: string;
+  musicVolume: number;
+  musicGenerationUrl: string;
   alignEnabled: boolean;
   streamEnabled: boolean;
   speechCapSec: number;
@@ -92,6 +95,9 @@ export const VTUBER: WorldDefinition<VtuberConfigSection> = {
       audioDevice: () => cfg.audioDevice,
       audioMirrorSystem: () => cfg.audioMirrorSystem,
       audioSecondary: () => cfg.audioSecondary ?? VTUBER_DEFAULTS.audioSecondary,
+      musicDir: () => cfg.musicDir ?? VTUBER_DEFAULTS.musicDir,
+      musicVolume: () => cfg.musicVolume ?? VTUBER_DEFAULTS.musicVolume,
+      musicGenerationUrl: () => cfg.musicGenerationUrl ?? VTUBER_DEFAULTS.musicGenerationUrl,
       alignEnabled: () => cfg.alignEnabled,
       streamEnabled: () => cfg.streamEnabled,
       speechCapSec: () => cfg.speechCapSec,

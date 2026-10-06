@@ -25,6 +25,9 @@ export interface EngineConfigSnapshot {
   audioDevice?: string;
   audioMirrorSystem?: boolean;
   audioSecondary?: string;
+  musicDir?: string;
+  musicVolume?: number;
+  musicGenerationUrl?: string;
   alignEnabled?: boolean;
   streamEnabled?: boolean;
   speechCapSec?: number;
@@ -91,7 +94,8 @@ export type EnginePanel =
   | 'perform'
   | 'clips'
   | 'overlay'
-  | 'model';
+  | 'model'
+  | 'music';
 
 /** init 的回执:演出流的实际地址(偏好端口被占会顺延) */
 export interface EngineReady {

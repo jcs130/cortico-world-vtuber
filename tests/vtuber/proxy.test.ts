@@ -1,7 +1,7 @@
 import { legacyTap } from '../helpers/fixture-stream.ts';
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EventEnvelope, WorldHost, PushOptions } from 'cortico/core/types.ts';
@@ -117,9 +117,22 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
   let host: FakeHost;
   let tts: Server;
   let ttsUrl: string;
+  const ttsInputs: string[] = [];
   let serverDir: string;
   let proxy: VtuberWorldProxy;
   let live2dDir = '';
+
+  async function freshProxy(): Promise<void> {
+    if (proxy) await proxy.stop();
+    proxy = new VtuberWorldProxy({
+      botName: 'bot', streamPort: 0, vtsWsUrl: 'ws://127.0.0.1:1', ttsUrl,
+      audioDevice: () => 'none', speechCapSec: () => 30,
+      ttsVoicesDir: () => join(serverDir, 'voices'), live2dDir: () => live2dDir,
+      musicDir: () => existsSync(join(serverDir, 'catalog.json')) ? serverDir : '',
+      musicVolume: () => 0.4,
+    });
+    await proxy.start(host);
+  }
 
   beforeAll(async () => {
     host = new FakeHost();
@@ -128,8 +141,13 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     writeFileSync(join(serverDir, 'voices', 'mei.wav'), Buffer.from(makeWav(new Array(160).fill(0.2))));
     // VoxCPM2 测试夹具固定返回 3s 音频,提供可打断的播放窗口。
     tts = createServer((req, res) => {
-      req.on('data', () => {});
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk) => chunks.push(chunk));
       req.on('end', () => {
+        try {
+          const input = JSON.parse(Buffer.concat(chunks).toString('utf8')).input;
+          if (typeof input === 'string') ttsInputs.push(input);
+        } catch { /* health request */ }
         res.writeHead(200, { 'Content-Type': 'audio/wav' });
         res.end(Buffer.from(makeWav(new Array(48000).fill(0.4))));
       });
@@ -137,17 +155,7 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     await new Promise<void>((r) => tts.listen(0, '127.0.0.1', () => r()));
     const ttsPort = (tts.address() as { port: number }).port;
     ttsUrl = `http://127.0.0.1:${ttsPort}`;
-    proxy = new VtuberWorldProxy({
-      botName: 'bot',
-      streamPort: 0,
-      vtsWsUrl: 'ws://127.0.0.1:1',
-      ttsUrl,
-      audioDevice: () => 'none',
-      speechCapSec: () => 30,
-      ttsVoicesDir: () => join(serverDir, 'voices'),
-      live2dDir: () => live2dDir,
-    });
-    await proxy.start(host);
+    await freshProxy();
   }, 60_000);
 
   afterAll(async () => {
@@ -180,8 +188,8 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     await waitFor(() => !proxy.live);
   });
 
-  it('代理工具表只有 vtuber_act 与 vtuber_interrupt', () => {
-    expect(proxy.tools().map((tool) => tool.name)).toEqual(['vtuber_act', 'vtuber_interrupt']);
+  it('代理工具表声明台词、打断与歌曲', () => {
+    expect(proxy.tools().map((tool) => tool.name)).toEqual(['vtuber_act', 'vtuber_interrupt', 'vtuber_music']);
   });
 
   it('vtuber_act 直连:回执从子进程原样返回,空 script 沉默', async () => {
@@ -215,6 +223,8 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
   });
 
   it('outputTap 增量过界:流式喂字后 handler 回「已开演(流式)」', async () => {
+    // Each scenario gets its own admission history; the burst guard is production behavior.
+    await freshProxy();
     const tap = legacyTap(proxy.outputTap());
     const script = '流式演出的一句话。';
     tap.onDelta({ type: 'tool_call.begin', index: 0, id: 't1', name: 'vtuber_act' });
@@ -229,6 +239,7 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
   });
 
   it('outputTap 断流经子进程丢弃待定容器，不留下已流式演出的账', async () => {
+    await freshProxy();
     const tap = legacyTap(proxy.outputTap());
     const script = JSON.stringify(['子进程断流不播这一句。']);
     const args = JSON.stringify({ script });
@@ -293,6 +304,7 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
   });
 
   it('vtuber_interrupt:收束回执 + 结果事件在回执前跨回主进程', async () => {
+    await freshProxy();
     const act = proxy.tools().find((t) => t.name === 'vtuber_act');
     const stop = proxy.tools().find((t) => t.name === 'vtuber_interrupt');
     if (!act || !stop) throw new Error('missing tools');
@@ -303,6 +315,41 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     expect(host.outcomes.some(r => r.callId === 'i1')).toBe(true);
     const revision = host.outcomes.find((r) => r.callId === 'i1');
     expect(revision?.script).not.toContain('打断测试');
+  });
+
+  it('music 工具、热配置和 panel state/play/stop 全部跨 IPC 可用', async () => {
+    const lyrics = [{ atMs: 0, endMs: 10_000, text: 'Example lyric' }];
+    writeFileSync(join(serverDir, 'catalog.json'), JSON.stringify({ version: 1, tracks: [{ id: 'song', title: 'Example', wavFile: 'song.wav', lyricsFile: 'lyrics.json' }] }));
+    writeFileSync(join(serverDir, 'lyrics.json'), JSON.stringify({ version: 1, lines: lyrics }));
+    writeFileSync(join(serverDir, 'song.wav'), makeWav(new Array(160_000).fill(0.2)));
+    ttsInputs.length = 0;
+    const invoke = proxy.console().invoke!;
+    const state = await invoke('music', 'state', []) as { tracks: Array<{ id: string; durationMs: number }>; volume: number };
+    expect(state.tracks).toEqual([{ id: 'song', title: 'Example', durationMs: 10_000, envelopeSource: 'mix', lyrics }]);
+    expect(state.volume).toBe(0.4);
+    const music = proxy.tools().find((tool) => tool.name === 'vtuber_music')!;
+    const accepted = await music.handler({ action: 'play', trackId: 'song', intro: 'intro', outro: 'outro' }, { role: 'main', log: host.log });
+    expect(JSON.parse(accepted as string).ok).toBe(true);
+    expect(accepted).not.toContain('"lyrics"');
+    await waitFor(() => host.events.some(({ e }) => e.type === 'vtuber.music' && (e.meta?.music as { status: string }).status === 'playing'));
+    expect(ttsInputs).toEqual(['intro', 'outro']);
+    expect((await proxy.musicConsole().state()).current).toMatchObject({ lyrics });
+    for (const action of ['list', 'status']) {
+      const text = await music.handler({ action }, { role: 'main', log: host.log }) as string;
+      expect(text).not.toContain('"lyrics"');
+      expect(JSON.parse(text).tracks[0]).toMatchObject({ id: 'song', title: 'Example', durationMs: 10_000 });
+    }
+    const stopped = await invoke('music', 'stop', []) as { ok: boolean; last: { status: string } };
+    expect(stopped.ok).toBe(true);
+    expect(stopped.last.status).toBe('stopped');
+    expect(await proxy.musicConsole().state()).toMatchObject({ queue: [], volume: 0.4, last: { status: 'stopped' } });
+    const panelAccepted = await invoke('music', 'play', ['song', { intro: 'panel intro', outro: 'panel outro' }]) as { ok: boolean };
+    expect(panelAccepted.ok).toBe(true);
+    await waitFor(() => ttsInputs.includes('panel intro'));
+    await proxy.musicConsole().stop();
+    const toolStop = await music.handler({ action: 'stop' }, { role: 'main', log: host.log }) as string;
+    expect(toolStop).not.toContain('"lyrics"');
+    expect(JSON.parse(toolStop).last.trackId).toBe('song');
   });
 
   it('shutdown 一经接收就拒绝后续面板 RPC', async () => {

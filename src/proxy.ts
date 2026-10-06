@@ -20,10 +20,12 @@ import { fileURLToPath } from 'node:url';
 import type {
   World,
   WorldHost,
+  WorldRequestFacts,
   Logger,
   WorldConsoleDecl,
   OutputTap,
   ToolDef,
+  ToolOutcome,
 } from 'cortico/core/types.ts';
 import { nowIso } from 'cortico/core/util.ts';
 import { emitLogNote } from 'cortico/core/ipc-logger.ts';
@@ -41,6 +43,7 @@ import {
   type VtuberClipsConsole,
   type VtuberDiagConsole,
   type VtuberLogConsole,
+  type VtuberMusicConsole,
   HANDOFF_NOTE,
   type VtuberWorldOptions,
   type VtuberOverlayConsole,
@@ -129,6 +132,7 @@ export class VtuberWorldProxy implements World {
   private readonly pending = new Map<number, PendingRpc>();
   private urls: EngineReady | null = null;
   private statusCache: string | null = null;
+  private statusObservedAt: string | null = null;
   private liveCache = false;
   /** 演出状态挂单时刻;null=没有在途挂单(见 armStatus) */
   private statusArmedAt: number | null = null;
@@ -198,6 +202,7 @@ export class VtuberWorldProxy implements World {
     diag: ['state', 'report', 'record', 'presets', 'perform'],
     tts: ['state', 'runtime', 'installRuntime', 'downloadModel', 'start', 'stop', 'setProfile', 'saveVoice', 'voiceWav', 'test'],
     align: ['state', 'units', 'align', 'synth'],
+    music: ['state', 'play', 'stop', 'generate', 'cancelGeneration'],
   };
 
   /**
@@ -336,7 +341,7 @@ export class VtuberWorldProxy implements World {
             { kind: 'tool', name: decl.name, args, role: ctx.role, callId: ctx.callId ?? null, round: ctx.round ?? null },
             RPC_TIMEOUT_MS,
             ctx.signal,
-          )) as string;
+          )) as string | ToolOutcome;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return `[${decl.name} 失败] 演出引擎进程不可用:${msg}`;
@@ -362,6 +367,16 @@ export class VtuberWorldProxy implements World {
   /** 演出状态一行;子进程状态推送的缓存,新鲜度 300ms 级 */
   statusLine(): string | null {
     return this.ready ? this.statusCache : null;
+  }
+
+  /** 完整演出状态取自本连接已收到的通知；读取不更新观察时刻。 */
+  requestFacts(): WorldRequestFacts | null {
+    if (!this.ready || this.stopping || !this.child?.connected
+      || !this.statusCache || !this.statusObservedAt) return null;
+    return {
+      text: `[演出当前读数；观察 ${this.statusObservedAt}]\n${this.statusCache}`,
+      snapshotTypes: ['vtuber.status'],
+    };
   }
 
   /** 在播判据来自子进程状态推送(overlay 有消费者);崩溃重启的空窗算不在播 */
@@ -436,6 +451,7 @@ export class VtuberWorldProxy implements World {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.statusObservedAt = null;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     this.restartTimer = null;
     if (this.configTimer) clearInterval(this.configTimer);
@@ -521,6 +537,16 @@ export class VtuberWorldProxy implements World {
     };
   }
 
+  musicConsole(): Asyncified<VtuberMusicConsole> {
+    return {
+      state: () => this.panelCall('music', 'state'),
+      play: (trackId, options) => this.panelCall('music', 'play', options ? [trackId, options] : [trackId]),
+      stop: () => this.panelCall('music', 'stop'),
+      generate: (request, requestKey) => this.panelCall('music', 'generate', requestKey ? [request, requestKey] : [request]),
+      cancelGeneration: (jobId) => this.panelCall('music', 'cancelGeneration', [jobId]),
+    };
+  }
+
   overlayConsole(): Asyncified<VtuberOverlayConsole> {
     return {
       state: () => this.panelCall('overlay', 'state'),
@@ -539,7 +565,9 @@ export class VtuberWorldProxy implements World {
     });
     this.child = child;
     attachStdio(child, () => this.host?.log);
-    child.on('message', (msg) => this.onMessage(msg as ChildToMain));
+    child.on('message', (msg) => {
+      if (this.child === child) this.onMessage(msg as ChildToMain);
+    });
     child.on('exit', (code) => this.onExit(code));
     child.on('error', (err) => {
       const msg = String(err);
@@ -559,6 +587,7 @@ export class VtuberWorldProxy implements World {
     this.ready = false;
     this.urls = null;
     this.statusCache = null;
+    this.statusObservedAt = null;
     this.liveCache = false;
     this.statusArmedAt = null;
     this.declCache = {};
@@ -669,7 +698,9 @@ export class VtuberWorldProxy implements World {
         host.reportUsage(note.usage, note.opts);
         return;
       case 'status':
+        if (this.stopping || !this.child?.connected) return;
         this.statusCache = note.line;
+        this.statusObservedAt = nowIso(this.opts.timezone ?? 'Asia/Shanghai');
         this.liveCache = note.live;
         this.declCache = note.decl;
         // 状态推送 ~300ms 一次,顺路当演出状态挂单的驱动时钟
@@ -777,6 +808,9 @@ export class VtuberWorldProxy implements World {
     if (o.audioDevice) s.audioDevice = o.audioDevice() ?? d.audioDevice;
     if (o.audioMirrorSystem) s.audioMirrorSystem = o.audioMirrorSystem() ?? d.audioMirrorSystem;
     if (o.audioSecondary) s.audioSecondary = o.audioSecondary() ?? d.audioSecondary;
+    if (o.musicDir) s.musicDir = o.musicDir() ?? d.musicDir;
+    if (o.musicVolume) s.musicVolume = o.musicVolume() ?? d.musicVolume;
+    if (o.musicGenerationUrl) s.musicGenerationUrl = o.musicGenerationUrl() ?? d.musicGenerationUrl;
     if (o.alignEnabled) s.alignEnabled = o.alignEnabled() ?? d.alignEnabled;
     if (o.streamEnabled) s.streamEnabled = o.streamEnabled() ?? d.streamEnabled;
     if (o.speechCapSec) s.speechCapSec = o.speechCapSec() ?? d.speechCapSec;

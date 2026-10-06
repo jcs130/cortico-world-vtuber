@@ -47,6 +47,40 @@ body.bg-dim { background: #1c1a17; }
   transition: opacity 0.35s ease;
 }
 .bubble.out { opacity: 0; }
+.ingame .bubbles { bottom: 9%; }
+.ingame .bubble {
+  position: relative;
+  padding: 14px 21px;
+  border: 1px solid rgba(216, 238, 232, 0.9);
+  border-radius: 18px;
+  background: linear-gradient(145deg, rgba(20, 39, 49, 0.94), rgba(31, 35, 57, 0.93));
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4), inset 0 1px rgba(255, 255, 255, 0.14);
+}
+.ingame .bubble[data-speaker]:not([data-speaker=""])::before {
+  content: attr(data-speaker);
+  position: absolute;
+  top: -18px;
+  left: 18px;
+  padding: 2px 11px;
+  border-radius: 8px 8px 0 0;
+  background: rgba(48, 72, 85, 0.97);
+  color: #e5f8f3;
+  font: 700 13px/1.25 'Microsoft YaHei', sans-serif;
+  letter-spacing: 0.08em;
+}
+.ingame .bubble::after {
+  content: '';
+  position: absolute;
+  bottom: -8px;
+  left: calc(50% - 8px);
+  width: 15px;
+  height: 15px;
+  transform: rotate(45deg);
+  border-right: 1px solid rgba(216, 238, 232, 0.9);
+  border-bottom: 1px solid rgba(216, 238, 232, 0.9);
+  background: rgba(27, 37, 54, 0.95);
+}
+.ingame .bubble .body { font-size: calc(clamp(20px, 2vw, 27px) * var(--sub-scale)); }
 .bubble .body {
   font-size: calc(clamp(18px, 3.4vmin, 44px) * var(--sub-scale));
   font-weight: var(--sub-weight);
@@ -114,3 +148,51 @@ body.bg-dim { background: #1c1a17; }
   from { transform: translateX(0); }
   to { transform: translateX(calc(-100vw - 100%)); }
 }
+
+/* 歌曲状态位于右上角，字幕保留底部空间。 */
+.music-card {
+  position: absolute;
+  top: 3%;
+  right: 3%;
+  width: clamp(170px, 24vw, 320px);
+  max-width: 45%;
+  padding: 12px 16px;
+  border: 1px solid rgba(216, 238, 232, .65);
+  border-radius: 14px;
+  background: rgba(20, 31, 42, .88);
+  color: #fffef8;
+  font-family: 'Microsoft YaHei', sans-serif;
+  pointer-events: none;
+}
+.music-card[hidden] { display: none; }
+.music-heading { font-size: clamp(14px, 2vmin, 22px); font-weight: 600; overflow-wrap: anywhere; }
+.music-time { margin-top: 5px; font-size: clamp(11px, 1.5vmin, 15px); opacity: .8; font-variant-numeric: tabular-nums; }
+.music-progress { display: block; width: 100%; height: 5px; margin-top: 8px; accent-color: #9ee2d0; }
+
+/* 游戏内 iframe 高度仅 152–178px，歌曲状态使用顶部单行，留出原字幕与姓名牌。 */
+.ingame .music-card {
+  top: 4px;
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+  width: calc(100% - 48px);
+  max-width: 500px;
+  height: 28px;
+  padding: 4px 10px 5px;
+  border-radius: 9px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 10px;
+}
+.ingame .music-card[hidden] { display: none; }
+.ingame .music-heading { font-size: 13px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ingame .music-time { margin: 0; font-size: 11px; line-height: 16px; }
+.ingame .music-progress { position: absolute; bottom: 0; left: 7px; width: calc(100% - 14px); height: 2px; margin: 0; }
+.music-lyrics { position: absolute; bottom: 7%; left: 50%; transform: translateX(-50%); width: calc(100% - 48px); max-width: 900px; text-align: center; font-family: var(--sub-font, 'Microsoft YaHei', sans-serif); line-height: 1.4; color: #fffef8; text-shadow: 0 2px 4px #000, 1px 0 2px #000, -1px 0 2px #000; }
+.music-lyrics[hidden] { display: none; }
+.music-lyric-current { font-size: calc(clamp(24px, 3vmin, 36px) * var(--sub-scale)); font-weight: 600; color: #ffedb3; }
+.music-lyric-next { font-size: calc(clamp(16px, 2vmin, 24px) * var(--sub-scale)); opacity: .7; min-height: 1.4em; }
+.lyrics-on .bubbles { visibility: hidden; }
+.ingame .music-lyrics { bottom: 14px; max-width: 660px; }
+.ingame .music-lyric-current { font-size: calc(24px * var(--sub-scale)); }
+.ingame .music-lyric-next { font-size: calc(17px * var(--sub-scale)); }

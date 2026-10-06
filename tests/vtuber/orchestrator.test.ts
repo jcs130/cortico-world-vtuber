@@ -16,7 +16,7 @@ import {
 import { SILENCE_MIN_MS } from '../../src/silence-scan.ts';
 import type { SubtitleCue } from '../../src/subtitle-cues.ts';
 import type { StateCue } from '../../src/states.ts';
-import { Envelope, StreamingEnvelope, type TtsPiece } from '../../src/tts.ts';
+import { Envelope, StreamingEnvelope, TtsSkipped, type TtsPiece } from '../../src/tts.ts';
 import { EXAMPLE_PACK_DIR, loadPack } from '../../src/pack.ts';
 
 const pack = loadPack(EXAMPLE_PACK_DIR);
@@ -94,6 +94,7 @@ function makePerformer(
     units?: (text: string) => AlignedUnit[];
     broadcastFloorMs?: () => number;
     onDrained?: () => void;
+    skipText?: string;
   } = {},
 ) {
   const mixer = new CueRecorder();
@@ -136,6 +137,7 @@ function makePerformer(
     tts: {
       synth: async (text) => {
         synthCalls.push(text);
+        if (text === opts.skipText) throw new TtsSkipped();
         const piece = fakePiece(text, pieceMs, opts.env);
         if (opts.units) piece.units = opts.units(text);
         return piece;
@@ -157,6 +159,7 @@ function makePerformer(
 /** 流式假 TTS:每单元 unitMs 毫秒音频,20ms 块以约 5 倍速流出(RTF≈0.2) */
 function makeStreamPerformer(opts: {
   align: boolean;
+  skipText?: string;
   unitMs?: number;
   unitsOnDone?: boolean;
   alignPcm?: PerformerTts['alignPcm'];
@@ -185,12 +188,15 @@ function makeStreamPerformer(opts: {
   const mixer = new CueRecorder();
   const fx: string[] = [];
   const played: Array<{ text: string; startedAt: number; endedAt?: number }> = [];
+  const synthCalls: string[] = [];
   const stops: number[] = [];
   const cuts: Array<{ atMs: number; cls: string; fadeMs: number }> = [];
   const SR = 16000;
   const unitMs = opts.unitMs ?? 50;
   let phase = 0;
   const synthStream: NonNullable<PerformerTts['synthStream']> = async (text, sink, signal, maxDurationMs) => {
+    synthCalls.push(text);
+    if (text === opts.skipText) throw new TtsSkipped();
     const env = new StreamingEnvelope(SR);
     sink.begin?.({ sampleRate: SR, envelope: env });
     const units = segmentUnits(text);
@@ -331,7 +337,7 @@ function makeStreamPerformer(opts: {
     rng: () => 0.5,
   });
   performer.start();
-  return { performer, mixer, fx, played, stops, cuts, traces, subtitles };
+  return { performer, mixer, fx, played, synthCalls, stops, cuts, traces, subtitles };
 }
 
 describe('Performer', () => {
@@ -339,6 +345,29 @@ describe('Performer', () => {
   afterEach(() => {
     for (const fn of cleanup) fn();
     cleanup = [];
+  });
+
+  it.each(['whole', 'stream'] as const)('%s continues the queue after a server skip without playing or retrying the skipped text', async (mode) => {
+    const skipped = '此前已播出的文本。';
+    const next = '这是新的结果。';
+    const p = mode === 'whole' ? makePerformer({ skipText: skipped })
+      : makeStreamPerformer({ align: false, skipText: skipped });
+    cleanup.push(() => p.performer.stop());
+    p.performer.perform(`${skipped}【】${next}`);
+    await waitFor(() => p.played.length === 1 && p.performer.status().queuedBeats === 0
+      && !p.performer.status().playing);
+    expect(p.synthCalls).toEqual([skipped, next]);
+    expect(p.played.map((played) => typeof played === 'string' ? played : played.text)).toEqual([next]);
+    expect(p.performer.status().playing).toBe(false);
+  });
+
+  it('情绪标记单独成拍时不合成，下一句仍把标记交给语音网关', async () => {
+    const p = makePerformer();
+    cleanup.push(() => p.performer.stop());
+    p.performer.perform('【点头】(紧张@0.6)【微笑】我来了。');
+    await waitFor(() => p.played.length === 1 && p.performer.status().queuedBeats === 0);
+    expect(p.synthCalls).toEqual(['(紧张@0.6)我来了。']);
+    expect(p.played).toEqual(['(紧张@0.6)我来了。']);
   });
 
   it('整轮演出:cue 按同拍次序发出,语音按序播放,风格随脚本序状态', async () => {
@@ -522,6 +551,26 @@ describe('Performer <> 锚点(四组合)', () => {
     const cueTs = p.mixer.gestureCues[0].startTs;
     expect(cueTs).toBeGreaterThanOrEqual(seam - 30);
     expect(cueTs - seam).toBeLessThanOrEqual(200);
+  });
+
+  it.each([
+    ['(轻松@0.4)<点头>我来了。', ['(轻松@0.4)我来了。']],
+    ['(轻松@0.4)<点头>(平静@0.3)<微笑>我来了。', ['(轻松@0.4)(平静@0.3)我来了。']],
+    ['前半段落<点头>(开心@0.5)<微笑>后半段落', ['前半段落', '(开心@0.5)后半段落']],
+    ['我来了。<点头>(开心@0.5)', ['我来了。']],
+    ['(河豚有毒)<点头>别急着吃。', ['(河豚有毒)', '别急着吃。']],
+  ])('无对齐流式锚点不把情绪标记单独送入 TTS: %s', async (script, expected) => {
+    const p = makeStreamPerformer({ align: false, unitMs: 40 });
+    cleanup.push(() => p.performer.stop());
+    const round = p.performer.beginRound();
+    for (const ch of script) round.feed(ch);
+    round.end();
+    await waitFor(() => p.played.length === expected.length
+      && p.mixer.gestureCues.some((cue) => cue.clipId === 'nod')
+      && p.performer.status().queuedBeats === 0, 5000);
+    expect(p.synthCalls).toEqual(expected);
+    expect(p.played.map((r) => r.text)).toEqual(expected);
+    expect(p.mixer.gestureCues.filter((cue) => cue.clipId === 'nod')).toHaveLength(1);
   });
 
   it('组合④流式+对齐:整片一段,锚点按收流对齐的时间点触发', async () => {

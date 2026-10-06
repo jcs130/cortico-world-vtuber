@@ -1,6 +1,6 @@
 /**
  * VTuber 演出 World 的面板 bundle —— 挂载 / 模型档案 / Overlay / 动作调参 / 声线档案 /
- * 时间点标注 / 离线歌曲 / 演出日志 / 演出诊断九个面板。
+ * 时间点标注 / 歌曲播放 / 演出日志 / 演出诊断九个面板。
  *
  * 这个文件只做两件事:**装配**(把面板接到局部 id 上)与**共享 helper**
  * (类型、错误措辞、几个输入与资源生命周期包装)。面板本体各在自己的文件里。
@@ -32,6 +32,7 @@ import { ttsPanel } from './tts.ts';
 import { alignPanel } from './align.ts';
 import { logPanel } from './log.ts';
 import { diagPanel } from './diag.ts';
+import { musicPanel } from './music.ts';
 
 // ---------------------------------------------------------------------------
 // 共享类型:服务端 `VtuberWorldProxy.invokePanel` 各方法的返回形状
@@ -463,6 +464,7 @@ const bundle: ConsoleClientBundle = {
     clips: clipsPanel,
     tts: ttsPanel,
     align: alignPanel,
+    music: musicPanel,
     log: logPanel,
     diag: diagPanel,
   },

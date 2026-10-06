@@ -391,11 +391,12 @@ export class DeviceAudioSink implements AudioSink {
     return this.audify;
   }
 
-  play(piece: TtsPiece): Promise<{ startedAt: number; ended: Promise<number> }> {
+  play(piece: TtsPiece, options: { volume?: number; strict?: boolean } = {}): Promise<{ startedAt: number; ended: Promise<number> }> {
     let decoded: { samples: Float32Array; sampleRate: number };
     try {
       decoded = decodeWav(piece.wav);
     } catch (err) {
+      if (options.strict) return Promise.reject(new Error('歌曲 WAV 解码失败'));
       // 解码失败按估算时长插入静音,保持演出时间线前进。
       this.trace('音频', `⚠ wav 解码失败,按时长占位:${String(err).slice(0, 60)}`);
       const startedAt = this.now();
@@ -405,6 +406,13 @@ export class DeviceAudioSink implements AudioSink {
       });
     }
     this.ensureOpen(decoded.sampleRate);
+    if (options.strict && !this.rt && (this.opts.device?.() ?? '').trim().toLowerCase() !== 'none') {
+      return Promise.reject(new Error('歌曲主音频输出设备不可用'));
+    }
+    if (options.volume !== undefined) {
+      const gain = Math.max(0, Math.min(1, options.volume));
+      for (let i = 0; i < decoded.samples.length; i++) decoded.samples[i] *= gain;
+    }
     const data = floatToInt16(decoded.samples);
     return new Promise((resolveStart) => {
       let resolveEnd!: (ts: number) => void;

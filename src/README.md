@@ -1,7 +1,9 @@
-# cortico-world-vtuber
+# `world.ts` / `VtuberWorld`
 
 直播演出 World:消费弹幕与对局事件,输出混编 TTS 语音与 Live2D 动作的连续演出。
 设计文档见 [vtuber_performance_module_design.md](vtuber_performance_module_design.md)。
+
+流式与整段提交的 `vtuber_act` 共用最近五分钟、最多十六份完整台本的重复检查。整段入口使用工具上下文的 `round` 识别同轮分段；缺少轮号时只可沿用仍打开的流式轮。不同轮次重复台本在发送 TTS 前拒收，新台本照常流式或整段排入。
 
 ## 分层
 
@@ -12,6 +14,103 @@
 | L3 | `mixer.ts` + 演出包里的曲线(`pack.ts` 加载,`clips.ts` 只剩缓动与采样数学) | 决定参数值。60Hz 逐帧求值与仲裁 |
 | L4 | `backend.ts`(经 `vts-client.ts`)+ 模型档案(模型目录里的 `cortico.profile.json`,`models/` 负责发现与校验) | IR → VTS `InjectParameterData` 注入,无状态;语义量→实机输入量的换算表是模型目录里的数据 |
 | 旁路 | `diagnostics.ts` | 事件环 + 逐帧分层归因 + 录制导出。不挂时零开销 |
+
+## 歌曲与原创点歌
+
+`vtuber_music` 接受 `action: list | play | status | stop | generate | cancel`；`play` 必须使用 `list`
+返回的 `trackId`（目录项的 `id`）。工具不接受任意文件路径，也不调用 TTS 唱歌。
+`generate` 提交观众要求、标题、原创歌词、通用曲风和 30–120 秒整数时长，立即返回后台任务。
+`worlds.vtuber.musicGenerationUrl` 指向提供 `/jobs` 的生成网关，留空关闭原创点歌。
+模型、参考音频、凭据和内容审核由部署配置管理；`music-generation.ts` 负责异步状态与重载后的回执去重，
+`music-generation-gateway.py` 提供串行生成、语义审核和真实音频转写验证。审核缺失、不确定、超时或失败
+不会发布曲目。任务完成产生 `vtuber.composition`，Persona 选择演唱时机，游戏和交流可以继续。
+`cancel` 只取消指定生成任务，`stop` 只停止歌曲播放。生成曲目必须有 `aiGenerated:true`、
+`contentApproved:true`、`audioValidated:true`；播放画面持续显示“AI生成”。这些审核状态不代表版权保证。
+
+### `music-generation-gateway.py` 部署
+
+运行 `python src/music-generation-gateway.py --config /absolute/private/gateway.json`。
+该独立服务只绑定本机，Python 环境需已有 CPU 版 Whisper、PyTorch 与本地识别模型；
+使用部署现有的 FFmpeg 和 ComfyUI，不下载模型，不中断共享 GPU 队列。
+可选安装 OpenCC，在歌词完整度比对时统一简繁字形；原始转写与送审文字仍保留，不按草稿改写唱词。
+私有 JSON 配置包含：
+
+```json
+{
+  "host":"127.0.0.1", "port":8195,
+  "stateDir":"/absolute/private/song-jobs",
+  "musicDir":"/absolute/private/music",
+  "promptTemplateFile":"/absolute/private/comfy-song-api-prompt.json",
+  "referenceAudio":"authorized-synthetic-reference.wav",
+  "referenceAudioAuthorized":true,
+  "comfy":{"endpoint":"http://127.0.0.1:8188"},
+  "review":{"endpoint":"https://your-review-service/chat/completions","model":"your-review-model","apiKey":"private-secret","extraBody":{"enable_thinking":false}},
+  "asr":{"modelFile":"/absolute/private/whisper-model.pt","language":"zh"},
+  "ffmpegFile":"/absolute/bin/ffmpeg",
+  "ffprobeFile":"/absolute/bin/ffprobe"
+}
+```
+
+参考音频是 ComfyUI 已登记的 input 文件名，必须具有使用授权；参考传递音色不保证歌手身份一致。
+需要独立转换歌声音色时，使用纯文本歌曲生成加 SVC 分轨转换流程，部署和验收说明见
+[MUSIC_VOICE.md](MUSIC_VOICE.md)。该流程使用原始录音作为参考，不把 TTS 扩长音频或随机种子差异当作音色克隆证据。
+API 模板必须含 `TextEncodeAceStepAudio1.5`、`EmptyAceStep1.5LatentAudio`、`LoadAudio` 及音频保存节点，
+保留部署验证过的模型与参考音频接线。提交时替换歌词、曲风、时长、随机种子和输出前缀。
+审核接口使用独立可信 system 政策，把点歌要求和实际唱词作为待检查数据；`extraBody` 是可信部署参数，
+不能覆盖模型或消息。服务或审核不可用、未知提交结果、歌词覆盖不足均不加入曲库。
+
+`POST /jobs` 接受 `{requestKey,requesterKey?,requestText,title,lyrics,style,durationSec,intro?,outro?}`，
+同一 `requestKey` 持久去重；`GET /jobs` / `GET /jobs/{jobId}` 查询状态，
+`POST /jobs/{jobId}/cancel` 只取消本任务结果，`GET /health` 检查服务。
+默认上限为队列 6 个、每小时总请求 8 个、每观众每小时 2 个；`limits` 可配置。
+生成及检查记录仅存 `stateDir`，含观众提交内容；该目录与审核密钥须留在私有部署，不能提交到源码仓库。
+启动恢复已知 GPU 任务，未知 POST 结果不重提；已通知终态在 World 的诊断目录留去重记录。
+服务只发布有审核、音频验证和 AI 标识的资产；部署仍需核对模型、音色及平台的使用许可。
+
+`worlds.vtuber.musicDir` 由部署配置指向私有曲库，留空停用。目录内的 `catalog.json`：
+
+```json
+{"version":1,"tracks":[{"id":"example-song","title":"Example song","wavFile":"example.wav","vocalFile":"example-vocal.wav","lyricsFile":"example-lyrics.json","description":"Optional description"}]}
+```
+
+`wavFile` 和可选 `vocalFile` 均是目录内相对 WAV 路径（真实路径也必须在目录内）。
+时长从 WAV 样本读取，清单不提供时长；vocalFile 是同步人声分轨，时长差最多 100ms。
+没有人声分轨时，口型使用整曲混音振幅包络，这是近似。可选 `lyricsFile` 是目录内相对 JSON 路径：
+
+```json
+{"version":1,"lines":[{"atMs":1000,"endMs":5000,"text":"An example lyric"}]}
+```
+
+歌词区间使用相对歌曲开播的整数毫秒，满足 `0 <= atMs < endMs <= 真实 WAV 时长`，
+按时间排序且不重叠；最多 500 行、每行 300 字符、文件最多 256 KiB。无歌词文件时
+不生成歌词时轴，字幕端不推断唱词。词轴是部署提供的数据，不代表自动逐字对齐。
+当前声卡解码沿用既有单声道输出，立体声 WAV 会折成单声道。
+
+歌曲作为完整媒体片追加到普通 Performer 队列，回执只说明已受理，不等待唱完；
+`play` 可带 `intro`/`outro` 普通台词（各最多 500 字符）；含内部角色消息标记时整次调用拒绝入队。同一次调用原子排入
+开场 → 歌曲 → 收尾，其他并发台词只能排在整段之后，专属台词使用既有普通 TTS。
+同一个 DeviceAudioSink 与实际 `audioDevice`/副输出配置负责台词和歌曲，逐片串行。
+歌曲不占台词时长预算，音频见底与静默提醒包含歌曲。
+歌曲队列最多 10 首；`musicVolume` 默认 0.65，范围 0–1，热改在下一首开始时生效。
+`vtuber_music stop` 只停止歌曲及其专属开场/待播收尾，移除排队歌曲，保留其他普通台词；`vtuber_interrupt`
+仍打断整个演出。WAV 无效或主设备不可用会失败，不以静音占位冒充成功（显式设备
+`none` 仍按测试/静音时间线运行）。
+
+控制台 `music` 面板调用 `state([])`、`play([trackId,{intro?,outro?}])`（第二参数可省略）、`stop([])`。
+`state` 返回 `{tracks,current,queue,last,volume,generation?,error?}`；曲目为
+`{id,title,durationMs,envelopeSource:'vocal'|'mix',description?,lyrics?,aiGenerated?}`。
+`generate([request,requestKey?])` 提交后台原创，`cancelGeneration([jobId])` 取消该创作；
+`generation` 带 `{enabled,jobs,error?}`，面板仅展示审核后可公开的任务信息。
+`play`/`stop` 返回 `{ok,message,current,queue,last}`。
+播放对象统一为 `{kind:'music',playbackId,trackId,title,status,durationMs,startedAt,volume,envelopeSource,lyrics?,error?}`，
+`status` 为 `queued | playing | ended | stopped | failed`，`startedAt` 为 Unix epoch 毫秒或 null。
+`current` 仅是正在播放的歌曲，`queue` 为待播歌曲，`last` 为最近一个终态。
+`lyrics` 为已校验的 `[{atMs,endMs,text}]`；`ended` 仅表示歌曲音频结束，随后可继续播专属收尾。
+停止已结束歌曲的尚未播出收尾不会将既有 `ended` 回执改写为 `stopped`。
+SSE `type:'music'` 的数据带 `{kind:'music',music:播放对象}`；新连接的 `snapshot.music`
+为当前播放对象或 null。宿主同时收到 `vtuber.music` 生命周期事件，元数据在 `meta.music`。
+Agent 工具的 `list/status/play/stop` 回执保留曲目元数据、描述及真实播放状态，省略歌词时轴；
+控制台状态、SSE、宿主事件与 IPC 仍保留完整 `lyrics`，歌词数据不占工具回执上下文。
 
 ## 子进程隔离
 
@@ -27,13 +126,17 @@ x-hot 配置快照与瘦事件信封(播出延迟地板用);子 → 主是日志
 推送缓存。子进程崩溃由代理自动重启(2s 退避),重启空窗内工具回执明说引擎不可用。
 进程内组合仍然成立(module.test.ts 就这么跑),跨界链路由 proxy.test.ts 覆盖。
 
+代理的 `requestFacts()` 同步返回本连接已观察的完整演出状态与通知接收时间，可替代
+`vtuber.status` 历史快照。读取不发 RPC，也不更新观察时间；引擎未就绪、连接失效或
+开始停机时返回 null，退出后清空缓存。其他事件和完整账本仍由宿主保留。
+
 台本有三种行内记号(L1 契约):**【】阻断动作**——切开前后为两段语音,pulse 做完
 整个 clip 才继续说;**<> 非阻断动作**——不切分,按它在文本里的位置落到播放时间轴上,
 说到哪做到哪;**[] VoxCPM2 语气词**——白名单内的透传进 TTS 文本(音频里是真实的
 笑声/叹息),表外的静默剥离。空【】没有断句语义;自然气口由两次工具调用之间的
 间隔,提示词引导一次调用 1-3 段语音。
 
-情绪标记保留给语音网关，纯情绪前缀随下一段正文送出，不单独合成。圆括号内每个词都命中当前演出词表时，兼容为非阻断动作锚点，动作照常执行且不进入语音或字幕；包含事实、未知词或未闭合的普通括号照常保留。
+情绪标记保留给语音网关；无对齐流式播放按动作锚点切片时，纯情绪前缀随下一段正文送出，不单独合成。圆括号内每个词都命中当前演出词表时，兼容为非阻断动作锚点，动作照常执行且不进入语音或字幕；包含事实、未知词或未闭合的普通括号照常保留。接缝动作只触发一次。
 
 词表(L1↔L2 契约)是演出包的 `vocab.json`,由 `pack.ts` 加载并做别名归一;
 `[]` 内可透传的 VoxCPM2 语气词属于 TTS 模型,清单在 `voice-tags.ts`。TTS 流水线在 `tts.ts`;语音经
@@ -735,6 +838,8 @@ p75 正好是「典型片最多晚 1.7 秒 ≈ 慢片最多早 1.7 秒」的平�
 使用估计的埋点记录当时采用的语速及其来源，供逐次复现计算。
 
 ## 流式输出与 <> 锚点(四组合)
+
+`tts.ts` 从 `/v1/audio/speech/stream` 接收固定 44 字节 WAV 头和单声道 PCM16LE 分块。响应体关闭或调用取消会停止读流。端点在交付任何 PCM 之前失败时，`world.ts` 可带同一取消信号重试整段合成；已经交付音频的中途失败会收束当前片，并记录 `stream-failed-after-audio`，避免同句从头重播。
 
 `streamEnabled` × `alignEnabled` 两个开关拼出四种行为,运行时可用性压过开关
 (server 没带对齐模型时锚点自动落到估计,不会去走剪切路;没有流式端点时回落整段):

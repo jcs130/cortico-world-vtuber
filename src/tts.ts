@@ -275,6 +275,21 @@ export interface TtsStreamSink {
   pcm(chunk: Uint8Array): void;
 }
 
+/** 服务端明确跳过重复文本；本次没有合成音频。 */
+export class TtsSkipped extends Error {
+  readonly reason = 'duplicate';
+  constructor() { super('语音服务已跳过重复文本'); this.name = 'TtsSkipped'; }
+}
+
+function ttsResponseError(status: number, detail: string, streaming = false): Error {
+  if (status === 410) {
+    try {
+      if (JSON.parse(detail)?.error === 'dedup') return new TtsSkipped();
+    } catch { /* 非协议 JSON 保留为实际错误。 */ }
+  }
+  return new Error(`TTS${streaming ? ' stream' : ''} ${status}: ${detail.slice(0, 200)}`);
+}
+
 export class TtsClient {
   private readonly url: string;
   private readonly timeoutMs: number;
@@ -320,7 +335,7 @@ export class TtsClient {
       });
       if (!res.ok) {
         const detail = await res.text().catch(() => '');
-        throw new Error(`TTS ${res.status}: ${detail.slice(0, 200)}`);
+        throw ttsResponseError(res.status, detail);
       }
       const wav = new Uint8Array(await res.arrayBuffer());
       const decoded = decodeWav(wav);
@@ -375,7 +390,7 @@ export class TtsClient {
     });
     if (!res.ok || !res.body) {
       const detail = await res.text().catch(() => '');
-      throw new Error(`TTS stream ${res.status}: ${detail.slice(0, 200)}`);
+      throw ttsResponseError(res.status, detail, true);
     }
     const reader = res.body.getReader();
     let header = new Uint8Array(0);
@@ -456,6 +471,8 @@ export class TtsClient {
         }
       }
     } finally {
+      // 解析或接收端异常也关闭响应体,让服务端停止尚未生成的音频。
+      await reader.cancel().catch(() => {});
       reader.releaseLock();
     }
     if (envelope === null || pcmBytes === 0) throw new Error('TTS 流式合成没有产出音频');

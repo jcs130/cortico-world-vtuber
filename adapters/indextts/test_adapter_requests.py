@@ -1,0 +1,192 @@
+"""Mock adapter HTTP boundaries; no network, synthesis, audio playback, or subprocesses."""
+
+import ast
+import io
+import json
+from pathlib import Path
+import types
+import unittest
+from unittest.mock import Mock
+
+
+def load_adapter():
+    """Keep the actual request handler, skip the process-only stdout wrapper."""
+    path = Path(__file__).with_name("indextts_adapter.py")
+    tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+    tree.body = [node for node in tree.body if not (
+        isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)
+            and target.value.id == "sys" and target.attr == "stdout" for target in node.targets
+        )
+    )]
+    module = types.ModuleType("adapter_request_test")
+    exec(compile(tree, str(path), "exec"), module.__dict__)
+    return module
+
+
+class RequestTests(unittest.TestCase):
+    def setUp(self):
+        self.adapter = load_adapter()
+        self.adapter.classify_mood_decision = Mock(return_value=("happy", 0.8))
+        self.adapter.load_prefs = Mock(return_value={"voice": "taozi", "speed": 1.0})
+        self.adapter.retempo = Mock(side_effect=lambda wav, speed: wav)
+        self.adapter.urllib.request.urlopen = Mock(return_value=io.BytesIO(b"RIFFoffline"))
+        self.handler = object.__new__(self.adapter.Handler)
+        self.handler.path = "/v1/audio/speech"
+        self.handler.log_message = Mock()
+        self.handler._send = Mock()
+
+    def tearDown(self):
+        # urllib is a shared module; avoid leaving the mock installed for other tests.
+        self.adapter.urllib.request.urlopen = self.original_urlopen
+
+    def run(self, result=None):
+        import urllib.request
+        self.original_urlopen = urllib.request.urlopen
+        return super().run(result)
+
+    def request(self, text):
+        raw = json.dumps({"input": text}, ensure_ascii=False).encode("utf-8")
+        self.handler.headers = {"Content-Length": str(len(raw))}
+        self.handler.rfile = io.BytesIO(raw)
+        self.handler.do_POST()
+        self.assertEqual(self.handler._send.call_args.args[0], 200)
+        request = self.adapter.urllib.request.urlopen.call_args.args[0]
+        return json.loads(request.data), self.adapter.retempo.call_args.args[1]
+
+    def test_low_confidence_omits_both_gateway_emotion_fields(self):
+        self.adapter.classify_mood_decision.return_value = ("happy", 0.49)
+        payload, speed = self.request("我先去河边看看。")
+        self.assertNotIn("mood", payload)
+        self.assertNotIn("emo_vector", payload)
+        self.assertEqual(speed, 1)
+
+    def test_calm_omits_both_fields_even_with_explicit_tag(self):
+        payload, speed = self.request("（平静@0.8）我在河边。")
+        self.assertNotIn("mood", payload)
+        self.assertNotIn("emo_vector", payload)
+        self.assertEqual(payload["input"], "我在河边。")
+        self.assertEqual(speed, 1)
+        self.adapter.classify_mood_decision.assert_not_called()
+
+    def test_reported_sigh_never_enters_index_request_text(self):
+        payload, _ = self.request('哎呀，又掉河里了[sigh] 不过这次好像离村庄更近了~ (calm) 正在游过去。')
+        self.assertEqual(payload['input'], '哎呀，又掉河里了 不过这次好像离村庄更近了~ 正在游过去。')
+        self.assertEqual(payload['voice'], 'taozi')
+        self.assertNotIn('mood', payload)
+        self.assertNotIn('emo_vector', payload)
+        self.adapter.classify_mood_decision.assert_not_called()
+
+    def test_stream_strips_acoustic_cues_before_segmentation(self):
+        self.handler.path = '/v1/audio/speech/stream'
+        self.handler._stream = Mock()
+        raw = json.dumps({'input': '[SIGH]我先上岸。[breath]大家等一下。'}).encode('utf-8')
+        self.handler.headers = {'Content-Length': str(len(raw))}
+        self.handler.rfile = io.BytesIO(raw)
+        self.handler.do_POST()
+        payload, _, clean, _ = self.handler._stream.call_args.args
+        self.assertEqual(payload['input'], '我先上岸。大家等一下。')
+        self.assertEqual(clean, payload['input'])
+        self.assertEqual(payload['voice'], 'taozi')
+
+    def test_acoustic_cue_only_returns_silence_without_model_calls(self):
+        self.handler._stream = Mock()
+        for path in ('/v1/audio/speech', '/v1/audio/speech/stream'):
+            self.handler.path = path
+            raw = json.dumps({'input': '[sigh][breath][Uhm]'}).encode('utf-8')
+            self.handler.headers = {'Content-Length': str(len(raw))}
+            self.handler.rfile = io.BytesIO(raw)
+            self.handler.do_POST()
+            self.handler._send.assert_called_with(200, self.adapter.SILENT_WAV, 'audio/wav')
+        self.adapter.classify_mood_decision.assert_not_called()
+        self.adapter.urllib.request.urlopen.assert_not_called()
+        self.handler._stream.assert_not_called()
+
+    def test_unknown_tag_is_removed_and_body_selects_mood(self):
+        payload, _ = self.request("（轻松@0.4）我在河边。")
+        self.assertEqual(payload["input"], "我在河边。")
+        self.adapter.classify_mood_decision.assert_called_once_with("我在河边。")
+        self.assertEqual(payload["mood"], "happy")
+
+    def test_tag_only_clip_reuses_silent_wav_without_classification_or_synthesis(self):
+        self.handler._stream = Mock()
+        for path in ("/v1/audio/speech", "/v1/audio/speech/stream"):
+            with self.subTest(path=path):
+                self.handler.path = path
+                raw = json.dumps({"input": "（轻松@0.4）"}, ensure_ascii=False).encode("utf-8")
+                self.handler.headers = {"Content-Length": str(len(raw))}
+                self.handler.rfile = io.BytesIO(raw)
+                self.handler.do_POST()
+                self.handler._send.assert_called_with(200, self.adapter.SILENT_WAV, "audio/wav")
+        self.adapter.classify_mood_decision.assert_not_called()
+        self.adapter.urllib.request.urlopen.assert_not_called()
+        self.handler._stream.assert_not_called()
+
+    def test_explicit_happy_preserves_reference_and_requested_voice(self):
+        payload, speed = self.request("（开心@0.8）这把锋利 II 的剑给你。")
+        self.assertEqual(payload["voice"], "taozi")
+        self.assertEqual(payload["input"], "这把锋利二级的剑给你。")
+        self.assertEqual(payload["mood"], "happy")
+        self.assertLessEqual(sum(payload["emo_vector"]), 0.45)
+        self.assertEqual(payload["emo_vector"][7], 0)
+        self.assertEqual(speed, 1.04)
+        self.adapter.classify_mood_decision.assert_not_called()
+
+    def test_natural_mode_preference_and_global_speed_remain_compatible(self):
+        self.adapter.load_prefs.return_value = {"voice": "xiaoxue", "speed": 0.97, "emotion_mix": 0}
+        payload, speed = self.request("这把（锋利 Ⅲ）给你。")
+        self.assertEqual(payload["voice"], "xiaoxue")
+        self.assertEqual(payload["input"], "这把（锋利三级）给你。")
+        self.assertNotIn("mood", payload)
+        self.assertNotIn("emo_vector", payload)
+        self.assertEqual(speed, 0.97)
+
+    def test_sentence_and_coordinates_are_not_split_or_removed(self):
+        self.adapter.classify_mood_decision.return_value = ("calm", 0.8)
+        text = "我在（1,2,3）。我先去河边，等你回来！"
+        payload, _ = self.request(text)
+        self.assertEqual(payload["input"], text)
+        self.adapter.urllib.request.urlopen.assert_called_once()
+
+    def test_health_reports_version_port_and_bounded_mix(self):
+        self.adapter.load_prefs.return_value = {"voice": "taozi", "emotion_mix": 10}
+        self.handler.path = "/health"
+        self.handler.do_GET()
+        health = json.loads(self.handler._send.call_args.args[1])
+        self.assertEqual(health["version"], self.adapter.ADAPTER_VERSION)
+        self.assertTrue(health["streaming"])
+        self.assertEqual(health["streaming_granularity"], "text-segments")
+        self.assertEqual(health["port"], 8010)
+        self.assertEqual(health["emotion_mix"], 0.45)
+        self.assertTrue(health["reference_prosody"])
+        self.assertEqual(health['voice_cue_policy'], 'emotion-hints')
+        self.assertFalse(health['native_acoustic_cues'])
+
+    def test_empty_stream_probe_returns_without_synthesis(self):
+        self.handler.path = '/v1/audio/speech/stream'
+        self.handler.headers = {'Content-Length': '2'}
+        self.handler.rfile = io.BytesIO(b'{}')
+        self.handler.do_POST()
+        self.assertEqual(self.handler._send.call_args.args[0], 400)
+        self.adapter.urllib.request.urlopen.assert_not_called()
+
+    def test_stream_uses_same_voice_emotion_and_level_normalization(self):
+        self.handler.path = '/v1/audio/speech/stream'
+        self.handler._stream = Mock()
+        raw = json.dumps({'input': '（开心@0.3）我带着锋利 II 的剑。'}).encode('utf-8')
+        self.handler.headers = {'Content-Length': str(len(raw))}
+        self.handler.rfile = io.BytesIO(raw)
+        self.handler.do_POST()
+        payload, speed, clean, max_chars = self.handler._stream.call_args.args
+        self.assertEqual(payload['voice'], 'taozi')
+        self.assertEqual(clean, '我带着锋利二级的剑。')
+        self.assertEqual(payload['input'], clean)
+        self.assertLessEqual(sum(payload['emo_vector']), 0.45)
+        self.assertEqual(speed, 1.04)
+        self.assertEqual(payload['max_text_tokens_per_segment'], 56)
+        self.assertEqual(max_chars, 40)
+        self.adapter.classify_mood_decision.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

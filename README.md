@@ -63,6 +63,8 @@ corepack pnpm build       # esbuild → dist/console.{js,css}
 
 ## TTS 运行时与权重
 
+语音服务返回 HTTP 410 且 JSON `error:dedup` 时，表示服务端跳过重复文本。本段不播出、不回落整段重试，保留此前的 TTS 状态，演出队列继续处理后续内容；其他 HTTP 错误仍按合成失败报告。
+
 World 不带二进制也不带权重,控制台的 TTS 面板负责把它们取来:
 
 - **运行时**装到 `<运行时根>/llama.cpp-omni/<release>/<平台后端>/`。二进制来自
@@ -126,3 +128,9 @@ Type-H1 的许可 §4.5 禁止 AI 用途,模型文件本身从不出现在这个
 
 AGPL-3.0-or-later,见 [LICENSE](LICENSE)。框架 Cortico 是 MIT,两者经 HTTP 与扩展契约相连,
 许可各归各。想提 PR 见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+# IndexTTS gateway adapter
+
+The portable [IndexTTS adapter](adapters/indextts/README.md) provides text-segment
+streaming, reference prosody, emotion hints and pronunciation cleanup through an
+existing gateway. Model weights, voice references and deployment preferences are
+configured separately.

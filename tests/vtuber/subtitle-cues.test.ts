@@ -207,6 +207,17 @@ describe('computeSubtitleCues', () => {
     expect(subtitleChunks('')).toEqual([]);
   });
 
+  it('情绪权重只用于演出，不出现在观众字幕中', () => {
+    const text = '哇，通关了！(开心@0.8) 接着去领奖。(calm)';
+    const cues = computeSubtitleCues(text, { ...EST });
+    expect(cues.map((cue) => cue.text).join('').replaceAll(' ', '')).toBe('哇，通关了！接着去领奖。');
+    expect(subtitleChunks(text)).toHaveLength(cues.length);
+    expect(computeSubtitleCues('(开心@0.9)', { ...EST })).toEqual([]);
+    expect(computeSubtitleCues('(calm)', { ...EST })).toEqual([]);
+    expect(computeSubtitleCues('这是一句(说明)', { ...EST }).map((cue) => cue.text).join(''))
+      .toBe('这是一句(说明)');
+  });
+
   it('空文本与纯标签文本给空表;短句一条到底', () => {
     expect(computeSubtitleCues('', { ...EST })).toEqual([]);
     expect(computeSubtitleCues('  ', { ...EST })).toEqual([]);

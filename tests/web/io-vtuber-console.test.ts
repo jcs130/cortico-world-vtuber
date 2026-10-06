@@ -22,7 +22,7 @@ import { fixtureProfileJson, writeProfileDir } from '../vtuber/helpers.ts';
 const VT_BUNDLE_ENTRY = '../../src/console/client.ts';
 const CONSOLE_DIR = '../../src/console';
 
-const PANEL_IDS = ['mount', 'model', 'overlay', 'clips', 'tts', 'align', 'log', 'diag'];
+const PANEL_IDS = ['mount', 'model', 'overlay', 'clips', 'tts', 'align', 'music', 'log', 'diag'];
 
 /** 不 start 就不会 fork 子进程:这一套断言全在主进程这一侧。 */
 const proxy = (opts: ConstructorParameters<typeof VtuberWorldProxy>[0] = {}): VtuberWorldProxy =>
@@ -34,13 +34,13 @@ const contribution = (p: VtuberWorldProxy) =>
 // ---------------------------------------------------------------------------
 
 describe('VTuber 的面板声明', () => {
-  it('八个面板都是局部 id + 真标题,不带 World 名前缀', () => {
+  it('面板都是局部 id + 真标题,不带 World 名前缀', () => {
     const panels = (proxy().console().panels ?? []) as WorldPanelDecl[];
     expect(panels.every((p) => typeof p === 'object')).toBe(true);
     expect(panels.map((p) => p.id)).toEqual(PANEL_IDS);
     expect(panels.map((p) => p.title)).toEqual([
       '挂载', '模型档案', 'Overlay 画面', '动作调参',
-      '声线档案', '时间点标注', '演出日志', '演出诊断',
+      '声线档案', '时间点标注', '歌曲播放', '演出日志', '演出诊断',
     ]);
     for (const p of panels) expect(p.description).toBeTruthy();
   });
@@ -60,6 +60,7 @@ describe('VTuber 的面板声明', () => {
       clips: ['state'],
       tts: ['state', 'voiceWav', 'runtime'],
       align: ['state', 'units'],
+      music: ['state'],
       log: ['entries'],
       diag: ['state', 'report', 'presets'],
     });

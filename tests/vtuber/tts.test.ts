@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decodeWav, extractEnvelope, pcm16ToWav, StreamingEnvelope, TtsClient } from '../../src/tts.ts';
+import { decodeWav, extractEnvelope, pcm16ToWav, StreamingEnvelope, TtsClient, TtsSkipped } from '../../src/tts.ts';
 import { makeRawWav, makeWav } from './helpers.ts';
 
 describe('decodeWav / extractEnvelope', () => {
@@ -49,6 +49,20 @@ describe('decodeWav / extractEnvelope', () => {
 });
 
 describe('TtsClient', () => {
+  it.each(['whole', 'stream'] as const)('%s distinguishes an explicit duplicate skip from other HTTP failures', async (mode) => {
+    const fetchImpl = (async () => new Response('{"error":"dedup"}', { status: 410 })) as typeof fetch;
+    const client = new TtsClient({ url: 'http://fixture.invalid', fetchImpl });
+    const skipped = mode === 'whole' ? client.synth('重复文本')
+      : client.synthStream('重复文本', { pcm: () => { throw new Error('Skip has no PCM'); } });
+    await expect(skipped).rejects.toBeInstanceOf(TtsSkipped);
+    const failed = new TtsClient({ url: 'http://fixture.invalid',
+      fetchImpl: (async () => new Response('{"error":"voice unavailable"}', { status: 410 })) as typeof fetch });
+    const error = await (mode === 'whole' ? failed.synth('新的文本')
+      : failed.synthStream('新的文本', { pcm: () => {} })).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(TtsSkipped);
+    expect(String(error)).toContain('voice unavailable');
+  });
   it('非 2xx 抛错并带回应片段', async () => {
     const fetchImpl = (async () => new Response('cuda OOM', { status: 500 })) as typeof fetch;
     const client = new TtsClient({ url: 'http://fake', fetchImpl });
@@ -260,5 +274,22 @@ describe('TtsClient.synthStream', () => {
     const ac = new AbortController();
     await client2.synthStream('x', { pcm: () => {} }, { signal: ac.signal });
     expect(seenSignal).toBeDefined();
+  });
+
+  it('接收端异常关闭尚未读完的响应体', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(pcm16ToWav([], 24000));
+        controller.enqueue(new Uint8Array([1, 0, 2, 0]));
+      },
+      cancel() { cancelled = true; },
+    });
+    const fetchImpl = (async () => new Response(body)) as typeof fetch;
+    const client = new TtsClient({ url: 'http://fixture.invalid', fetchImpl });
+    await expect(client.synthStream('测试', {
+      pcm() { throw new Error('接收端已关闭'); },
+    })).rejects.toThrow('接收端已关闭');
+    expect(cancelled).toBe(true);
   });
 });
