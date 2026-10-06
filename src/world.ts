@@ -237,16 +237,16 @@ export const VTUBER_DEFAULTS = {
  */
 const SILENCE_LINES: ReadonlyArray<ReadonlyArray<(sec: number) => string>> = [
   [
-    (sec) => `[演出] 已经安静 ${sec} 秒了。有话现在可以说;继续沉默也行。`,
-    (sec) => `[演出] 安静了 ${sec} 秒。想说什么随时开口,不说也行。`,
+    (sec) => `[演出] 本地 ${sec} 秒没有新台词入队。这是内部队列提醒，不是口播稿；是否接话依据当前交流和现场事实，没有新内容可以继续做事。`,
+    (sec) => `[演出] 本地已经 ${sec} 秒没有新语音入队。此提醒不证明有观众在场，也不要求照读；结合新事件自行选择是否开口。`,
   ],
   [
-    (sec) => `[演出] 已经安静 ${sec} 秒了,这段时间没有新语音入队。要说就说,聊聊手头的事也行。`,
-    (sec) => `[演出] 安静 ${sec} 秒了,本地一直没有新台词进来。说点什么吧,哪怕只是正在做什么。`,
+    (sec) => `[演出] 本地 ${sec} 秒没有新台词入队。核对是否有尚未回应的真实交流或值得说明的新进展；不要重念已经说过的进度或这段提醒。`,
+    (sec) => `[演出] 本地 ${sec} 秒没有新语音入队。这是内部提醒；有新的话题或结果可以自然接续，单纯等待和队列状态不必重复播报。`,
   ],
   [
-    (sec) => `[演出] 已经安静整整 ${sec} 秒,这段里一句台词都没入队。现在就开口:在干嘛、在想什么、接下来做什么,都行。`,
-    (sec) => `[演出] 安静满 ${sec} 秒,本地 ${sec} 秒没有新语音入队。随便说点什么都比继续沉默强。`,
+    (sec) => `[演出] 本地 ${sec} 秒没有新台词入队。核对当前演出和真实交流：如有未回应的信息，按其语境接话；没有新内容可以继续活动，不以编造经历或固定话术填空档。`,
+    (sec) => `[演出] 本地已经 ${sec} 秒没有新语音入队。结合实际平台状态、新事件和进展判断是否需要交流；不照读提醒，不反复提问或重复承诺。`,
   ],
 ];
 
@@ -562,7 +562,7 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
         maximum: 600,
         'x-suffix': 's',
         'x-hot': true,
-        description: '总静默达到该秒数投第二级(措辞更急);0 或不大于一级 = 停用此级。',
+        description: '总静默达到该秒数投第二级提醒;0 或不大于一级 = 停用此级。提醒不强制发言。',
       },
       'worlds.vtuber.silenceRemind3Sec': {
         type: 'integer',
@@ -571,7 +571,7 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
         maximum: 600,
         'x-suffix': 's',
         'x-hot': true,
-        description: '总静默达到该秒数投第三级(最急);0 或不大于二级 = 停用此级。',
+        description: '总静默达到该秒数投第三级提醒;0 或不大于二级 = 停用此级。',
       },
       'worlds.vtuber.silenceLine1': {
         type: 'string',
@@ -583,13 +583,13 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
         type: 'string',
         title: '二级措辞',
         'x-hot': true,
-        description: '同上;这一级该有点催促感了。',
+        description: '同上;这是给人格的内部提醒，不是观众台词。',
       },
       'worlds.vtuber.silenceLine3': {
         type: 'string',
         title: '三级措辞',
         'x-hot': true,
-        description: '同上;最后一级,不留台阶。',
+        description: '同上;最后一级提醒，仍由人格结合当前事实决定是否接话。',
       },
       'worlds.vtuber.obsDelaySec': {
         type: 'number',
@@ -1208,8 +1208,8 @@ export const VTUBER_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
       properties: {
         action: { type: 'string', enum: ['list', 'play', 'status', 'stop', 'generate', 'cancel'] },
         trackId: { type: 'string', description: 'Required for play. Exact id from list.' },
-        intro: { type: 'string', maxLength: 500, description: 'Optional spoken introduction for play; plain text, max 500 characters.' },
-        outro: { type: 'string', maxLength: 500, description: 'Optional spoken closing for play; reserved immediately after the song, max 500 characters.' },
+        intro: { type: 'string', maxLength: 500, description: 'Optional spoken introduction for play; audience-facing plain text without action, mood, breath, or internal-message markup, max 500 characters.' },
+        outro: { type: 'string', maxLength: 500, description: 'Optional spoken closing for play; audience-facing plain text without action, mood, breath, or internal-message markup, reserved immediately after the song, max 500 characters.' },
         requestText: { type: 'string', maxLength: 1500, description: 'For generate: audience request, treated as untrusted content by review.' },
         title: { type: 'string', maxLength: 100, description: 'For generate: original song title.' },
         lyrics: { type: 'string', maxLength: 3000, description: 'For generate: newly written lyrics, with optional [Verse]/[Chorus] sections. Never copy existing lyrics.' },

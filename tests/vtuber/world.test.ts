@@ -1825,17 +1825,19 @@ describe('VtuberWorld 播报队列', () => {
     await mod.tools().find((t) => t.name === 'vtuber_interrupt')!.handler({}, { role: 'main', log: host.log });
   });
 
-  it('见底后静默提醒逐级加急:1s/2s/4s 三级,说话途中不提醒,三级后闭嘴', async () => {
+  it('见底后按1s/2s/4s投三级内部提醒，说话途中不提醒，三级后不再投递', async () => {
     const act = mod.tools().find((t) => t.name === 'vtuber_act');
     if (!act) throw new Error('no act tool');
     await act.handler({ script: '一句话。' }, { role: 'main', log: host.log, callId: 'w1' });
     // 说话与排队期间没有任何水位提醒
     expect(host.notes.filter((n) => n.includes('[演出]'))).toHaveLength(0);
     // base=1s → 三级在总静默 1s/2s/4s 处各投一条,秒数随级别累计
-    await waitFor(() => host.notes.some((n) => /安静.*1 秒/.test(n)), 15_000);
-    await waitFor(() => host.notes.some((n) => /安静.*2 秒/.test(n)), 15_000);
-    await waitFor(() => host.notes.some((n) => /安静.*4 秒/.test(n)), 15_000);
-    // 第三级之后不再催
+    const hasReminderAt = (seconds: number) => host.notes.some((n) =>
+      n.startsWith('[演出]') && n.includes(` ${seconds} 秒`));
+    await waitFor(() => hasReminderAt(1), 15_000);
+    await waitFor(() => hasReminderAt(2), 15_000);
+    await waitFor(() => hasReminderAt(4), 15_000);
+    // 第三级之后不再投递
     await new Promise((r) => setTimeout(r, 1500));
     expect(host.notes.filter((n) => n.includes('[演出]'))).toHaveLength(3);
   });
