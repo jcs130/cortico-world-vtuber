@@ -13,7 +13,7 @@
  *   - (情绪@强度):保留给 TTS 网关调节语气;只有标记而无台词时暂存,
  *     不单独合成一片音频。
  *   正文累计至少 40 个字符后,句末标点串结束即提前吐片送 TTS。
- *   圆括号内完整命中演出词表时作为非阻断动作；其他内容按字面输出。
+ *   圆括号内完整命中动作、情绪或语气词时分别送往对应通道；其他内容按字面输出。
  */
 import type { PerformancePack, TagCommand } from './pack.ts';
 import { resolveVoiceTag } from './voice-tags.ts';
@@ -226,8 +226,18 @@ export class ScriptParser {
         } else {
           const inner = candidate.slice(1, -1);
           const words = inner.split(/[,，、]/).map(word => word.trim());
-          if (words.every(word => this.pack.resolveTag(word) !== null)) this.closeAnchor(inner);
-          else for (const c of candidate) this.emitText(c);
+          const metadata = words.every(word => this.pack.resolveTag(word) !== null
+            || isMoodTag(`(${word})`) || resolveVoiceTag(word) !== null);
+          if (metadata) {
+            for (const word of words) {
+              if (isMoodTag(`(${word})`)) for (const c of `(${word})`) this.emitText(c);
+              else {
+                const voice = resolveVoiceTag(word);
+                if (voice) for (const c of `[${voice}]`) this.emitText(c);
+              }
+            }
+            this.closeAnchor(inner);
+          } else for (const c of candidate) this.emitText(c);
         }
       } else if (ch === '(' || ch === '（') {
         this.spillMood();

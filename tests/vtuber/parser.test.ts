@@ -136,6 +136,23 @@ describe('ScriptParser', () => {
     ]);
   });
 
+  it('routes mixed parenthesized mood, gesture and voice cues through their own channels across fragments', () => {
+    const script = '(calm)木炭取出来了，三块！（开心@0.4,看向镜头）两块是烧出来的。(轻轻摇摆,sigh)先歇口气。';
+    const expected = parseAll('(calm)木炭取出来了，三块！(开心@0.4)<看向镜头>两块是烧出来的。[sigh]<轻轻摇摆>先歇口气。');
+    for (const chunkSize of [1, 3, 9, Infinity]) {
+      const parsed = parseAll(script, chunkSize);
+      expect(parsed).toEqual(expected);
+      const text = parsed.speech.map(s => s.piece.text).join('');
+      expect(text).not.toContain('看向镜头');
+      expect(text).not.toContain('轻轻摇摆');
+      expect(text).toContain('(开心@0.4)');
+      expect(text).toContain('[sigh]');
+      expect(parsed.speech.flatMap(s => s.piece.anchors).flatMap(a => a.commands)).toEqual([
+        pack.resolveTag('看向镜头'), pack.resolveTag('轻轻摇摆'),
+      ]);
+    }
+  });
+
   it('含有事实、未知词或未闭合的圆括号保留，不误触发动作', () => {
     for (const text of ['坐标(-3,64,5)', '这是（看向屏幕时发现箱子）',
       '物品（等级 II）', '（前倾,未知事实）', '（微笑,,前倾）', '（看向屏幕']) {
