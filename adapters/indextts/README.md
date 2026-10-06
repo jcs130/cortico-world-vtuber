@@ -1,4 +1,4 @@
-# IndexTTS Adapter — `indextts_adapter.py`, `corti_speech_style.py`, `pronunciation.py`
+# IndexTTS Adapter — `indextts_adapter.py`, `corti_speech_style.py`, `spoken_text.py`, `pronunciation.py`
 
 This adapter exposes `POST /v1/audio/speech`, `POST /v1/audio/speech/stream`
 and a read-only `GET /health`, using an already-running IndexTTS gateway.
@@ -37,8 +37,19 @@ more prosody context; smaller segments can begin speaking sooner.
   no longer filled with the calm preset.
 - Chinese enchantment and explicit level labels read canonical Roman levels
   aloud: `锋利 II` → `锋利二级`, `耐久 Ⅲ` → `耐久三级`, `第 XV 层` → `第十五层`.
-  English words, model names, player IDs, bare Roman tokens, coordinates and
-  fractions are preserved. Conversion is local, not global Unicode folding.
+  Adjacent labels are all converted: `效率V耐久II` → `效率五级耐久二级`.
+  English words, model names, player IDs and bare Roman tokens are retained.
+- Synthesis uses readable Chinese numeric tokens (`1、2、3` → `一、二、三`).
+  Counts, signed coordinates and decimals keep their values. Leading-zero
+  strings are read digit by digit; numeric parts of IDs and model names are retained.
+  Literal code, URLs and explicit pronunciation hints are retained.
+- Known Minecraft fields use spoken labels. `age 5/7` becomes
+  `生长进度五，成熟需要到七`; it does not predict a growth time.
+  `health` / `food` / `mana` ratios retain current and maximum values;
+  `cooldownRemainingMs=1250` becomes `冷却还剩一点二五秒`.
+  Other known labels include `moisture`, `durability` and `cooldown`.
+  Unknown fields retain their text. The agent still needs to explain raw tool
+  results in ordinary language; this deterministic fallback adds no model call.
 - Recognized stage directions are removed. Ordinary parentheses containing
   facts, item properties and coordinates are retained. Existing pronunciation
   markup such as `<行|XING2>` is retained.
@@ -64,7 +75,7 @@ more prosody context; smaller segments can begin speaking sooner.
 
 ```powershell
 python -m unittest discover -v
-python -m py_compile indextts_adapter.py corti_speech_style.py pronunciation.py stream_audio.py
+python -m py_compile indextts_adapter.py corti_speech_style.py spoken_text.py pronunciation.py stream_audio.py
 ```
 
 Tests make no real synthesis requests and start no listener. A local ffmpeg
@@ -89,8 +100,8 @@ The existing `voice` and `speed` preferences remain compatible. Optional keys:
 are capped. Invalid non-finite or non-numeric values use the default.
 These settings are read on the next request after the file changes.
 
-`CORTI_TTS_PREFS` sets the preference file location. The default is
-`~/.config/cortico/tts-prefs.json`. Set the variable when migrating an existing preference file.
+`CORTI_TTS_PREFS` sets the preference file location. Its default remains the
+existing deployment path under `.copaw/workspaces/default/tmp` for compatibility.
 
 ## Safe deployment
 
@@ -104,13 +115,18 @@ python indextts_adapter.py
 ```
 
 For detached Windows startup, use the existing deployment supervisor or a
-hidden `Start-Process` helper. A launcher needs all four Python source files in the
-same directory. Inspect `/health` for `version: "15-polyphone-pinyin"` and the
+hidden `Start-Process` helper. A launcher needs all five Python source files in the
+same directory. Inspect `/health` for `version: "16-readable-speech"` and the
 expected port before changing CortiV's `worlds.vtuber.ttsUrl` to that instance.
 The adapter's POST endpoint is `/v1/audio/speech`; `ttsUrl` is its base URL.
 The VTuber client captures this URL at creation; saving another URL does not
 switch an existing client. Updating the adapter on the existing URL needs only
 an adapter reload, after in-flight speech completes and interruption is authorized.
+
+The original deployed source was backed up as
+`indextts_adapter_decision.py.bak-natural-20261004`. For rollback, point CortiV
+back to the previous healthy adapter endpoint. Replacing Python source alone
+does not change an already-running process.
 
 ## Gateway configuration
 

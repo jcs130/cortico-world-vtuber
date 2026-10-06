@@ -11,17 +11,18 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from corti_speech_style import (
     DEFAULT_CONFIDENCE, DEFAULT_EMOTION_MIX, MAX_EMOTION_MIX,
-    bounded_number, emotion_mix_vector, normalize_level_speech, strip_stage_directions,
+    bounded_number, emotion_mix_vector, strip_stage_directions,
 )
 from stream_audio import SegmentedPcmSource, read_pcm_header, sentence_segments, tempo_chunks, wav_stream_header
 from pronunciation import normalize_pronunciation
+from spoken_text import normalize_spoken_text
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 PORT = int(os.environ.get('CORTI_TTS_PORT', '8010'))
 if not 1 <= PORT <= 65535:
     raise ValueError('CORTI_TTS_PORT must be an integer between 1 and 65535')
-ADAPTER_VERSION = '15-polyphone-pinyin'
+ADAPTER_VERSION = '16-readable-speech'
 INDEXTTS_BASE = os.environ.get('CORTICO_INDEXTTS_URL', 'http://127.0.0.1:8087').rstrip('/')
 INDEXTTS = INDEXTTS_BASE + '/tts_raw'
 INDEXTTS_STREAM = INDEXTTS_BASE + '/tts_stream'
@@ -312,6 +313,7 @@ class Handler(BaseHTTPRequestHandler):
                 'voice_cue_policy': 'emotion-hints',
                 'native_acoustic_cues': False,
                 'pronunciation_policy': 'phrase-pinyin',
+                'spoken_text_policy': 'chinese-levels-fields-numbers',
             }).encode(), 'application/json')
         else:
             self._send(404, b'{"error":"not found"}', 'application/json')
@@ -331,7 +333,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             clean, tags, tag_mood, tag_k = strip_stage_dirs(text)
-            clean = normalize_level_speech(clean)
+            clean = normalize_spoken_text(clean)
             if not clean:
                 self.log_message('tag-only clip -> silent wav')
                 self._send(200, SILENT_WAV, 'audio/wav')

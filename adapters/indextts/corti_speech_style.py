@@ -80,10 +80,14 @@ _ENCHANTMENTS = (
     "耐久", "时运", "力量", "冲击", "火矢", "无限", "饵钓", "忠诚", "穿刺",
     "激流", "引雷", "穿透", "风爆", "密度", "突破",
 )
-_ENCHANT_LEVEL = re.compile(
-    r"(?<![A-Za-z0-9_])(?P<label>" + "|".join(_ENCHANTMENTS) + r")\s*(?P<roman>" + _ROMAN_TOKEN + r")"
+_ENCHANT_TOKEN = (
+    r"(?P<label>" + "|".join(_ENCHANTMENTS) + r")\s*(?P<roman>" + _ROMAN_TOKEN + r")"
     + _ROMAN_EDGE + r"(?:[ \t]*级)?(?:[ \t]+(?=[\u4e00-\u9fff]))?"
 )
+_ENCHANT_LEVEL = re.compile(_ENCHANT_TOKEN)
+# Check the identifier boundary once for the whole chain. A preceding Roman
+# suffix belongs to the previous enchantment in e.g. 锋利IV耐久III.
+_ENCHANT_CHAIN = re.compile(r"(?<![A-Za-z0-9_])(?:" + _ENCHANT_TOKEN + r")+")
 _NAMED_LEVEL = re.compile(
     r"(?P<label>附魔等级|冒险者等级|技能等级|等级)\s*[:：]?\s*(?P<roman>"
     + _ROMAN_TOKEN + r")" + _ROMAN_EDGE + r"(?:[ \t]*级)?(?:[ \t]+(?=[\u4e00-\u9fff]))?"
@@ -133,7 +137,13 @@ def normalize_level_speech(text: str) -> str:
         number = roman_level(match["roman"])
         return match[0] if number is None else match["label"] + "第" + chinese_level(number) + "层"
 
-    text = _ENCHANT_LEVEL.sub(named, text)
+    def chain(match: re.Match) -> str:
+        prefix = match.string[max(0, match.start() - 16):match.start()]
+        if re.search(r"(?:玩家|账号|用户名|昵称|ID|id|名叫|我叫|叫作|叫做)\s*[:：]?\s*[\"'“‘「]?$", prefix):
+            return match[0]
+        return _ENCHANT_LEVEL.sub(named, match[0]).rstrip(' \t')
+
+    text = _ENCHANT_CHAIN.sub(chain, text)
     text = _NAMED_LEVEL.sub(named, text)
     text = _ORDINAL_LEVEL.sub(ordinal, text)
     return _TOWER_LEVEL.sub(tower, text)

@@ -145,7 +145,7 @@ class RequestTests(unittest.TestCase):
         self.adapter.classify_mood_decision.return_value = ("calm", 0.8)
         text = "我在（1,2,3）。我先去河边，等你回来！"
         payload, _ = self.request(text)
-        self.assertEqual(payload["input"], text)
+        self.assertEqual(payload["input"], "我在（一,二,三）。我先去河边，等你回来！")
         self.adapter.urllib.request.urlopen.assert_called_once()
 
     def test_pronunciation_hints_reach_synthesis_without_entering_mood_or_dedup(self):
@@ -206,6 +206,25 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(payload['max_text_tokens_per_segment'], 56)
         self.assertEqual(max_chars, 40)
         self.adapter.classify_mood_decision.assert_not_called()
+
+    def test_normal_request_reads_recorded_levels_and_growth_fields(self):
+        text = '（平静）保护I耐久II荆棘III，数一下1、2、3。小麦age才5/7。'
+        payload, _ = self.request(text)
+        self.assertEqual(payload['input'],
+                         '保护一级耐久二级荆棘三级，数一下一、二、三。小麦生<长|ZHANG3>进度五，成熟需要到七。')
+
+    def test_stream_uses_readable_text_before_legacy_segmentation(self):
+        self.handler.path = '/v1/audio/speech/stream'
+        self.handler._stream = Mock()
+        text = '（平静）效率V耐久II，age 5/7，cooldownRemainingMs=1250。'
+        raw = json.dumps({'input': text}).encode('utf-8')
+        self.handler.headers = {'Content-Length': str(len(raw))}
+        self.handler.rfile = io.BytesIO(raw)
+        self.handler.do_POST()
+        payload, _, clean, _ = self.handler._stream.call_args.args
+        self.assertEqual(clean, '效率五级耐久二级，生长进度五，成熟需要到七，冷却还剩一点二五秒。')
+        self.assertEqual(payload['input'], '效率五级耐久二级，生<长|ZHANG3>进度五，成熟需要到七，冷却还剩一点二五秒。')
+        self.assertNotIn('cooldownRemainingMs', payload['input'])
 
 
 if __name__ == "__main__":

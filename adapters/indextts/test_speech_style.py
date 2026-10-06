@@ -63,6 +63,14 @@ class PronunciationTests(unittest.TestCase):
     def test_unicode_roman_levels(self):
         self.assertEqual(normalize_level_speech("保护Ⅳ、效率Ⅴ、抢夺ⅲ。"), "保护四级、效率五级、抢夺三级。")
 
+    def test_adjacent_enchantments_each_keep_their_numeric_level(self):
+        self.assertEqual(normalize_level_speech('效率V耐久II的，锋利IV耐久III的。'),
+                         '效率五级耐久二级的，锋利四级耐久三级的。')
+        self.assertEqual(normalize_level_speech('保护I耐久II荆棘III，效率Ⅴ耐久ⅲ。'),
+                         '保护一级耐久二级荆棘三级，效率五级耐久三级。')
+        self.assertEqual(normalize_level_speech('玩家锋利IV耐久III，Bob效率V耐久II'),
+                         '玩家锋利IV耐久III，Bob效率V耐久II')
+
     def test_explicit_levels_and_tower_floors(self):
         self.assertEqual(normalize_level_speech("技能等级：III；第 XV 层；试炼塔 IV 层。"), "技能等级三级；第十五层；试炼塔第四层。")
 
