@@ -26,10 +26,16 @@ Cancelling closes upstream and the converter; a running model finishes its
 current text segment before cancellation takes effect.
 
 `stream_segment_tokens` defaults to 24 (16–120) for the native generator.
-`stream_segment_chars` defaults to 40 (16–120) for compatibility synthesis.
-Compatibility splitting retains punctuation and keeps long clauses intact,
-so it never cuts words to enforce the character target. Larger segments retain
-more prosody context; smaller segments can begin speaking sooner.
+Both native and compatibility synthesis split at complete commas or sentence
+ends, retaining punctuation runs, closing quotes, decimals and phonetic atoms.
+Comma prefixes shorter than six readable characters join the following clause;
+complete sentence ends are retained even under the old length target.
+Long unpunctuated clauses stay intact up to the model's position capacity.
+`stream_segment_chars` is accepted for compatibility with older preferences;
+it no longer merges independent clauses just to fill a character quota.
+The VTuber script parser also emits complete clauses after 24 spoken characters
+instead of waiting for 40 and a sentence end. Emotion metadata does not count
+toward that minimum, and short openings remain together.
 
 `X-TTS-Request-First-Audio-Ms` includes text preparation and upstream waiting.
 `X-TTS-Preparation-Ms` measures preparation alone; the existing
@@ -99,10 +105,13 @@ the shared model from synthesis. Missing queue timing is reported as null.
   Syntax follows [IndexTTS pronunciation control](https://github.com/index-tts/index-tts).
 - Automatic hints leave neutral-tone syllables as Chinese characters, including
   `了`, `的` and auxiliary `着`/`得`. Common contextual homographs retain explicit
-  non-neutral readings from the modern reading set in `polyphonic_readings.json`.
+  non-neutral readings only when they differ from the dictionary's ordinary
+  first reading. For example, `种子` and `看看` stay in natural Chinese while
+  `种下` and growth-related `长` retain their distinguishing pronunciation.
   Other characters retain their sentence text, including dictionary homographs
   outside this reviewed set. Caller hints remain supported.
-  `/health` reports `annotation_policy: sparse-nonneutral`.
+  `/health` reports `annotation_policy: nondefault-nonneutral` and
+  `stream_segment_policy: punctuation-short-prefixes`.
 - Each synthesis request logs `text-prepared` with its original script, readable
   speech and actual phonetic input. Health keeps only the latest preparation's
   timestamp, input hash, lengths, voice and hint count. `upstream_stream_path`
@@ -173,9 +182,10 @@ python indextts_adapter.py
 ```
 
 For detached Windows startup, use the existing deployment supervisor or a
-hidden `Start-Process` helper. A launcher needs all five Python source files and
+hidden `Start-Process` helper. A launcher needs the Python source files including
+`speech_segments.py`, and
 `polyphonic_readings.json` in the
-same directory. Inspect `/health` for `version: "20-stream-latency"`,
+same directory. Inspect `/health` for `version: "21-natural-clauses"`,
 `pronunciation.context_ready: true` and the
 expected port before changing CortiV's `worlds.vtuber.ttsUrl` to that instance.
 The adapter's POST endpoint is `/v1/audio/speech`; `ttsUrl` is its base URL.

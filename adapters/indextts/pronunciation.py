@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import urllib.request
+from speech_segments import punctuation_segments
 
 
 # Only unambiguous phrases. In particular, 长得 and bare 长 need sentence context.
@@ -38,6 +39,8 @@ def phrase_fallback(text: str) -> str:
     """Use the small unambiguous lexicon when contextual dependencies are unavailable."""
     def annotate(match):
         phrase = match.group(0)
+        if _READINGS[phrase] == 'CHANG2':
+            return phrase
         return phrase.replace('长', f'<长|{_READINGS[phrase]}>', 1)
 
     output = []
@@ -164,6 +167,11 @@ class ContextPronunciation:
         return frozenset(reading.upper() for reading in self.alternatives(char)
                          if reading.upper() in modern)
 
+    @lru_cache(maxsize=4096)
+    def ordinary_reading(self, char: str) -> str | None:
+        readings = self.alternatives(char)
+        return readings[0].upper() if readings else None
+
     def resolve(self, text: str) -> str:
         plain, positions = text_projection(text)
         choices = {}
@@ -195,8 +203,10 @@ class ContextPronunciation:
             reading = choices.get(i)
             # Taiwanese variants or malformed model output cannot introduce a new reading.
             if reading in self.candidates(plain[i]):
-                # Neutral particles retain their character and sentence prosody.
-                if reading.endswith('5'):
+                # A hint replaces the Chinese character with a phonetic atom in
+                # IndexTTS. Keep ordinary words/reduplication in natural text;
+                # only a non-default reading needs this intervention.
+                if reading.endswith('5') or reading == self.ordinary_reading(plain[i]):
                     continue
                 edits[positions[i]] = f'<{plain[i]}|{reading}>'
         result = ''.join(edits.get(i, char) for i, char in enumerate(text))
@@ -235,7 +245,7 @@ def initialize_pronunciation(model_dir: str | None = None, tokenizer_dir: str | 
 def pronunciation_health() -> dict:
     selector = _resolver.selector if _resolver else None
     return {'policy': 'context-pinyin' if _resolver else 'phrase-pinyin-fallback',
-            'annotation_policy': 'sparse-nonneutral',
+            'annotation_policy': 'nondefault-nonneutral',
             'context_ready': _resolver is not None, 'initialization_error': _initialization_error,
             'fallback_count': _resolver.failures if _resolver else 0,
             'last_ms': round(_resolver.last_ms, 2) if _resolver else None,
@@ -260,24 +270,10 @@ def normalize_pronunciation(text: str) -> str:
 
 
 def pronunciation_segments(text: str, max_chars: int = 40) -> list[str]:
-    """Split resolved speech at clause boundaries, counting visible characters."""
-    units = re.findall(r'<[^<>\n]*>|`[^`\n]*`|https?://[^\s<>，。！？；]+|.', text, re.DOTALL)
-    parts, part = [], ''
-    for index, unit in enumerate(units):
-        part += unit
-        boundary = unit in '，。！？；,!?;' or (unit == '.' and not (index + 1 < len(units) and units[index + 1].isdigit()))
-        if boundary:
-            parts.append(part); part = ''
-    if part:
-        parts.append(part)
-    segments, current = [], ''
-    def visible(value):
-        return len(re.sub(r'<([^<>|]+)\|[^<>]+>', r'\1', value))
-    for part in parts:
-        if current and visible(current + part) > max_chars:
-            segments.append(current); current = part
-        else:
-            current += part
-    if current:
-        segments.append(current)
-    return segments or [text]
+    """Keep punctuation/closing quotes together and preserve pronunciation atoms.
+
+    Punctuation is the streaming boundary, not a character quota. Very short
+    comma prefixes join the next complete clause to give playback some runway.
+    max_chars remains a soft compatibility hint; no word is cut to meet it.
+    """
+    return punctuation_segments(text)

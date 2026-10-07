@@ -35,7 +35,7 @@ function parseAll(script: string, chunkSize = Number.POSITIVE_INFINITY): Collect
 }
 
 /**
- * SENTENCE_FLUSH_MIN_CHARS 为 40 字；需要提前切片的夹具用这段达到门槛的正文起头。
+ * 需要提前切片的夹具用这段超过 24 字门槛的正文起头。
  */
 const LONG_BODY = '一二三四五六七八九十'.repeat(4);
 
@@ -48,7 +48,7 @@ describe('ScriptParser', () => {
     expect(r.speech.map((s) => s.beatIndex)).toEqual([0, 1]);
   });
 
-  it('正文满 40 字后在句末流中切片,短句累计且流末尾段仍发出', () => {
+  it('正文满门槛后在句末流中切片,短句累计且流末尾段仍发出', () => {
     const out: Collected = { beats: [], speech: [], ended: false };
     const p = new ScriptParser({
       onBeat: (b) => out.beats.push(b),
@@ -72,9 +72,9 @@ describe('ScriptParser', () => {
   });
 
   /*
- * 未满 40 字时句末标点不自动切片；遇到下一指令块的起始标签或流结束时仍会输出缓冲。
+ * 未满 24 字时标点不自动切片；遇到下一指令块的起始标签或流结束时仍会输出缓冲。
  */
-  it.each(['。', '！', '？', '!', '?', '…'])('未满 40 字的句末标点 %s 不切片,流末整句发出', (punct) => {
+  it.each(['。', '！', '？', '!', '?', '…'])('短句标点 %s 不切片,流末整句发出', (punct) => {
     const short = `一二三四五六七八九十${punct}`;
     const r = parseAll(`${short}后续`);
     expect(r.speech.map((s) => s.piece.text)).toEqual([`${short}后续`]);
@@ -83,6 +83,24 @@ describe('ScriptParser', () => {
   it.each(['。', '！', '？', '!', '?', '…'])('句末标点 %s 触发达标片', (punct) => {
     const r = parseAll(`${LONG_BODY}${punct}后续`);
     expect(r.speech.map((s) => s.piece.text)).toEqual([`${LONG_BODY}${punct}`, '后续']);
+  });
+
+  it.each(['，', ',', '；', ';'])('24 字后在 %s 提前输出完整分句，不等待流结束', (punct) => {
+    const out: SpeechPiece[] = [];
+    const parser = new ScriptParser({ onBeat: () => {}, onSpeech: (_, piece) => out.push(piece), onEnd: () => {} }, pack);
+    const clause = '一二三四五六七八九十'.repeat(2) + '一二三四' + punct;
+    parser.feed(clause);
+    expect(out).toEqual([]);
+    parser.feed('接下来继续种小麦。');
+    expect(out.map(piece => piece.text)).toEqual([clause]);
+    parser.end();
+    expect(out.map(piece => piece.text).join('')).toBe(clause + '接下来继续种小麦。');
+  });
+
+  it('短逗号开头和下一句合成一片，任意流碎片都不拆词', () => {
+    const script = '好，嗯，我们先把种子收好，再去田边种小麦。';
+    expect(parseAll(script, 1).speech).toEqual(parseAll(script).speech);
+    expect(parseAll(script).speech.map(item => item.piece.text)).toEqual([script]);
   });
 
   it('连续省略号与闭引号留在前片,任意 fragment 产出一致', () => {

@@ -6,29 +6,16 @@ import struct
 import subprocess
 import threading
 import io
-import re
 import wave
+from pronunciation import pronunciation_segments
 
 
 PCM_READ_BYTES = 8192
 
 
 def sentence_segments(text: str, max_chars: int = 40) -> list[str]:
-    """Use complete punctuation-delimited clauses; never cut a word to hit a limit."""
-    parts = re.split(r'(?<=[，。！？；,!?;])|(?<=\.)(?!\d)', text)
-    segments = []
-    current = ''
-    for part in parts:
-        if not part:
-            continue
-        if current and len(current + part) > max_chars:
-            segments.append(current)
-            current = part
-        else:
-            current += part
-    if current:
-        segments.append(current)
-    return segments or [text]
+    """Share the same punctuation policy for plain and annotated speech."""
+    return pronunciation_segments(text, max_chars)
 
 
 class SegmentedPcmSource:

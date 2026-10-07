@@ -65,11 +65,11 @@ class ContextTests(unittest.TestCase):
 
     def test_multiple_homographs_are_selected_in_their_sentence_context(self):
         result = resolver().resolve('银行边重新种地，种子很重，还没发芽。')
-        self.assertEqual(result, '银<行|HANG2>边<重|CHONG2>新<种|ZHONG4>地，<种|ZHONG3>子很<重|ZHONG4>，<还|HAI2>没发芽。')
+        self.assertEqual(result, '银<行|HANG2>边<重|CHONG2>新<种|ZHONG4>地，种子很重，还没发芽。')
 
     def test_lexicon_precedes_model_and_longest_phrase_protects_coat(self):
         resolved = resolver(phrases={'长大': ['ZHANG3', 'DA4']}).resolve('长大衣，弹幕。')
-        self.assertEqual(resolved, '<长|CHANG2>大衣，<弹|DAN4>幕。')
+        self.assertEqual(resolved, '长大衣，<弹|DAN4>幕。')
 
     def test_explicit_hint_stays_visible_as_context_without_being_changed(self):
         text = '<借给|JIE4 GEI3>我的东西，还你。`还` https://example.org/还'
@@ -83,9 +83,9 @@ class ContextTests(unittest.TestCase):
     def test_context_dependent_dictionary_phrase_does_not_pin_one_reading(self):
         model = resolver(phrases={'一行': ['YI1', 'XING2'], '长得': ['ZHANG3', 'DE5']})
         self.assertIn('<行|HANG2>', model.resolve('一行字'))
-        self.assertIn('<行|XING2>', model.resolve('一行人'))
+        self.assertEqual(model.resolve('一行人'), '一行人')
         self.assertIn('<长|ZHANG3>', model.resolve('树苗长得快'))
-        self.assertIn('<长|CHANG2>', model.resolve('路长得很'))
+        self.assertEqual(model.resolve('路长得很'), '路长得很')
 
     def test_unlisted_model_reading_is_preserved_for_normal_tts(self):
         self.assertEqual(resolver().resolve('和你走。'), '和你走。')
@@ -104,9 +104,9 @@ class ContextTests(unittest.TestCase):
         segments = pronunciation_segments(full, 10)
         self.assertEqual(''.join(segments), full)
         self.assertIn('<还|HUAN2>', segments[-1])
-        self.assertIn('<还|HAI2>', resolver().resolve('等会还你。'))
-        self.assertEqual(pronunciation_segments('<长|CHANG2>长的路，树苗正在<长|ZHANG3>大。', 8),
-                         ['<长|CHANG2>长的路，', '树苗正在<长|ZHANG3>大。'])
+        self.assertEqual(resolver().resolve('等会还你。'), '等会还你。')
+        self.assertEqual(pronunciation_segments('<长|CHANG2>长的山间小路，树苗正在<长|ZHANG3>大。', 8),
+                         ['<长|CHANG2>长的山间小路，', '树苗正在<长|ZHANG3>大。'])
 
     def test_optional_selector_isolates_same_character_meanings_and_validates_choices(self):
         selector = pronunciation.ReadingSelector('http://local.test/systemone')
@@ -131,13 +131,24 @@ class ContextTests(unittest.TestCase):
     def test_selector_only_refines_unresolved_positions_and_keeps_explicit_caller_hints(self):
         refined = resolver()
         refined.selector = lambda text, positions: {positions[-1]: 'CHANG2'}
-        self.assertEqual(refined.resolve('树苗长得快，路长得很。'), '树苗<长|ZHANG3>得快，路<长|CHANG2>得很。')
+        self.assertEqual(refined.resolve('树苗长得快，路长得很。'), '树苗<长|ZHANG3>得快，路长得很。')
         refined = resolver(phrases={'长短': ['CHANG2', 'DUAN3']})
         seen = []
         refined.selector = lambda text, positions: seen.extend(positions) or {positions[0]: 'ZHANG3'}
         result = refined.resolve('长短不同，还给你，<长|CHANG2>。')
         self.assertNotIn(0, seen)
-        self.assertEqual(result, '<长|CHANG2>短不同，还给你，<长|CHANG2>。')
+        self.assertEqual(result, '长短不同，还给你，<长|CHANG2>。')
+
+    def test_seed_noun_and_reduplication_remain_natural_but_planting_is_disambiguated(self):
+        model = ContextPronunciation(contextual,
+            phrases={'种子': ['ZHONG3', 'ZI5'], '这种': ['ZHE4', 'ZHONG3'], '种下': ['ZHONG4', 'XIA4'],
+                     '看看': ['KAN4', 'KAN4']},
+            alternatives=lambda char: {'看': ['kan4', 'kan1']}.get(char, ALTERNATIVES.get(char, [char])))
+        self.assertEqual(model.resolve('种子收好了，先种下去，再看看。'),
+                         '种子收好了，先<种|ZHONG4>下去，再看看。')
+        self.assertEqual(model.resolve('小麦种子、南瓜种子，这种种子都能种下去。'),
+                         '小麦种子、南瓜种子，这种种子都能<种|ZHONG4>下去。')
+        self.assertEqual(model.resolve('<种|ZHONG3>子收好了。'), '<种|ZHONG3>子收好了。')
 
 
 if __name__ == '__main__':

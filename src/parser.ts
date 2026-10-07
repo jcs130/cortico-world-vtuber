@@ -12,7 +12,7 @@
  *     真实发声),表外的整块剥离。
  *   - (情绪@强度):保留给 TTS 网关调节语气;只有标记而无台词时暂存,
  *     不单独合成一片音频。
- *   正文累计至少 40 个字符后,句末标点串结束即提前吐片送 TTS。
+ *   正文累计至少 24 个字符后,逗号或句末标点串结束即提前吐片送 TTS。
  *   圆括号内完整命中动作、情绪或语气词时分别送往对应通道；其他内容按字面输出。
  */
 import type { PerformancePack, TagCommand } from './pack.ts';
@@ -61,10 +61,10 @@ export function isMoodOnlyText(text: string): boolean {
 /**
  * 自动切片的最小清洗后正文长度。已送入 TTS 的片段无法撤回；短句等待完整收集，长句达到阈值后提前流水化。
  */
-const SENTENCE_FLUSH_MIN_CHARS = 40;
+const SENTENCE_FLUSH_MIN_CHARS = 24;
 /** 句末标点；连续标点与其后的闭引号归入同一片。 */
-const SENTENCE_END = /[。！？!?…]/u;
-const SENTENCE_TRAILER = /[。！？!?…"'”’」』）》】）)\]]/u;
+const SENTENCE_END = /[，。！？；,!?;…]/u;
+const SENTENCE_TRAILER = /[，。！？；,!?;…"'”’」』）》】）)\]]/u;
 
 /**
  * 摘除台本里没命中词表的标记,返回清洗后的台本与摘掉的词。
@@ -287,8 +287,12 @@ export class ScriptParser {
       }
     }
     this.appendClean(ch);
-    if (this.speechBuf.length >= SENTENCE_FLUSH_MIN_CHARS && SENTENCE_END.test(ch)) {
-      this.sentenceFlushPending = true;
+    if (SENTENCE_END.test(ch)) {
+      // Emotion metadata supplies no playback runway and must not make a tiny
+      // spoken prefix eligible for an independent synthesis request.
+      const spoken = this.speechBuf.replace(/[（(][^()（）\n]{1,32}[)）]/gu,
+        part => isMoodTag(part) ? '' : part);
+      if (spoken.length >= SENTENCE_FLUSH_MIN_CHARS) this.sentenceFlushPending = true;
     }
     this.lastWasNewline = ch === '\n';
   }

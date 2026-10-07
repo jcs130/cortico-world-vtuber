@@ -16,7 +16,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 PORT = int(os.environ.get('CORTI_TTS_PORT', '8010'))
 if not 1 <= PORT <= 65535:
     raise ValueError('CORTI_TTS_PORT must be an integer between 1 and 65535')
-ADAPTER_VERSION = '20-stream-latency'
+ADAPTER_VERSION = '21-natural-clauses'
 DEFAULT_STREAM_SEGMENT_TOKENS = 24
 _last_preparation = None
 _last_stream = None
@@ -341,6 +341,7 @@ class Handler(BaseHTTPRequestHandler):
                 'last_preparation': _last_preparation,
                 'last_stream': _last_stream,
                 'stream_segment_tokens': int(bounded_number(prefs.get('stream_segment_tokens'), DEFAULT_STREAM_SEGMENT_TOKENS, 16, 120)),
+                'stream_segment_policy': 'punctuation-short-prefixes',
             }).encode(), 'application/json')
         else:
             self._send(404, b'{"error":"not found"}', 'application/json')

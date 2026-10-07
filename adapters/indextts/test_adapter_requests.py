@@ -206,7 +206,7 @@ class RequestTests(unittest.TestCase):
     def test_pronunciation_hints_reach_synthesis_without_entering_mood_or_dedup(self):
         text = '小麦长大了，看看木板的长短。'
         payload, _ = self.request(text)
-        self.assertEqual(payload['input'], '小麦<长|ZHANG3>大了，看看木板的<长|CHANG2>短。')
+        self.assertEqual(payload['input'], '小麦<长|ZHANG3>大了，看看木板的长短。')
         self.adapter.classify_mood_decision.assert_called_once_with(text)
         self.assertTrue(self.adapter.is_repeat(text))
         self.assertEqual(payload['voice'], 'taozi')
@@ -220,7 +220,7 @@ class RequestTests(unittest.TestCase):
         self.handler.do_POST()
         payload, _, clean, _ = self.handler._stream.call_args.args
         self.assertEqual(clean, '树苗正在生长，枝条的长度不同。')
-        self.assertEqual(payload['input'], '树苗正在生<长|ZHANG3>，枝条的<长|CHANG2>度不同。')
+        self.assertEqual(payload['input'], '树苗正在生<长|ZHANG3>，枝条的长度不同。')
 
     def test_both_endpoints_preserve_neutral_particles_and_trace_the_actual_model_text(self):
         alternatives = {'了': ['le5', 'liao3'], '的': ['de5', 'di4'],
