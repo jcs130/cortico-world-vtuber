@@ -1,4 +1,4 @@
-"""Offline CPU loader for Seed-VC v1 200M SVC (upstream stays unmodified).
+"""Offline loader for Seed-VC v1 200M SVC (upstream stays unmodified).
 
 Checkpoint layout is documented in MUSIC_VOICE.md. Uses the official
 Whisper encoder key mapping, strict learned-parameter checks and cached
@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import sys
 
-def setup(asset_root, whisper_checkpoint, output_dir, seed):
+def setup(asset_root, whisper_checkpoint, output_dir, seed, device="cpu"):
     ROOT = Path(asset_root).resolve()
     REPO = ROOT / "seed-vc"
     import torch
@@ -21,8 +21,10 @@ def setup(asset_root, whisper_checkpoint, output_dir, seed):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    if torch.cuda.is_available() or torch.version.cuda is not None:
+    if device == "cpu" and (torch.cuda.is_available() or torch.version.cuda is not None):
         raise RuntimeError("This validation command requires the isolated CPU torch build")
+    if device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("The configured SVC CUDA runtime is unavailable")
     if os.name == "nt":
         import ctypes
         ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x4000)
@@ -93,7 +95,7 @@ def setup(asset_root, whisper_checkpoint, output_dir, seed):
         return str(path)
     hf_utils.load_custom_model_from_hf = local_model
     import inference
-    inference.device = torch.device("cpu")
+    inference.device = torch.device(device)
     def offline_save(path, waveform, sample_rate, **kwargs):
         # torchaudio2.11 routes save through optional torchcodec. Keep this
         # isolated WAV-only adapter offline and preserve finite float samples.
@@ -122,9 +124,9 @@ def setup(asset_root, whisper_checkpoint, output_dir, seed):
     inference.load_checkpoint = checked_checkpoint
     os.environ["HF_HUB_CACHE"] = str(ROOT / "cache" / "huggingface" / "hub")
     config = yaml.safe_load((ROOT / "models" / "Plachta--Seed-VC" / "config_dit_mel_seed_uvit_whisper_base_f0_44k.yml").read_text())
-    config["device"] = "cpu"
+    config["device"] = device
     config["model_params"]["vocoder"]["name"] = str(ROOT / "models" / "nvidia--bigvgan_v2_44khz_128band_512x")
     config["model_params"]["speech_tokenizer"]["name"] = str(whisper_directory)
-    config_path = Path(output_dir) / "config-svc-cpu.yml"
+    config_path = Path(output_dir) / f"config-svc-{device}.yml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     return inference, config_path

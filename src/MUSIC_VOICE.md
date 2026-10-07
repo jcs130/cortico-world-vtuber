@@ -34,7 +34,10 @@ The gateway itself remains a standard-library service with its existing
 Whisper environment. SVC runs in a separate CPU Python environment containing
 PyTorch/torchaudio, NumPy, soundfile, transformers, librosa, PyYAML and the
 dependencies of the pinned upstream Seed-VC checkout. The tested CPU runtime
-is torch/torchaudio **2.11.0**, transformers **4.46.3**. Earlier local torch 2.4
+is torch/torchaudio **2.11.0**, transformers **4.46.3**. CUDA conversion has also
+been checked with torch/torchaudio **2.10.0+cu130**, transformers **4.46.3**,
+huggingface-hub **0.36.0** and NumPy **2.3.5** in a separate worker environment.
+Earlier local torch 2.4
 CPU numerical failures must not be masked by replacing NaNs with zero.
 
 Supply an unmodified upstream checkout and cached models; the worker never
@@ -77,6 +80,7 @@ Private gateway JSON adds:
     "referenceKind": "original-speech",
     "steps": 30,
     "cpuThreads": 4,
+    "device": "cpu",
     "referenceSeconds": 15,
     "semiToneShift": 0,
     "timeoutSec": 3600
@@ -103,7 +107,9 @@ hidden automatic octave change.
 Submission remains immediate; a single background worker processes the queue.
 SVC stage messages use the existing `validating` state, so existing World
 clients can keep polling without a main-program reload. A low-priority CPU
-subprocess uses `cpuThreads` (default 4, range 1–16) and no CUDA. Conversion can take several minutes;
+subprocess uses `cpuThreads` (default 4, range 1–16). `device` defaults to `cpu`;
+`cuda` requires a separate compatible runtime selected by `pythonFile` and an available GPU.
+An unavailable configured device fails the job. Conversion can take several minutes;
 it is not a real-time speech stage. HTTP, TTS and gameplay do not await it.
 
 Cancellation/timeout terminates only the owned child. It never interrupts

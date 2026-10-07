@@ -51,6 +51,9 @@ def normalize_voice_config(value, base):
     cfg.setdefault("referenceSeconds", 15)
     cfg.setdefault("timeoutSec", 3600)
     cfg.setdefault("cpuThreads", DEFAULT_CPU_THREADS)
+    cfg.setdefault("device", "cpu")
+    if cfg["device"] not in ("cpu", "cuda"):
+        raise ValueError("SVC device must be cpu or cuda")
     if isinstance(cfg["cpuThreads"], bool) or not isinstance(cfg["cpuThreads"], int) or not 1 <= cfg["cpuThreads"] <= 16:
         raise ValueError("SVC CPU threads must be an integer from 1 to 16")
     if isinstance(cfg["steps"], bool) or not isinstance(cfg["steps"], int) or not 30 <= cfg["steps"] <= 50:
@@ -62,7 +65,7 @@ def normalize_voice_config(value, base):
         if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val) or not minimum <= val <= maximum:
             raise ValueError("Invalid SVC duration/timeout")
     # Never accept an arbitrary command/runner from an audience request.
-    allowed = {"enabled", "backend", "referenceAuthorized", "referenceKind", "steps", "semiToneShift", "referenceSeconds", "timeoutSec", "cpuThreads",
+    allowed = {"enabled", "backend", "referenceAuthorized", "referenceKind", "steps", "semiToneShift", "referenceSeconds", "timeoutSec", "cpuThreads", "device",
                "pythonFile", "assetRoot", "manifestFile", "separatorCheckpoint", "whisperCheckpoint", "referenceFile",
                "manifestSha256", "separatorSha256", "whisperSha256", "referenceSha256", "upstreamRevision"}
     if set(cfg) - allowed:
@@ -87,7 +90,7 @@ def run_conversion(cfg, source, directory, seed, cancelled, on_stage, timeout=No
     command = [cfg["pythonFile"], str(Path(__file__).with_name("music_voice_worker.py")), "--request", str(request_file)]
     environment = os.environ.copy()
     threads = str(cfg.get("cpuThreads", DEFAULT_CPU_THREADS))
-    environment.update(CUDA_VISIBLE_DEVICES="", OMP_NUM_THREADS=threads, MKL_NUM_THREADS=threads, OPENBLAS_NUM_THREADS=threads,
+    environment.update(CUDA_VISIBLE_DEVICES="0" if cfg.get("device", "cpu") == "cuda" else "", OMP_NUM_THREADS=threads, MKL_NUM_THREADS=threads, OPENBLAS_NUM_THREADS=threads,
                        HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", PYTHONUNBUFFERED="1")
     # No provider credentials are needed in the separate local audio process.
     environment = {k: v for k, v in environment.items() if not any(word in k.upper() for word in ("API_KEY", "TOKEN", "SECRET"))}

@@ -1,6 +1,6 @@
 """Separate vocals, convert their timbre with Seed-VC SVC, then remix.
 
-Run in the deployment's isolated CPU environment. No network downloads,
+Run in the deployment's isolated audio environment. No network downloads,
 playback, catalog mutation or speaker-identity acceptance happens here.
 """
 from __future__ import annotations
@@ -12,8 +12,12 @@ import math
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 from types import SimpleNamespace
+
+# Embedded Python runtimes may omit the executable script's directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from music_voice import DEFAULT_CPU_THREADS
 
 
@@ -185,7 +189,8 @@ def run(request_file):
     source = Path(request["sourceFile"]).resolve(strict=True)
     source.relative_to(directory.parent)
     threads = cfg.get("cpuThreads", DEFAULT_CPU_THREADS)
-    os.environ.update(CUDA_VISIBLE_DEVICES="", OMP_NUM_THREADS=str(threads), MKL_NUM_THREADS=str(threads), OPENBLAS_NUM_THREADS=str(threads),
+    device = cfg.get("device", "cpu")
+    os.environ.update(CUDA_VISIBLE_DEVICES="0" if device == "cuda" else "", OMP_NUM_THREADS=str(threads), MKL_NUM_THREADS=str(threads), OPENBLAS_NUM_THREADS=str(threads),
                       HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HOME=str(Path(cfg["assetRoot"]) / "cache" / "huggingface"))
     if os.name == "nt":
         import ctypes
@@ -197,7 +202,7 @@ def run(request_file):
     torch.set_num_interop_threads(threads)
     started = time.monotonic()
     record = {"version": 1, "backend": "seed-vc-v1-200m-svc", "state": "running", "seed": request["seed"],
-              "voiceConditioned": False, "singingVoiceVerified": False, "device": "cpu", "threads": threads,
+              "voiceConditioned": False, "singingVoiceVerified": False, "device": device, "threads": threads,
               "diffusionSteps": cfg["steps"], "f0Condition": True, "autoF0Adjust": False,
               "semiToneShift": cfg["semiToneShift"], "lengthAdjust": 1.0, "referenceKind": cfg["referenceKind"],
               "sourceSha256": sha256(source), "referenceSha256": cfg["referenceSha256"]}
@@ -212,7 +217,7 @@ def run(request_file):
         sf.write(directory / "reference.wav", reference, rate, subtype="PCM_24")
         stage(directory, "converting")
         from music_voice_seed import setup
-        inference, config = setup(cfg["assetRoot"], cfg["whisperCheckpoint"], directory, request["seed"])
+        inference, config = setup(cfg["assetRoot"], cfg["whisperCheckpoint"], directory, request["seed"], device=device)
         inference.main(SimpleNamespace(source=str(directory / "source-vocals.wav"), target=str(directory / "reference.wav"),
                        output=str(directory), diffusion_steps=cfg["steps"], length_adjust=1.0, inference_cfg_rate=0.7,
                        f0_condition=True, auto_f0_adjust=False, semi_tone_shift=cfg["semiToneShift"], fp16=False,
