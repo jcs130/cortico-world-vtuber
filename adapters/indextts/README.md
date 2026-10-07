@@ -26,13 +26,19 @@ Cancelling closes upstream and the converter; a running model finishes its
 current text segment before cancellation takes effect.
 
 `stream_segment_tokens` defaults to 24 (16–120) for the native generator.
-Both native and compatibility synthesis split at complete commas or sentence
+The adapter controls both native and compatibility synthesis at complete commas or sentence
 ends, retaining punctuation runs, closing quotes, decimals and phonetic atoms.
 Comma prefixes shorter than six readable characters join the following clause;
 complete sentence ends are retained even under the old length target.
 Long unpunctuated clauses stay intact up to the model's position capacity.
 `stream_segment_chars` is accepted for compatibility with older preferences;
 it no longer merges independent clauses just to fill a character quota.
+Native clause streams are joined as one PCM stream with one WAV header, retaining
+voice and emotion parameters. Cancellation never opens a later clause. Streaming
+utterances keep their clause requests together at the adapter queue, so later
+prefetch cannot interrupt the current sentence. This also works on an older
+gateway without a model-process reload. Health reports `native-clause-segments`,
+the actual clause count, and the adapter's queue wait in the last stream record.
 The VTuber script parser also emits complete clauses after 24 spoken characters
 instead of waiting for 40 and a sentence end. Emotion metadata does not count
 toward that minimum, and short openings remain together.
@@ -185,7 +191,7 @@ For detached Windows startup, use the existing deployment supervisor or a
 hidden `Start-Process` helper. A launcher needs the Python source files including
 `speech_segments.py`, and
 `polyphonic_readings.json` in the
-same directory. Inspect `/health` for `version: "21-natural-clauses"`,
+same directory. Inspect `/health` for `version: "22-native-clauses"`,
 `pronunciation.context_ready: true` and the
 expected port before changing CortiV's `worlds.vtuber.ttsUrl` to that instance.
 The adapter's POST endpoint is `/v1/audio/speech`; `ttsUrl` is its base URL.

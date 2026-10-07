@@ -8,7 +8,7 @@ import threading
 import unittest
 import wave
 
-from stream_audio import SegmentedPcmSource, sentence_segments, pcm_chunks, read_pcm_header, tempo_chunks, wav_stream_header
+from stream_audio import NativeSegmentedPcmSource, SegmentedPcmSource, sentence_segments, pcm_chunks, read_pcm_header, tempo_chunks, wav_stream_header
 from test_adapter_requests import load_adapter
 from unittest.mock import Mock
 
@@ -30,6 +30,75 @@ class Fragmented:
 
 
 class StreamTests(unittest.TestCase):
+    def test_native_clauses_share_one_header_and_open_lazily(self):
+        responses = [Fragmented([wav_stream_header(22050), b'\x01\x00' * 12]),
+                     Fragmented([wav_stream_header(22050), b'\x02\x00' * 8])]
+        open_stream = Mock(side_effect=responses)
+        source = NativeSegmentedPcmSource(['first', 'second'], open_stream)
+        self.assertEqual(read_pcm_header(source), 22050)
+        self.assertEqual(source.read(8192), b'\x01\x00' * 12)
+        open_stream.assert_called_once_with('first')
+        self.assertEqual(b''.join(pcm_chunks(source)), b'\x02\x00' * 8)
+        self.assertEqual(source.segment_count, 2)
+        self.assertTrue(all(response.closed for response in responses))
+
+    def test_native_cancel_does_not_start_later_clause(self):
+        response = Fragmented([wav_stream_header(22050), b'\x01\x00' * 12])
+        open_stream = Mock(return_value=response)
+        source = NativeSegmentedPcmSource(['first', 'second'], open_stream)
+        self.assertEqual(read_pcm_header(source), 22050)
+        source.close()
+        self.assertEqual(source.read(8192), b'')
+        self.assertTrue(response.closed)
+        open_stream.assert_called_once_with('first')
+
+    def test_native_invalid_later_clause_is_not_concatenated(self):
+        for second in [Fragmented([wav_stream_header(24000), b'\x01\x00']),
+                       Fragmented([wav_stream_header(22050), b'\x01']),
+                       Fragmented([wav_stream_header(22050)])]:
+            with self.subTest(second=second):
+                first = Fragmented([wav_stream_header(22050), b'\x01\x00'])
+                source = NativeSegmentedPcmSource(['first', 'second'], Mock(side_effect=[first, second]))
+                self.assertEqual(read_pcm_header(source), 22050)
+                self.assertEqual(source.read(8192), b'\x01\x00')
+                with self.assertRaises(ValueError):
+                    b''.join(pcm_chunks(source))
+                source.close()
+                self.assertTrue(first.closed)
+                self.assertTrue(second.closed)
+
+    def test_native_handler_keeps_voice_emotion_and_reports_later_failure(self):
+        import json
+        import urllib.error
+        from unittest.mock import patch
+        adapter = load_adapter()
+        payloads = []
+        def respond(request, **kwargs):
+            payloads.append(json.loads(request.data))
+            if len(payloads) == 2:
+                raise urllib.error.HTTPError(request.full_url, 503, 'unavailable', {}, None)
+            return Fragmented([wav_stream_header(22050), b'\x01\x00' * 12])
+        handler = object.__new__(adapter.Handler)
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+        handler.log_message = Mock()
+        handler._send = Mock()
+        handler._chunk = Mock()
+        handler.wfile = io.BytesIO()
+        payload = {'voice': 'taozi', 'input': '种子已经收好了，接下来把小麦种下去。',
+                   'emo_vector': [0.1, 0, 0, 0, 0, 0, 0, 0], 'num_beams': 1}
+        with patch.object(adapter.urllib.request, 'urlopen', side_effect=respond):
+            handler._stream(payload, 1.0, payload['input'])
+        self.assertEqual([part['input'] for part in payloads], ['种子已经收好了，', '接下来把小麦种下去。'])
+        for part in payloads:
+            self.assertEqual(part['voice'], payload['voice'])
+            self.assertEqual(part['emo_vector'], payload['emo_vector'])
+            self.assertEqual(part['num_beams'], 1)
+        self.assertTrue(handler.close_connection)
+        self.assertEqual(handler.wfile.getvalue(), b'')
+        handler._send.assert_not_called()
+
     def test_legacy_gateway_fallback_preserves_pronunciation_per_segment(self):
         import urllib.error
         from pronunciation import normalize_pronunciation
@@ -160,7 +229,7 @@ class StreamTests(unittest.TestCase):
         handler.wfile = io.BytesIO()
         with patch.object(adapter.urllib.request, 'urlopen', return_value=source), \
              patch.object(adapter, 'remember'), \
-             patch.object(adapter.time, 'monotonic', side_effect=[10.0, 10.2, 10.2, 10.4]):
+             patch.object(adapter.time, 'monotonic', side_effect=[10.0, 10.0, 10.2, 10.2, 10.4]):
             handler._stream({'voice': 'fixture', 'input': 'hello', 'max_text_tokens_per_segment': 24},
                             1.0, 'hello', request_started=9.5)
         self.assertEqual(headers['X-TTS-First-Audio-Ms'], '200')
@@ -169,7 +238,9 @@ class StreamTests(unittest.TestCase):
         self.assertEqual(adapter._last_stream['first_audio_ms'], 700)
         self.assertEqual(adapter._last_stream['total_ms'], 900)
         self.assertEqual(adapter._last_stream['audio_ms'], 100)
-        self.assertEqual(adapter._last_stream['upstream_mode'], 'native-text-segments')
+        self.assertEqual(adapter._last_stream['upstream_mode'], 'native-clause-segments')
+        self.assertEqual(adapter._last_stream['adapter_queue_ms'], 0)
+        self.assertEqual(adapter._last_stream['speech_segments'], 1)
         self.assertTrue(source.closed)
         handler._send.assert_not_called()
 

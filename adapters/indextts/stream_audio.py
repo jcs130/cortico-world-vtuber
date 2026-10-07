@@ -18,6 +18,76 @@ def sentence_segments(text: str, max_chars: int = 40) -> list[str]:
     return pronunciation_segments(text, max_chars)
 
 
+class NativeSegmentedPcmSource:
+    """Join native clause streams with one WAV header and no added audio gap.
+
+    The adapter owns text boundaries, including on gateways which would merge
+    small clauses into a token quota. Only the first response is opened eagerly;
+    cancellation closes it and never starts later requests.
+    """
+
+    def __init__(self, segments, open_stream):
+        self._segments = iter(segments)
+        self._open_stream = open_stream
+        self._response = None
+        self._pending = b''
+        self._rate = None
+        self._pcm_bytes = 0
+        self.headers = {}
+        self.closed = False
+        self.segment_count = 0
+        self._open_next()
+
+    def _open_next(self):
+        if self.closed:
+            return False
+        text = next(self._segments, None)
+        if text is None:
+            return False
+        response = self._open_stream(text)
+        try:
+            rate = read_pcm_header(response)
+            if self._rate is not None and self._rate != rate:
+                raise ValueError('segment sample rate changed')
+        except Exception:
+            response.close()
+            raise
+        if self._rate is None:
+            self._pending = wav_stream_header(rate)
+            self.headers = getattr(response, 'headers', {})
+        self._rate = rate
+        self._pcm_bytes = 0
+        self._response = response
+        self.segment_count += 1
+        return True
+
+    def read(self, length):
+        if self.closed:
+            return b''
+        if self._pending:
+            data, self._pending = self._pending[:length], self._pending[length:]
+            return data
+        while self._response is not None:
+            data = self._response.read(length)
+            if data:
+                self._pcm_bytes += len(data)
+                return data
+            self._response.close()
+            self._response = None
+            if not self._pcm_bytes or self._pcm_bytes % 2:
+                raise ValueError('segment requires complete nonempty PCM16 samples')
+            if not self._open_next():
+                break
+        return b''
+
+    def close(self):
+        self.closed = True
+        self._pending = b''
+        if self._response is not None:
+            self._response.close()
+            self._response = None
+
+
 class SegmentedPcmSource:
     """Compatibility source: generate the next complete text segment on demand.
 

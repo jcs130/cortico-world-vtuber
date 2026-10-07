@@ -3,29 +3,40 @@
 @@ -427 +427 @@
 -    def split_text_by_tokens(self, text, max_tokens, lang_prefix=""):
 +    def split_text_by_tokens(self, text, max_tokens, lang_prefix="", prefer_clause_boundaries=False):
-@@ -431 +431 @@
--        if self._token_len(text) <= budget:
-+        if not prefer_clause_boundaries and self._token_len(text) <= budget:
-@@ -433,0 +434,28 @@
+@@ -433,0 +434,42 @@
 +        chunks = []
 +        if prefer_clause_boundaries:
-+            from indextts.utils.speech_segments import punctuation_segments
-+            # Use the same punctuation contract as the adapter's legacy path.
-+            # A soft token budget cannot splice words or swallow sentence ends.
-+            chunks = punctuation_segments(text)
++            # Streaming budgets end at a complete clause. Long clauses retain
++            # their words and phonetic atoms up to the model's position limit.
++            clause = ""
++            for piece, atomic in self._split_atomic_pieces(text):
++                if atomic:
++                    clause += piece
++                    continue
++                for part in re.split(r'(?<=[，。！？；,!?;\n])|(?<=\.)(?!\d)', piece):
++                    clause += part
++                    if re.search(r'[，。！？；,!?;\n]$|\.$', part):
++                        chunks.append(clause)
++                        clause = ""
++            if clause:
++                chunks.append(clause)
 +            capacity_budget = capacity - 2 - self._token_len(lang_prefix)
 +            chunks = [segment for clause in chunks for segment in (
 +                self.split_text_by_tokens(clause, capacity - 2, lang_prefix)
 +                if self._token_len(clause) > capacity_budget else [clause]
 +            )]
-+            return chunks or [text]
 +        else:
 +            chunks = self._token_chunks(text, budget)
 +
 +        segments, current = [], ""
 +        for chunk in chunks:
 +            combined_tokens = self._token_len(current + chunk)
-+            if current and combined_tokens > budget:
++            # Tiny prefixes do not provide enough playback time for the next
++            # GPU segment. Keep them with a complete following clause.
++            can_split = (not prefer_clause_boundaries or
++                         len(re.sub(r'[\W_]', '', self.SPLIT_PROTECTED_PATTERN.sub('a', current))) >= 6 or
++                         combined_tokens > capacity_budget)
++            if current and combined_tokens > budget and can_split:
 +                segments.append(current)
 +                current = chunk
 +            else:
@@ -35,7 +46,7 @@
 +        return segments or [text]
 +
 +    def _token_chunks(self, text, budget):
-@@ -455,10 +483 @@
+@@ -455,10 +497 @@
 -        segments, current = [], ""
 -        for chunk in chunks:
 -            if current and self._token_len(current + chunk) > budget:
@@ -47,61 +58,10 @@
 -            segments.append(current)
 -        return segments or [text]
 +        return chunks
-@@ -720 +739,2 @@
+@@ -720 +753,2 @@
 -        segments = self.split_text_by_tokens(text, max_text_tokens_per_segment, lang_prefix)
 +        segments = self.split_text_by_tokens(text, max_text_tokens_per_segment, lang_prefix,
 +                                            prefer_clause_boundaries=stream_return)
---- /dev/null
-+++ b/src/indextts/utils/speech_segments.py
-@@ -0,0 +1,48 @@
-+"""Punctuation boundaries shared by ordinary text and phonetic synthesis text."""
-+
-+import re
-+
-+
-+_ATOMS = re.compile(
-+    r'<\|SPECIAL_TOKEN_\d+\|>.*?<\|SPECIAL_TOKEN_\d+\|>'
-+    r'|<[^<>\n]*>|`[^`\n]*`|https?://[^\s<>，。！？；]+|.', re.DOTALL)
-+_CLOSERS = '，。！？；,!?;.…"\'”’」』）》）)]}'
-+_HARD_END = re.compile(r'[。！？!?…\n.][，。！？；,!?;.…"\'”’」』）》）)\]}\s]*$')
-+
-+
-+def readable_length(text: str) -> int:
-+    text = re.sub(r'<\|SPECIAL_TOKEN_\d+\|>.*?<\|SPECIAL_TOKEN_\d+\|>', '字', text)
-+    text = re.sub(r'<([^<>|]+)\|[^<>]+>', r'\1', text)
-+    return len(re.sub(r'[\W_]', '', text))
-+
-+
-+def punctuation_segments(text: str, min_clause_chars: int = 6) -> list[str]:
-+    """Split complete clauses; short comma prefixes keep their following clause.
-+
-+    Never split words, pronunciation atoms, decimals, quotes or punctuation runs.
-+    Text is preserved exactly, including spaces at a boundary. A caller with a
-+    hard model capacity must handle an oversized clause separately.
-+    """
-+    units = _ATOMS.findall(text)
-+    clauses, part, pending = [], '', False
-+    for index, unit in enumerate(units):
-+        if pending and unit not in _CLOSERS and not unit.isspace():
-+            clauses.append(part)
-+            part, pending = '', False
-+        part += unit
-+        decimal = (unit == '.' and index > 0 and index + 1 < len(units)
-+                   and units[index - 1].isdigit() and units[index + 1].isdigit())
-+        if unit in '，。！？；,!?;…\n' or (unit == '.' and not decimal):
-+            pending = True
-+    if part:
-+        clauses.append(part)
-+    segments, current = [], ''
-+    for clause in clauses:
-+        if current and (_HARD_END.search(current) or readable_length(current) >= min_clause_chars):
-+            segments.append(current)
-+            current = clause
-+        else:
-+            current += clause
-+    if current:
-+        segments.append(current)
-+    return segments or [text]
 --- a/indextts/gateway/indextts_gateway.py
 +++ b/indextts/gateway/indextts_gateway.py
 @@ -114 +114 @@
@@ -121,8 +81,6 @@
 +             voice, mood or "-", len(text), first_ms, queue_ms, segment_tokens, num_beams)
 @@ -467,0 +471 @@
 +        "X-TTS-Queue-Ms": str(queue_ms), "X-TTS-Num-Beams": str(num_beams),
-@@ -494,0 +499 @@
-+        "streaming_segment_policy": "punctuation-short-prefixes",
 --- a/indextts/gateway/gateway_stream.py
 +++ b/indextts/gateway/gateway_stream.py
 @@ -35,0 +36,6 @@
@@ -152,16 +110,13 @@
 +        self.assertEqual(self.model.calls[0]['max_text_tokens_per_segment'], 24)
 --- /dev/null
 +++ b/indextts/gateway/tests/test_stream_boundaries.py
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,67 @@
 +"""Exercise the installed splitter without importing torch or loading weights."""
 +import ast
 +from pathlib import Path
 +import re
 +import types
 +import unittest
-+import sys
-+
-+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'src'))
 +
 +
 +class BoundaryTests(unittest.TestCase):
@@ -188,16 +143,6 @@
 +        self.assertEqual(''.join(parts), text)
 +        self.assertEqual(parts[0], '今天我们去村庄看看。')
 +        self.assertTrue(all(part.endswith(('，', '。')) for part in parts))
-+
-+    def test_punctuation_is_a_boundary_even_when_the_whole_text_fits_the_budget(self):
-+        text = '种子已经收好了，接下来把小麦种下去。等成熟以后再收。'
-+        self.assertEqual(self.model.split_text_by_tokens(text, 120, prefer_clause_boundaries=True),
-+                         ['种子已经收好了，', '接下来把小麦种下去。', '等成熟以后再收。'])
-+
-+    def test_stream_quotes_remain_with_the_preceding_clause(self):
-+        text = '她说：“小麦种子收好了！” 接下来先去播种。'
-+        self.assertEqual(self.model.split_text_by_tokens(text, 24, prefer_clause_boundaries=True),
-+                         ['她说：“小麦种子收好了！” ', '接下来先去播种。'])
 +
 +    def test_stream_preserves_phonetic_atoms_and_decimal_numbers(self):
 +        hint = '<|SPECIAL_TOKEN_2|>ZHANG3<|SPECIAL_TOKEN_2|>'

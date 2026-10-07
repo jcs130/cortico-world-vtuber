@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """IndexTTS HTTP adapter: reference prosody, contextual pronunciation and segment streaming."""
-import json, os, re, subprocess, sys, io, time, difflib, urllib.request, shutil, hashlib
+import json, os, re, subprocess, sys, io, time, difflib, urllib.request, shutil, hashlib, threading
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from corti_speech_style import (
     DEFAULT_CONFIDENCE, DEFAULT_EMOTION_MIX, MAX_EMOTION_MIX,
     bounded_number, emotion_mix_vector, strip_stage_directions,
 )
-from stream_audio import SegmentedPcmSource, read_pcm_header, sentence_segments, tempo_chunks, wav_stream_header
+from stream_audio import NativeSegmentedPcmSource, SegmentedPcmSource, read_pcm_header, sentence_segments, tempo_chunks, wav_stream_header
 from pronunciation import initialize_pronunciation, normalize_pronunciation, pronunciation_health, pronunciation_segments
 from spoken_text import normalize_spoken_text
 
@@ -16,11 +16,12 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 PORT = int(os.environ.get('CORTI_TTS_PORT', '8010'))
 if not 1 <= PORT <= 65535:
     raise ValueError('CORTI_TTS_PORT must be an integer between 1 and 65535')
-ADAPTER_VERSION = '21-natural-clauses'
+ADAPTER_VERSION = '22-native-clauses'
 DEFAULT_STREAM_SEGMENT_TOKENS = 24
 _last_preparation = None
 _last_stream = None
 _upstream_stream_path = 'unverified'
+_stream_lock = threading.Lock()
 INDEXTTS_BASE = os.environ.get('CORTICO_INDEXTTS_URL', 'http://127.0.0.1:8087').rstrip('/')
 INDEXTTS = INDEXTTS_BASE + '/tts_raw'
 INDEXTTS_STREAM = INDEXTTS_BASE + '/tts_stream'
@@ -237,13 +238,23 @@ class Handler(BaseHTTPRequestHandler):
         response = None
         chunks = None
         sent = False
+        acquired = False
         try:
-            request = urllib.request.Request(
-                INDEXTTS_STREAM, data=json.dumps(payload).encode('utf-8'),
-                headers={'Content-Type': 'application/json'})
+            # Keep one utterance together at the shared model queue. Otherwise
+            # a prefetched later utterance could cut between its clause requests.
+            _stream_lock.acquire()
+            acquired = True
+            adapter_queue_ms = round((time.monotonic() - started) * 1000)
+            segments = pronunciation_segments(payload['input'], max_chars)
+            self.log_message('stream clauses: %s', json.dumps(segments, ensure_ascii=False))
+            def open_stream(segment):
+                request = urllib.request.Request(
+                    INDEXTTS_STREAM, data=json.dumps(dict(payload, input=segment)).encode('utf-8'),
+                    headers={'Content-Type': 'application/json'})
+                return urllib.request.urlopen(request, timeout=90)
             try:
-                response = urllib.request.urlopen(request, timeout=90)
-                stream_path = 'native-text-segments'
+                response = NativeSegmentedPcmSource(segments, open_stream)
+                stream_path = 'native-clause-segments'
             except urllib.error.HTTPError as error:
                 if error.code not in (404, 405):
                     raise
@@ -256,7 +267,7 @@ class Handler(BaseHTTPRequestHandler):
                         headers={'Content-Type': 'application/json'})
                     with urllib.request.urlopen(req, timeout=90) as audio:
                         return audio.read()
-                response = SegmentedPcmSource(pronunciation_segments(payload['input'], max_chars), synthesize)
+                response = SegmentedPcmSource(segments, synthesize)
                 stream_path = 'compatibility-text-segments'
                 self.log_message('stream uses legacy segment synthesis: max_chars=%d', max_chars)
             _upstream_stream_path = stream_path
@@ -294,9 +305,11 @@ class Handler(BaseHTTPRequestHandler):
                 'upstream_mode': stream_path, 'preparation_ms': preparation_ms,
                 'first_audio_ms': request_first_ms, 'upstream_first_audio_ms': first_ms,
                 'upstream_queue_ms': queue_ms,
+                'adapter_queue_ms': adapter_queue_ms,
                 'total_ms': round((time.monotonic() - request_started) * 1000),
                 'audio_ms': round(byte_count * 1000 / (rate * 2)),
                 'segment_tokens': payload.get('max_text_tokens_per_segment'),
+                'speech_segments': getattr(response, 'segment_count', None),
             }
             self.log_message('stream ok: %s', json.dumps(_last_stream))
         except (BrokenPipeError, ConnectionResetError):
@@ -314,6 +327,8 @@ class Handler(BaseHTTPRequestHandler):
                 chunks.close()
             if response is not None:
                 response.close()
+            if acquired:
+                _stream_lock.release()
 
     def do_GET(self):
         if self.path.rstrip('/') == '/health':
