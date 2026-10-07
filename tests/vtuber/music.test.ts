@@ -147,6 +147,34 @@ function performerFixture(options: { failMusic?: boolean; delayedStart?: boolean
 }
 
 describe('music shares the ordinary performer queue', () => {
+  it('reports remaining audio across current and queued playback without clock-sized status churn', async () => {
+    const f = performerFixture();
+    expect(f.performer.statusLine()).toBe('[演出状态] 安静');
+    f.enqueue(song('first', 12_000));
+    f.enqueue(song('next', 8000));
+    await vi.advanceTimersByTimeAsync(250);
+    const initial = f.performer.statusLine();
+    expect(initial).toContain('正在播放歌曲「first」');
+    expect(initial).toContain('在播及排队约 20 秒');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(f.performer.statusLine()).toBe(initial);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(f.performer.statusLine()).toContain('在播及排队约 15 秒');
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(f.performer.statusLine()).toBe('[演出状态] 安静');
+  });
+
+  it('exposes the pending speech estimate and clears it when speech finishes', async () => {
+    const f = performerFixture();
+    f.speech('a complete statement');
+    expect(f.performer.statusLine()).toContain('在播及排队约');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(f.performer.statusLine()).toContain('在播及排队约');
+    expect(f.performer.statusLine()).not.toContain('安静');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(f.performer.statusLine()).toBe('[演出状态] 安静');
+  });
+
   it('reserves intro → music → outro together ahead of concurrently queued ordinary speech', async () => {
     const f = performerFixture();
     f.speech('before');

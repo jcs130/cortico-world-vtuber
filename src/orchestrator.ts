@@ -691,8 +691,11 @@ export class Performer {
   statusLine(): string {
     const s = this.status();
     const music = this.musicState().current;
-    const play = music ? `正在播放歌曲「${music.title}」` : s.playing ? '正在说话' : s.queuedBeats > 0 ? `排队 ${s.queuedBeats} 拍` : '安静';
-    return `[演出状态] ${play}`;
+    // 五秒一档，避免播放时钟每次采样都改写模型的现场事实。
+    const remainingSec = Math.ceil(this.audioBacklogMs() / 5000) * 5;
+    const play = music ? `正在播放歌曲「${music.title}」` : s.playing ? '正在说话'
+      : s.queuedBeats > 0 ? `排队 ${s.queuedBeats} 拍` : remainingSec > 0 ? '等待音频播放' : '安静';
+    return `[演出状态] ${play}${remainingSec > 0 ? `；在播及排队约 ${remainingSec} 秒` : ''}`;
   }
 
 
