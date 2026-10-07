@@ -58,6 +58,7 @@ export interface EngineInit {
   vtsWsUrl: string;
   streamPort: number;
   ttsUrl: string;
+  ttsService?: Partial<import('./tts-service.ts').TtsServiceConfig>;
   /** 自备运行时目录;空串 = 走托管下载 */
   ttsRuntimeDir: string;
   /** 运行时版本;空串 = 包里钉住的那个 */

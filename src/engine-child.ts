@@ -198,6 +198,7 @@ async function handleInit(init: EngineInit): Promise<EngineReady> {
     vtsWsUrl: init.vtsWsUrl,
     streamPort: init.streamPort,
     ttsUrl: init.ttsUrl,
+    ttsService: init.ttsService,
     ttsRuntimeDir: () => init.ttsRuntimeDir,
     ttsRuntimeRelease: () => init.ttsRuntimeRelease,
     ...(init.packDir ? { packDir: init.packDir } : {}),

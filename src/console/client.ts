@@ -54,14 +54,18 @@ export interface TtsState {
   pid: number | null;
   detail: string | null;
   reachable?: boolean;
+  kind?: 'voxcpm2' | 'indextts' | 'external';
+  ownership?: 'owned' | 'external' | 'none';
+  health?: Record<string, unknown> | null;
   resources: {
-    server: { path: string; ready: boolean };
-    baseLm: { path: string; ready: boolean; configured: boolean };
-    acoustic: { path: string; ready: boolean; configured: boolean };
-    alignerLm: { path: string; ready: boolean; configured: boolean };
-    alignerAudio: { path: string; ready: boolean; configured: boolean };
-    alignerRequired: boolean;
-    alignerReady: boolean;
+    files?: Array<{ label: string; path: string; ready: boolean }>;
+    server?: { path: string; ready: boolean };
+    baseLm?: { path: string; ready: boolean; configured: boolean };
+    acoustic?: { path: string; ready: boolean; configured: boolean };
+    alignerLm?: { path: string; ready: boolean; configured: boolean };
+    alignerAudio?: { path: string; ready: boolean; configured: boolean };
+    alignerRequired?: boolean;
+    alignerReady?: boolean;
     ready: boolean;
   };
 }

@@ -306,6 +306,10 @@ class Handler(BaseHTTPRequestHandler):
                 'speed': float(prefs.get('speed', 1.0) or 1.0),
                 'mood_engine': 'startlux-decision',
                 'version': ADAPTER_VERSION,
+                'instance_id': os.environ.get('CORTICO_TTS_MANAGED_TOKEN'),
+                'pid': os.getpid(),
+                'upstream_url': INDEXTTS_BASE,
+                'preferences_file': PREFS,
                 'port': PORT,
                 'emotion_mix': bounded_number(prefs.get('emotion_mix'), DEFAULT_EMOTION_MIX, 0.0, MAX_EMOTION_MIX),
                 'emotion_min_confidence': bounded_number(prefs.get('emotion_min_confidence'), DEFAULT_CONFIDENCE, 0.0, 1.0),
@@ -416,6 +420,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
+    from managed_lifecycle import watch_parent
+    watch_parent()
     initialize_pronunciation()
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
     print(f'[adapter {ADAPTER_VERSION}] Segment streaming + reference prosody on :{PORT} -> {INDEXTTS}')

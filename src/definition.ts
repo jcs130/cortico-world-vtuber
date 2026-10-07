@@ -18,6 +18,7 @@ export interface VtuberConfigSection {
   vtsWsUrl: string;
   streamPort: number;
   ttsUrl: string;
+  ttsService: import('./tts-service.ts').TtsServiceConfig;
   ttsRuntimeDir: string;
   ttsRuntimeRelease: string;
   ttsBaseLmFile: string;
@@ -83,6 +84,7 @@ export const VTUBER: WorldDefinition<VtuberConfigSection> = {
       vtsWsUrl: cfg.vtsWsUrl,
       streamPort: cfg.streamPort,
       ttsUrl: cfg.ttsUrl,
+      ttsService: cfg.ttsService,
       ttsRuntimeDir: () => cfg.ttsRuntimeDir,
       ttsRuntimeRelease: () => cfg.ttsRuntimeRelease,
       ttsBaseLmFile: () => cfg.ttsBaseLmFile,

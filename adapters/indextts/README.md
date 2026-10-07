@@ -158,3 +158,13 @@ It must expose `/tts_raw` and may expose `/tts_stream`.
 `CORTICO_DECISION_URL` selects the optional emotion classifier endpoint.
 `CORTICO_FFMPEG` selects an ffmpeg executable; otherwise it is resolved from PATH.
 The adapter contains no model weights, reference voices, credentials or preference files.
+
+## Managed lifecycle
+
+The VTuber extension can launch this directory with `ttsService.kind=indextts` and
+`ttsService.autoStart=true`. Its service manager passes the configured model gateway,
+voice preference file, pronunciation assets and decision endpoint to Python.
+A managed adapter reports its instance credential in `/health` and exits when the
+parent stdin pipe closes. Standalone use without `CORTICO_TTS_MANAGED_TOKEN` is unchanged.
+The model gateway has a separate lifecycle and is never terminated by the extension.
+Managed use on Windows requires Python 3.12 or later for nonblocking pipe reads.

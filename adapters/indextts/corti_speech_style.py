@@ -202,12 +202,17 @@ def strip_stage_directions(text: str, mood_rules) -> tuple[str, list[str], str |
         # Match a complete known cue or explicit mood tag, not words embedded in facts.
         explicit = _EXPLICIT_EMOTION.fullmatch(candidate) is not None
         action = _DIRECTION_ACTION.fullmatch(candidate) is not None
-        if action or explicit:
+        # The registry owns its aliases. A second allowlist had omitted valid
+        # labels such as 无奈 and 温暖, sending them into both speech paths.
+        if not acoustic:
+            recognized_mood = next((mapped for regex, mapped in mood_rules
+                                    if regex.fullmatch(candidate)), None)
+        if (action or explicit) and recognized_mood is None:
             for regex, mapped_mood in mood_rules:
                 if regex.search(candidate):
                     recognized_mood = mapped_mood
                     break
-        if not action and not explicit and not acoustic:
+        if not action and not explicit and not acoustic and recognized_mood is None:
             return False
         tags.append(candidate)
         if mood is None and recognized_mood is not None:

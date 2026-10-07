@@ -75,6 +75,18 @@ function waitFor(cond: () => boolean, timeoutMs = 8000): Promise<void> {
 }
 
 describe('传给子进程的一次性载荷', () => {
+  it('语音服务选择和本地适配器配置保留到引擎载荷', () => {
+    const proxy = new VtuberWorldProxy({ ttsService: {
+      kind: 'indextts', autoStart: true, pythonFile: 'D:/runtime/python.exe',
+      upstreamUrl: 'http://127.0.0.1:18087', preferencesFile: 'D:/data/voice.json',
+      pronunciationModelDir: 'D:/models/reading', pronunciationTokenizerDir: 'D:/models/tokenizer',
+    } });
+    const init = (proxy as unknown as { buildInit(): import('../../src/engine-ipc.ts').EngineInit }).buildInit();
+    expect(init.ttsService).toMatchObject({ kind: 'indextts', autoStart: true,
+      pythonFile: 'D:/runtime/python.exe', upstreamUrl: 'http://127.0.0.1:18087',
+      preferencesFile: 'D:/data/voice.json', pronunciationModelDir: 'D:/models/reading',
+      pronunciationTokenizerDir: 'D:/models/tokenizer' });
+  });
   /**
    * World 跑在子进程里,配置里的函数过不去。运行时目录与版本漏在 EngineInit 外面的话,
    * 子进程拿到空串,TTS 起不来只报一句「缺文件(TTS server):」后面什么都没有。

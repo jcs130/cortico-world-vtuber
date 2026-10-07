@@ -57,7 +57,7 @@ interface TestWav {
 export const ttsPanel: ConsolePanel = {
   mount(ctx: ConsolePanelContext) {
     const { ui } = ctx;
-    const card = ui.sheet({ title: '声线档案', en: 'VoxCPM2', desc: DESC });
+    const card = ui.sheet({ title: '语音试听与声线', en: 'TTS', desc: '声线设置由选定的语音后端管理。' });
     card.body.appendChild(dimLine(ctx, HIFI_NOTE));
 
     // ---- 头一行:生效中的那条声线 + 刷新 ----
@@ -142,6 +142,9 @@ export const ttsPanel: ConsolePanel = {
     const saveUrl = urlSlot(ctx);
     card.body.appendChild(player);
 
+    const profileElements = Array.from(card.body.children).filter(el => el !== headBar && el !== testBar && el !== player);
+    const backendNote = dimLine(ctx);
+    card.body.appendChild(backendNote);
     mountRuntimeSection(ctx);
     ctx.root.appendChild(card.el);
 
@@ -253,7 +256,13 @@ export const ttsPanel: ConsolePanel = {
         voicesDir = st.voicesDir || '';
         reachable = !!st.reachable;
         if (!reachable) say('TTS server 不在跑,去「挂载」里启动');
-        renderProfile(st.profile, st.voices);
+        const usesProfile = !st.kind || st.kind === 'voxcpm2';
+        profileElements.forEach(el => { (el as HTMLElement).hidden = !usesProfile; });
+        if (usesProfile) renderProfile(st.profile, st.voices);
+        else {
+          activeChip.textContent = String(st.health?.voice ?? st.kind);
+          backendNote.textContent = '声线与语速使用后端配置；下方试听沿用现役设置。';
+        }
       } catch (err) {
         if (ctx.signal.aborted) return;
         reachable = false;
@@ -374,6 +383,8 @@ export const ttsPanel: ConsolePanel = {
 
 /** 面板顶部那块:运行时装没装、四个权重在不在;能下的带下载按钮,自备的只报状态 */
 interface RuntimePanelState {
+  kind?: 'voxcpm2' | 'indextts' | 'external';
+  service?: { ownership: string; detail: string | null; url: string; health: Record<string, unknown> | null };
   release: string;
   key: string | null;
   dir: string;
@@ -410,7 +421,7 @@ function progressText(done: number, total: number | null): string {
 
 function mountRuntimeSection(ctx: ConsolePanelContext): void {
   const { ui } = ctx;
-  const card = ui.sheet({ title: '运行时与权重', en: 'Runtime', desc: RUNTIME_DESC });
+  const card = ui.sheet({ title: '运行时与权重', en: 'Runtime', desc: '按配置的语音服务类型显示运行状态。' });
 
   const msg = ui.msgline('');
   const chip = ui.chip('—');
@@ -439,6 +450,23 @@ function mountRuntimeSection(ctx: ConsolePanelContext): void {
     }
     if (ctx.signal.aborted) return;
 
+    if (st.kind && st.kind !== 'voxcpm2') {
+      busy = false;
+      btnInstall.hidden = true;
+      chip.textContent = st.kind === 'indextts' ? 'IndexTTS 适配器' : '外部语音服务';
+      dirLine.textContent = st.service?.url ?? '';
+      setMsg(msg, st.service?.ownership === 'owned' ? '由演出扩展管理' : '外部服务由其启动者管理');
+      rows.replaceChildren(dimLine(ctx, st.kind === 'indextts'
+        ? '适配器随扩展发布。Python、模型网关和声线偏好文件在配置页设置；启停位于「挂载」。'
+        : '连接配置的语音地址；本扩展不启动或关闭外部服务。'));
+      const health = st.service?.health;
+      if (health?.voice) rows.appendChild(dimLine(ctx, `当前声线：${String(health.voice)}`));
+      if (health?.preferences_file) rows.appendChild(dimLine(ctx, `声线偏好：${String(health.preferences_file)}`));
+      if (st.service?.detail) rows.appendChild(dimLine(ctx, st.service.detail));
+      return;
+    }
+    btnInstall.hidden = false;
+    dirLine.title = RUNTIME_DESC;
     const phase = st.install.phase;
     busy = phase === 'downloading' || phase === 'extracting'
       || st.models.some((m) => m.phase === 'downloading');

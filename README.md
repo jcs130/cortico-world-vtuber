@@ -128,9 +128,40 @@ Type-H1 的许可 §4.5 禁止 AI 用途,模型文件本身从不出现在这个
 
 AGPL-3.0-or-later,见 [LICENSE](LICENSE)。框架 Cortico 是 MIT,两者经 HTTP 与扩展契约相连,
 许可各归各。想提 PR 见 [CONTRIBUTING.md](CONTRIBUTING.md)。
-# IndexTTS gateway adapter
+## IndexTTS 语音服务管理
 
-The portable [IndexTTS adapter](adapters/indextts/README.md) provides text-segment
-streaming, reference prosody, emotion hints and pronunciation cleanup through an
-existing gateway. Model weights, voice references and deployment preferences are
-configured separately.
+`src/tts-service.ts` 统一管理语音服务。`worlds.vtuber.ttsService.kind` 选择
+`voxcpm2`、`indextts` 或 `external`，`ttsUrl` 是客户端连接的根地址。
+`autoStart` 默认关闭；开启后随演出扩展启动。
+
+IndexTTS 适配器随本扩展发布，Python 依赖见
+[适配器说明](adapters/indextts/README.md)。部署配置示例：
+
+```json
+{
+  "worlds": {
+    "vtuber": {
+      "ttsUrl": "http://127.0.0.1:8012",
+      "ttsService": {
+        "kind": "indextts",
+        "autoStart": true,
+        "pythonFile": "D:/runtime/python.exe",
+        "upstreamUrl": "http://127.0.0.1:8087",
+        "preferencesFile": "D:/deployment/voice.json",
+        "pronunciationModelDir": "D:/models/reading",
+        "pronunciationTokenizerDir": "D:/models/tokenizer"
+      }
+    }
+  }
+}
+```
+
+配置变化需重载演出扩展。「挂载」页显示进程归属，启停选定的服务。
+适配器启动前检查现有端点；符合协议的现有服务记为外部服务，不会再启动一份。
+其他服务占用端口时报告错误。托管实例通过随机健康凭据确认归属，正常停止或宿主
+异常退出时结束子进程。退出及连续三次健康失败触发有界恢复；恢复间隔逐次加倍，
+达到 `maxRestarts` 后停止重试，手动启动重置次数。
+
+模型网关通过 `upstreamUrl` 连接，其进程仍由部署者管理，可供其他应用共用。
+声线与语速使用适配器偏好文件；VoxCPM2 档案字段仅用于 VoxCPM2。
+权重、参考音频和部署偏好不随包发布。

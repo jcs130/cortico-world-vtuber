@@ -68,7 +68,7 @@ import {
   type TtsStreamSink,
   type TtsSynthProfile,
 } from './tts.ts';
-import { TtsServerManager, type TtsServerState } from './tts-server.ts';
+import { TtsService, TTS_SERVICE_DEFAULTS, type TtsServiceConfig, type TtsServiceState } from './tts-service.ts';
 import { modelsRoot, runtimesRoot } from 'cortico/paths.ts';
 import { ModelStore, type ModelId, type ModelState } from './runtime/models.ts';
 import { PINNED_RELEASE, defaultBackend, planFor, type Backend, type ReleasePlan } from './runtime/release.ts';
@@ -146,6 +146,7 @@ export const VTUBER_DEFAULTS = {
   streamPort: 7792,
   /** VoxCPM2 server;VTS 占 8001,TTS 用 8010 */
   ttsUrl: 'http://127.0.0.1:8010',
+  ttsService: { ...TTS_SERVICE_DEFAULTS },
   /** 自备运行时目录;空 = 走面板的托管下载 */
   ttsRuntimeDir: '',
   /** 运行时版本;空 = 包里钉住的那个 */
@@ -365,9 +366,57 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
       },
       'worlds.vtuber.ttsUrl': {
         type: 'string',
-        title: 'TTS(VoxCPM2)',
+        title: '语音服务地址',
         'x-hot': false,
         description: '默认 http://127.0.0.1:8010(VTS 占了 8001)',
+      },
+      'worlds.vtuber.ttsService.kind': {
+        type: 'string', enum: ['voxcpm2', 'indextts', 'external'], title: '语音服务类型', 'x-hot': false,
+        description: 'VoxCPM2、本地 IndexTTS 适配器，或只连接外部服务。',
+      },
+      'worlds.vtuber.ttsService.autoStart': {
+        type: 'boolean', title: '随演出启动语音服务', 'x-hot': false,
+        description: '开启后，演出扩展启动时检查语音端点；已存在的服务保持外部归属。',
+      },
+      'worlds.vtuber.ttsService.pythonFile': {
+        type: 'string', 'x-path': { kind: 'file' }, title: 'IndexTTS Python', 'x-hot': false,
+        description: '已安装适配器依赖的 Python 可执行文件，或 PATH 中的命令。',
+      },
+      'worlds.vtuber.ttsService.upstreamUrl': {
+        type: 'string', title: 'IndexTTS 模型服务', 'x-hot': false,
+        description: '共享的模型网关根地址；扩展不启动或关闭这个网关。',
+      },
+      'worlds.vtuber.ttsService.preferencesFile': {
+        type: 'string', 'x-path': { kind: 'file' }, title: 'IndexTTS 声线偏好文件', 'x-hot': false,
+        description: '包含 voice、speed 等配置的 JSON；留空使用适配器默认位置。',
+      },
+      'worlds.vtuber.ttsService.pronunciationModelDir': {
+        type: 'string', 'x-path': { kind: 'directory' }, title: '上下文读音模型目录', 'x-hot': false,
+        description: '可选 G2PW 模型目录。',
+      },
+      'worlds.vtuber.ttsService.pronunciationTokenizerDir': {
+        type: 'string', 'x-path': { kind: 'directory' }, title: '上下文读音分词目录', 'x-hot': false,
+        description: '可选分词器目录。',
+      },
+      'worlds.vtuber.ttsService.decisionUrl': {
+        type: 'string', title: '语气和读音选择器', 'x-hot': false,
+        description: '快速选择器接口地址；不可用时使用适配器内的回退。',
+      },
+      'worlds.vtuber.ttsService.startupTimeoutMs': {
+        type: 'integer', minimum: 1000, maximum: 300000, title: '适配器启动超时(毫秒)', 'x-hot': false,
+        description: '等待本次子进程的健康凭据，超时后收尾。',
+      },
+      'worlds.vtuber.ttsService.healthIntervalMs': {
+        type: 'integer', minimum: 1000, maximum: 60000, title: '语音健康检查间隔(毫秒)', 'x-hot': false,
+        description: '连续三次检查失败后尝试恢复自己管理的适配器。',
+      },
+      'worlds.vtuber.ttsService.restartDelayMs': {
+        type: 'integer', minimum: 500, maximum: 60000, title: '语音恢复初始间隔(毫秒)', 'x-hot': false,
+        description: '每次失败后加倍，避免持续启动失败时反复拉起。',
+      },
+      'worlds.vtuber.ttsService.maxRestarts': {
+        type: 'integer', minimum: 0, maximum: 10, title: '语音自动恢复次数', 'x-hot': false,
+        description: '一次手动启动或扩展加载期间的恢复上限；0 关闭自动恢复。',
       },
       'worlds.vtuber.ttsRuntimeDir': {
         type: 'string',
@@ -756,6 +805,7 @@ export interface VtuberWorldOptions {
   /** 演出流服务的偏好端口(0 = 随机空闲口;测试用) */
   streamPort?: number;
   ttsUrl?: string;
+  ttsService?: Partial<TtsServiceConfig>;
   /** 自备的运行时目录;非空就不走托管下载(自编译、签过名的构建走这里) */
   ttsRuntimeDir?: () => string;
   /** 托管下载钉住的 release;留空用包里钉的那个 */
@@ -878,10 +928,12 @@ export interface VtuberOverlayConsole {
 
 export interface VtuberTtsConsole {
   state(): Promise<
-    TtsServerState & { reachable: boolean; profile: TtsProfile; voices: TtsVoiceInfo[]; voicesDir: string }
+    TtsServiceState & { reachable: boolean; profile: TtsProfile; voices: TtsVoiceInfo[]; voicesDir: string }
   >;
   /** 运行时与权重的安装状态 */
   runtime(): {
+    kind: TtsServiceConfig['kind'];
+    service: TtsServiceState;
     release: string;
     key: string | null;
     dir: string;
@@ -896,8 +948,8 @@ export interface VtuberTtsConsole {
   installRuntime(): Promise<void>;
   /** 下一个权重文件 */
   downloadModel(id: ModelId): Promise<void>;
-  start(): TtsServerState;
-  stop(): Promise<TtsServerState>;
+  start(): Promise<TtsServiceState>;
+  stop(): Promise<TtsServiceState>;
   /** 改声线档案(部分字段);钳制后持久化(连同转写侧车)并返回生效值 */
   setProfile(patch: Partial<TtsProfile>): TtsProfile;
   /**
@@ -1399,7 +1451,7 @@ export class VtuberWorld implements World {
   private speechRateLogWarned = false;
   /** 本声线是否已经报过一次「估计切到实测」;换声线时随 epoch 复位 */
   private speechRateAnnounced = false;
-  private readonly ttsServer: TtsServerManager;
+  private readonly ttsServer: TtsService;
   private readonly runtimeStore: RuntimeStore;
   private readonly modelStore: ModelStore;
   /** 本平台的发布计划;null = 没有现成构建,只能自备目录 */
@@ -1530,7 +1582,9 @@ export class VtuberWorld implements World {
     this.releasePlan = planFor(this.runtimeRelease(), defaultBackend());
     this.runtimeStore = new RuntimeStore(runtimesRoot(), this.log);
     this.modelStore = new ModelStore(TTS_MODELS_DIR, this.log);
-    this.ttsServer = new TtsServerManager({
+    this.ttsServer = new TtsService({
+      url: ttsUrl, config: opts.ttsService, log: this.log,
+      voxcpm2: {
       runtimeDir: () => this.runtimeDir(),
       serverExe: () => this.releasePlan?.serverExe ?? (process.platform === 'win32' ? 'llama-tts-server.exe' : 'llama-tts-server'),
       modelsDir: TTS_MODELS_DIR,
@@ -1540,6 +1594,7 @@ export class VtuberWorld implements World {
       alignerAudioFile: opts.ttsAlignerAudioFile,
       port: ttsPort,
       log: this.log,
+      },
     });
     this.modelProfileOpt = opts.modelProfile;
     this.packDir = opts.packDir?.trim() || EXAMPLE_PACK_DIR;
@@ -2534,7 +2589,7 @@ export class VtuberWorld implements World {
         voices: this.listVoices(),
         voicesDir: this.voicesDir(),
       }),
-      runtime: () => ({ ...this.ttsRuntimeState(), models: this.ttsModelStates() }),
+      runtime: () => ({ kind: this.ttsServer.state().kind, service: this.ttsServer.state(), ...this.ttsRuntimeState(), models: this.ttsModelStates() }),
       installRuntime: () => this.installTtsRuntime(),
       downloadModel: (id) => this.downloadTtsModel(id),
       start: () => {
@@ -2785,6 +2840,7 @@ export class VtuberWorld implements World {
 
   async start(host: WorldHost): Promise<void> {
     this.host = host;
+    await this.ttsServer.autoStart();
     await this.stream.start(host.log);
     this.streamUp = true;
     await this.musicGeneration.start();

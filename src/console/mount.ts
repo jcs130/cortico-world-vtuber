@@ -97,24 +97,25 @@ export const mountPanel: ConsolePanel = {
         ttsRow.set('plain', '不可用');
         return;
       }
-      const missing = st.resources
-        ? [
-            !st.resources.server.ready ? '运行时' : '',
-            !st.resources.baseLm.ready ? 'BaseLM' : '',
-            !st.resources.acoustic.ready ? 'Acoustic' : '',
-            st.resources.alignerRequired && !st.resources.alignerLm.ready ? 'Aligner LM' : '',
-            st.resources.alignerRequired && !st.resources.alignerAudio.ready ? 'Aligner Audio' : '',
+      const missing = st.resources?.files
+        ? st.resources.files.filter(file => !file.ready).map(file => file.label)
+        : st.resources ? [
+            !st.resources.server?.ready ? '运行时' : '',
+            !st.resources.baseLm?.ready ? 'BaseLM' : '',
+            !st.resources.acoustic?.ready ? 'Acoustic' : '',
+            st.resources.alignerRequired && !st.resources.alignerLm?.ready ? 'Aligner LM' : '',
+            st.resources.alignerRequired && !st.resources.alignerAudio?.ready ? 'Aligner Audio' : '',
           ].filter(Boolean)
         : [];
       ttsRow.set(
         TTS_TONE[st.phase] ?? 'plain',
         TTS_WORD[st.phase] ?? st.phase,
-        [st.pid ? `pid ${st.pid}` : null, st.url, missing.length ? `缺 ${missing.join(' / ')}` : null, st.detail]
+        [st.kind, st.ownership === 'owned' ? '扩展托管' : st.ownership === 'external' ? '外部服务' : null, st.pid ? `pid ${st.pid}` : null, st.url, missing.length ? `缺 ${missing.join(' / ')}` : null, st.detail]
           .filter(Boolean)
           .join(' · '),
       );
       btnStart.disabled = st.phase === 'starting' || st.phase === 'running' || st.phase === 'stopping';
-      btnStop.disabled = st.phase === 'stopped' && !st.pid;
+      btnStop.disabled = st.ownership === 'external' || st.kind === 'external' || (st.phase === 'stopped' && !st.pid);
     };
 
     const renderStage = (stream: MountState['stream']): void => {
