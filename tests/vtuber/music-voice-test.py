@@ -15,6 +15,7 @@ from unittest.mock import patch
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2] / "src"
+sys.path.insert(0, str(ROOT))
 def module(name, filename):
     spec = importlib.util.spec_from_file_location(name, ROOT / filename)
     loaded = importlib.util.module_from_spec(spec)
@@ -118,13 +119,25 @@ class ProcessTest(unittest.TestCase):
 
     def test_configuration_requires_pinned_authorized_assets_and_explicit_pitch(self):
         for key, value in (("referenceAuthorized", False), ("referenceSha256", ""), ("steps", 4), ("steps", True),
-                           ("semiToneShift", 13), ("timeoutSec", float("nan")), ("command", "anything")):
+                           ("semiToneShift", 13), ("timeoutSec", float("nan")), ("cpuThreads", True),
+                           ("cpuThreads", 0), ("cpuThreads", 17), ("cpuThreads", 2.5), ("command", "anything")):
             bad = config(self.root)
             bad[key] = value
             with self.assertRaises(ValueError):
                 voice.normalize_voice_config(bad, self.root)
         self.assertEqual(self.cfg["semiToneShift"], 0)
         self.assertEqual(self.cfg["steps"], 30)
+
+    def test_private_cpu_budget_reaches_the_owned_worker_without_enabling_cuda(self):
+        cfg = voice.normalize_voice_config({**config(self.root), "cpuThreads": 3}, self.root)
+        cfg["manifestSha256"] = self.cfg["manifestSha256"]
+        code = "import os,sys,json; from pathlib import Path; p=Path(sys.argv[1]); (p.parent/'environment.json').write_text(json.dumps({k:os.environ[k] for k in ('CUDA_VISIBLE_DEVICES','OMP_NUM_THREADS','MKL_NUM_THREADS','OPENBLAS_NUM_THREADS')})); sys.exit(1)"
+        with self.launch(code):
+            with self.assertRaises(voice.VoiceConversionError):
+                voice.run_conversion(cfg, self.source, self.root / "budget", 1, lambda: False, lambda *_: None)
+        environment = json.loads((self.root / "budget" / "environment.json").read_text())
+        self.assertEqual(environment.pop("CUDA_VISIBLE_DEVICES"), "")
+        self.assertEqual(set(environment.values()), {str(cfg["cpuThreads"])})
 
     def test_changed_manifest_never_launches_a_child(self):
         self.cfg["manifestSha256"] = "0" * 64

@@ -15,6 +15,7 @@ import time
 
 STAGES = {"checking-assets": "正在核对歌声参考与模型。", "separating": "正在分离歌声与伴奏。",
           "converting": "正在转换歌声音色，游戏可以继续。", "mixing": "正在将歌声与原伴奏混合。"}
+DEFAULT_CPU_THREADS = 4
 
 
 class VoiceConversionError(Exception):
@@ -49,6 +50,9 @@ def normalize_voice_config(value, base):
     cfg.setdefault("semiToneShift", 0)
     cfg.setdefault("referenceSeconds", 15)
     cfg.setdefault("timeoutSec", 3600)
+    cfg.setdefault("cpuThreads", DEFAULT_CPU_THREADS)
+    if isinstance(cfg["cpuThreads"], bool) or not isinstance(cfg["cpuThreads"], int) or not 1 <= cfg["cpuThreads"] <= 16:
+        raise ValueError("SVC CPU threads must be an integer from 1 to 16")
     if isinstance(cfg["steps"], bool) or not isinstance(cfg["steps"], int) or not 30 <= cfg["steps"] <= 50:
         raise ValueError("SVC requires 30–50 diffusion steps")
     if isinstance(cfg["semiToneShift"], bool) or not isinstance(cfg["semiToneShift"], int) or not -12 <= cfg["semiToneShift"] <= 12:
@@ -58,7 +62,7 @@ def normalize_voice_config(value, base):
         if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val) or not minimum <= val <= maximum:
             raise ValueError("Invalid SVC duration/timeout")
     # Never accept an arbitrary command/runner from an audience request.
-    allowed = {"enabled", "backend", "referenceAuthorized", "referenceKind", "steps", "semiToneShift", "referenceSeconds", "timeoutSec",
+    allowed = {"enabled", "backend", "referenceAuthorized", "referenceKind", "steps", "semiToneShift", "referenceSeconds", "timeoutSec", "cpuThreads",
                "pythonFile", "assetRoot", "manifestFile", "separatorCheckpoint", "whisperCheckpoint", "referenceFile",
                "manifestSha256", "separatorSha256", "whisperSha256", "referenceSha256", "upstreamRevision"}
     if set(cfg) - allowed:
@@ -82,7 +86,8 @@ def run_conversion(cfg, source, directory, seed, cancelled, on_stage, timeout=No
     request_file.write_text(json.dumps({"sourceFile": str(source), "seed": seed, "voiceConversion": cfg}, ensure_ascii=False), encoding="utf-8")
     command = [cfg["pythonFile"], str(Path(__file__).with_name("music_voice_worker.py")), "--request", str(request_file)]
     environment = os.environ.copy()
-    environment.update(CUDA_VISIBLE_DEVICES="", OMP_NUM_THREADS="2", MKL_NUM_THREADS="2", OPENBLAS_NUM_THREADS="2",
+    threads = str(cfg.get("cpuThreads", DEFAULT_CPU_THREADS))
+    environment.update(CUDA_VISIBLE_DEVICES="", OMP_NUM_THREADS=threads, MKL_NUM_THREADS=threads, OPENBLAS_NUM_THREADS=threads,
                        HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", PYTHONUNBUFFERED="1")
     # No provider credentials are needed in the separate local audio process.
     environment = {k: v for k, v in environment.items() if not any(word in k.upper() for word in ("API_KEY", "TOKEN", "SECRET"))}

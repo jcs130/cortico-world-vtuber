@@ -14,6 +14,7 @@ from pathlib import Path
 import subprocess
 import time
 from types import SimpleNamespace
+from music_voice import DEFAULT_CPU_THREADS
 
 
 def sha256(path):
@@ -183,7 +184,8 @@ def run(request_file):
     directory = Path(request_file).resolve().parent
     source = Path(request["sourceFile"]).resolve(strict=True)
     source.relative_to(directory.parent)
-    os.environ.update(CUDA_VISIBLE_DEVICES="", OMP_NUM_THREADS="2", MKL_NUM_THREADS="2", OPENBLAS_NUM_THREADS="2",
+    threads = cfg.get("cpuThreads", DEFAULT_CPU_THREADS)
+    os.environ.update(CUDA_VISIBLE_DEVICES="", OMP_NUM_THREADS=str(threads), MKL_NUM_THREADS=str(threads), OPENBLAS_NUM_THREADS=str(threads),
                       HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HOME=str(Path(cfg["assetRoot"]) / "cache" / "huggingface"))
     if os.name == "nt":
         import ctypes
@@ -191,11 +193,11 @@ def run(request_file):
     import numpy as np
     import soundfile as sf
     import torch
-    torch.set_num_threads(2)
-    torch.set_num_interop_threads(2)
+    torch.set_num_threads(threads)
+    torch.set_num_interop_threads(threads)
     started = time.monotonic()
     record = {"version": 1, "backend": "seed-vc-v1-200m-svc", "state": "running", "seed": request["seed"],
-              "voiceConditioned": False, "singingVoiceVerified": False, "device": "cpu", "threads": 2,
+              "voiceConditioned": False, "singingVoiceVerified": False, "device": "cpu", "threads": threads,
               "diffusionSteps": cfg["steps"], "f0Condition": True, "autoF0Adjust": False,
               "semiToneShift": cfg["semiToneShift"], "lengthAdjust": 1.0, "referenceKind": cfg["referenceKind"],
               "sourceSha256": sha256(source), "referenceSha256": cfg["referenceSha256"]}

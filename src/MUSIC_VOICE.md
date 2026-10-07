@@ -1,4 +1,4 @@
-# Reference-conditioned singing
+# `music_voice.py` / Reference-conditioned singing
 
 The optional `voiceConversion` pipeline belongs to the generic VTuber music
 gateway. It has no Minecraft or server-specific dependency.
@@ -76,6 +76,7 @@ Private gateway JSON adds:
     "referenceAuthorized": true,
     "referenceKind": "original-speech",
     "steps": 30,
+    "cpuThreads": 4,
     "referenceSeconds": 15,
     "semiToneShift": 0,
     "timeoutSec": 3600
@@ -102,7 +103,7 @@ hidden automatic octave change.
 Submission remains immediate; a single background worker processes the queue.
 SVC stage messages use the existing `validating` state, so existing World
 clients can keep polling without a main-program reload. A low-priority CPU
-subprocess uses two threads and no CUDA. Conversion can take several minutes;
+subprocess uses `cpuThreads` (default 4, range 1–16) and no CUDA. Conversion can take several minutes;
 it is not a real-time speech stage. HTTP, TTS and gameplay do not await it.
 
 Cancellation/timeout terminates only the owned child. It never interrupts
