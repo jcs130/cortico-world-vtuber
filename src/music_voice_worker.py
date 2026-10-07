@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 # Embedded Python runtimes may omit the executable script's directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from music_voice import DEFAULT_CPU_THREADS
+from music_voice import DEFAULT_CPU_THREADS, set_worker_priority
 
 
 def sha256(path):
@@ -192,9 +192,7 @@ def run(request_file):
     device = cfg.get("device", "cpu")
     os.environ.update(CUDA_VISIBLE_DEVICES="0" if device == "cuda" else "", OMP_NUM_THREADS=str(threads), MKL_NUM_THREADS=str(threads), OPENBLAS_NUM_THREADS=str(threads),
                       HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HOME=str(Path(cfg["assetRoot"]) / "cache" / "huggingface"))
-    if os.name == "nt":
-        import ctypes
-        ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x4000)
+    set_worker_priority(device)
     import numpy as np
     import soundfile as sf
     import torch

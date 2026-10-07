@@ -18,6 +18,27 @@ STAGES = {"checking-assets": "正在核对歌声参考与模型。", "separating
 DEFAULT_CPU_THREADS = 4
 
 
+def set_worker_priority(device):
+    if os.name != "nt":
+        os.nice(10)
+        return
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.SetPriorityClass.restype = wintypes.BOOL
+    handle = kernel.GetCurrentProcess()
+    kernel.SetPriorityClass(handle, 0x4000)
+    if device == "cuda":
+        # Separate audio jobs yield GPU scheduling priority to live speech.
+        set_priority = ctypes.WinDLL("gdi32").D3DKMTSetProcessSchedulingPriorityClass
+        set_priority.argtypes = [wintypes.HANDLE, ctypes.c_int]
+        set_priority.restype = ctypes.c_long
+        if set_priority(handle, 1) != 0:
+            raise RuntimeError("Could not set background GPU scheduling priority")
+
+
 class VoiceConversionError(Exception):
     pass
 

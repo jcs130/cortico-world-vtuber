@@ -163,7 +163,7 @@ def normalize_config(data: dict, base: Path | None = None) -> dict:
     for section, defaults in {
         "comfy": {"requestTimeoutSec": 20, "generationTimeoutSec": 900, "pollIntervalSec": 2},
         "review": {"timeoutSec": 45, "extraBody": {}},
-        "asr": {"language": "zh", "timeoutSec": 180},
+        "asr": {"language": "zh", "timeoutSec": 180, "device": "cpu", "cpuThreads": 2},
         "limits": {"maxQueue": 6, "maxJobsPerHour": 8, "maxRequesterJobsPerHour": 2},
         "validation": {"minLyricCoverage": 0.88, "minTranscriptCoverage": 0.75, "minLineCoverage": 0.8},
         "policy": {"additionalRules": "", "streamTopics": "Everyday fictional themes, nature, games, companionship and ordinary life."},
@@ -209,6 +209,12 @@ def normalize_config(data: dict, base: Path | None = None) -> dict:
         if not isinstance(cfg["asr"]["modelFile"], str):
             raise GatewayError("本地识别模型配置无效。")
         cfg["asr"]["modelFile"] = str((base / cfg["asr"]["modelFile"]).resolve())
+    if cfg["asr"]["device"] not in ("cpu", "cuda") or type(cfg["asr"]["cpuThreads"]) is not int or not 1 <= cfg["asr"]["cpuThreads"] <= 16:
+        raise GatewayError("识别设备或 CPU 预算配置无效。")
+    if "pythonFile" in cfg["asr"]:
+        if not isinstance(cfg["asr"]["pythonFile"], str) or not cfg["asr"]["pythonFile"].strip():
+            raise GatewayError("识别运行环境配置无效。")
+        cfg["asr"]["pythonFile"] = str((base / cfg["asr"]["pythonFile"]).resolve())
     if not isinstance(cfg["asr"]["language"], str) or not re.fullmatch(r"[a-z]{2,8}", cfg["asr"]["language"]):
         raise GatewayError("识别语言配置无效。")
     cfg.setdefault("ffmpegFile", "ffmpeg")
@@ -563,10 +569,13 @@ class ExternalServices:
         model = cfg.get("modelFile")
         if not model or not Path(model).is_file():
             raise NeedsReview()
-        command = [sys.executable, str(Path(__file__).resolve()), "--asr-worker", str(audio), "--asr-model", model, "--asr-language", cfg["language"]]
+        command = [cfg.get("pythonFile", sys.executable), str(Path(__file__).resolve()), "--asr-worker", str(audio), "--asr-model", model,
+                   "--asr-language", cfg["language"], "--asr-device", cfg["device"], "--asr-cpu-threads", str(cfg["cpuThreads"])]
         flags = subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0
         environment = os.environ.copy()
-        environment.update(CUDA_VISIBLE_DEVICES="", OMP_NUM_THREADS="2", MKL_NUM_THREADS="2", OPENBLAS_NUM_THREADS="2")
+        threads = str(cfg["cpuThreads"])
+        environment.update(CUDA_VISIBLE_DEVICES="0" if cfg["device"] == "cuda" else "", OMP_NUM_THREADS=threads, MKL_NUM_THREADS=threads, OPENBLAS_NUM_THREADS=threads)
+        environment = {key: value for key, value in environment.items() if not any(word in key.upper() for word in ("API_KEY", "TOKEN", "SECRET"))}
         configured_ffmpeg = self.cfg["ffmpegFile"]
         ffmpeg_path = configured_ffmpeg if "/" in configured_ffmpeg or "\\" in configured_ffmpeg else shutil.which(configured_ffmpeg)
         if ffmpeg_path:
@@ -980,18 +989,19 @@ def make_server(gateway: MusicGenerationGateway) -> ThreadingHTTPServer:
     return Server((gateway.cfg["host"], gateway.cfg["port"]), Handler)
 
 
-def asr_worker(audio: str, model: str, language: str) -> None:
+def asr_worker(audio: str, model: str, language: str, device: str = "cpu", cpu_threads: int = 2) -> None:
     # A checkpoint file path prevents Whisper from downloading a model.
     if not Path(model).is_file():
         raise NeedsReview()
-    if os.name != "nt":
-        os.nice(10)
+    if device not in ("cpu", "cuda") or type(cpu_threads) is not int or not 1 <= cpu_threads <= 16:
+        raise NeedsReview()
+    voice_module.set_worker_priority(device)
     import torch
     import whisper
-    torch.set_num_threads(2)
-    torch.set_num_interop_threads(2)
-    loaded = whisper.load_model(model, device="cpu")
-    result = loaded.transcribe(audio, language=language, temperature=0.0, beam_size=5, best_of=1, fp16=False, word_timestamps=True, condition_on_previous_text=False, verbose=None)
+    torch.set_num_threads(cpu_threads)
+    torch.set_num_interop_threads(cpu_threads)
+    loaded = whisper.load_model(model, device=device)
+    result = loaded.transcribe(audio, language=language, temperature=0.0, beam_size=5, best_of=1, fp16=device == "cuda", word_timestamps=True, condition_on_previous_text=False, verbose=None)
     sys.stdout.buffer.write(json.dumps({"text": result.get("text", ""), "segments": result.get("segments", [])}, ensure_ascii=False).encode("utf-8"))
 
 
@@ -1001,9 +1011,11 @@ def main() -> int:
     parser.add_argument("--asr-worker")
     parser.add_argument("--asr-model")
     parser.add_argument("--asr-language", default="zh")
+    parser.add_argument("--asr-device", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--asr-cpu-threads", type=int, default=2)
     args = parser.parse_args()
     if args.asr_worker:
-        asr_worker(args.asr_worker, args.asr_model, args.asr_language)
+        asr_worker(args.asr_worker, args.asr_model, args.asr_language, args.asr_device, args.asr_cpu_threads)
         return 0
     if not args.config:
         parser.error("--config is required")

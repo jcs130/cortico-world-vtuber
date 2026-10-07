@@ -59,6 +59,11 @@ API 模板必须含 `TextEncodeAceStepAudio1.5`、`EmptyAceStep1.5LatentAudio`�
 审核接口使用独立可信 system 政策，把点歌要求和实际唱词作为待检查数据；`extraBody` 是可信部署参数，
 不能覆盖模型或消息。服务或审核不可用、未知提交结果、歌词覆盖不足均不加入曲库。
 
+`asr.device` 默认为 `cpu`，`asr.cpuThreads` 默认为 2（范围 1–16）。可用
+`asr.pythonFile` 指定独立识别运行环境，并在已验证 CUDA 运行环境中选择 `device:"cuda"`。
+识别仍只加载本地 `modelFile`；CPU 与 CUDA 都使用独立低优先级进程，Windows CUDA
+进程也设置较低的 GPU 调度优先级。更换设备不改变内容审核或歌词验收条件。
+
 `POST /jobs` 接受 `{requestKey,requesterKey?,requestText,title,lyrics,style,durationSec,intro?,outro?}`，
 同一 `requestKey` 持久去重；`GET /jobs` / `GET /jobs/{jobId}` 查询状态，
 `POST /jobs/{jobId}/cancel` 只取消本任务结果，`GET /health` 检查服务。

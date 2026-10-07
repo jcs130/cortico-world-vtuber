@@ -603,6 +603,13 @@ class BoundaryTest(unittest.TestCase):
             self.assertEqual({key: environment[key] for key in ("CUDA_VISIBLE_DEVICES", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")}, {"CUDA_VISIBLE_DEVICES": "", "OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2", "OPENBLAS_NUM_THREADS": "2"})
             self.assertIn(str(model), captured[0][0])
 
+    def test_asr_runtime_rejects_unknown_devices_and_invalid_worker_budgets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = {"stateDir": directory, "musicDir": directory, "promptTemplateFile": "template.json", "referenceAudio": "voice.wav", "referenceAudioAuthorized": True, "comfy": {"endpoint": "http://generation.invalid"}, "review": {"endpoint": "http://review.invalid", "model": "deployment-model"}}
+            for options in ({"device": "gpu"}, {"cpuThreads": True}, {"cpuThreads": 0}, {"cpuThreads": 17}, {"pythonFile": ""}):
+                with self.subTest(options=options), self.assertRaises(gateway_module.GatewayError):
+                    gateway_module.normalize_config({**base, "asr": options})
+
     def test_cpu_worker_uses_deterministic_beam_decoding_without_expected_lyrics(self):
         with tempfile.TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "cached-model.pt"

@@ -109,6 +109,8 @@ SVC stage messages use the existing `validating` state, so existing World
 clients can keep polling without a main-program reload. A low-priority CPU
 subprocess uses `cpuThreads` (default 4, range 1–16). `device` defaults to `cpu`;
 `cuda` requires a separate compatible runtime selected by `pythonFile` and an available GPU.
+Windows CUDA workers use below-normal GPU scheduling priority so live speech
+can retain its normal priority.
 An unavailable configured device fails the job. Conversion can take several minutes;
 it is not a real-time speech stage. HTTP, TTS and gameplay do not await it.
 
