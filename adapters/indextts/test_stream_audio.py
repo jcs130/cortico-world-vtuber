@@ -145,6 +145,34 @@ class StreamTests(unittest.TestCase):
         self.assertEqual(handler.wfile.getvalue(), b'0\r\n\r\n')
         handler._send.assert_not_called()
 
+    def test_first_audio_measurement_includes_preparation_but_keeps_upstream_time_separate(self):
+        from unittest.mock import patch
+        adapter = load_adapter()
+        source = Fragmented([wav_stream_header(22050), b'\x01\x00' * 2205])
+        handler = object.__new__(adapter.Handler)
+        handler.send_response = Mock()
+        headers = {}
+        handler.send_header = lambda key, value: headers.update({key: value})
+        handler.end_headers = Mock()
+        handler.log_message = Mock()
+        handler._send = Mock()
+        handler._chunk = Mock()
+        handler.wfile = io.BytesIO()
+        with patch.object(adapter.urllib.request, 'urlopen', return_value=source), \
+             patch.object(adapter, 'remember'), \
+             patch.object(adapter.time, 'monotonic', side_effect=[10.0, 10.2, 10.2, 10.4]):
+            handler._stream({'voice': 'fixture', 'input': 'hello', 'max_text_tokens_per_segment': 24},
+                            1.0, 'hello', request_started=9.5)
+        self.assertEqual(headers['X-TTS-First-Audio-Ms'], '200')
+        self.assertEqual(headers['X-TTS-Preparation-Ms'], '500')
+        self.assertEqual(headers['X-TTS-Request-First-Audio-Ms'], '700')
+        self.assertEqual(adapter._last_stream['first_audio_ms'], 700)
+        self.assertEqual(adapter._last_stream['total_ms'], 900)
+        self.assertEqual(adapter._last_stream['audio_ms'], 100)
+        self.assertEqual(adapter._last_stream['upstream_mode'], 'native-text-segments')
+        self.assertTrue(source.closed)
+        handler._send.assert_not_called()
+
     def test_error_after_pcm_closes_http_without_success_terminator(self):
         adapter = load_adapter()
         original = adapter.urllib.request.urlopen

@@ -25,11 +25,31 @@ the response instead of reporting successful EOF or replaying heard speech.
 Cancelling closes upstream and the converter; a running model finishes its
 current text segment before cancellation takes effect.
 
-`stream_segment_tokens` defaults to 56 (16–120) for the native generator.
+`stream_segment_tokens` defaults to 24 (16–120) for the native generator.
 `stream_segment_chars` defaults to 40 (16–120) for compatibility synthesis.
 Compatibility splitting retains punctuation and keeps long clauses intact,
 so it never cuts words to enforce the character target. Larger segments retain
 more prosody context; smaller segments can begin speaking sooner.
+
+`X-TTS-Request-First-Audio-Ms` includes text preparation and upstream waiting.
+`X-TTS-Preparation-Ms` measures preparation alone; the existing
+`X-TTS-First-Audio-Ms` measures upstream waiting and tempo conversion.
+Native requests also ask for one sampling beam, retaining the voice and emotion
+settings. A gateway must forward `num_beams` to the model for this optimization.
+`patches/index-tts-streaming.patch` supplies forwarding, queue timing and
+clause-preserving native splitting for the existing IndexTTS 2.5 layout with
+`src/indextts/infer_v2_5.py` and `indextts/gateway/`. From that installation root,
+run `git apply --unidiff-zero --check` on the patch, apply it with
+`git apply --unidiff-zero`, then run the gateway's offline tests.
+Reload the model gateway separately after in-flight speech ends.
+The adapter does not apply patches or restart the gateway automatically.
+The patched native splitter keeps short prefixes with a following complete
+clause, providing enough initial audio for the next segment to be generated.
+Health reports the selected token budget, preparation phase times and the last
+completed stream's first-audio, total generation and audio durations. These
+measure arrival at the adapter, before the player's audio output.
+When supported by the gateway, `upstream_queue_ms` separates time waiting for
+the shared model from synthesis. Missing queue timing is reported as null.
 
 ## Reference prosody and pronunciation
 
@@ -129,7 +149,7 @@ The existing `voice` and `speed` preferences remain compatible. Optional keys:
   "speed": 1.0,
   "emotion_mix": 0.35,
   "emotion_min_confidence": 0.65,
-  "stream_segment_tokens": 56,
+  "stream_segment_tokens": 24,
   "stream_segment_chars": 40
 }
 ```
@@ -155,7 +175,7 @@ python indextts_adapter.py
 For detached Windows startup, use the existing deployment supervisor or a
 hidden `Start-Process` helper. A launcher needs all five Python source files and
 `polyphonic_readings.json` in the
-same directory. Inspect `/health` for `version: "18-console-preferences"`,
+same directory. Inspect `/health` for `version: "20-stream-latency"`,
 `pronunciation.context_ready: true` and the
 expected port before changing CortiV's `worlds.vtuber.ttsUrl` to that instance.
 The adapter's POST endpoint is `/v1/audio/speech`; `ttsUrl` is its base URL.

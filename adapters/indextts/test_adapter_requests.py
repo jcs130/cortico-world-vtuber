@@ -121,6 +121,29 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(clean, payload['input'])
         self.assertEqual(payload['voice'], 'taozi')
 
+    def test_stream_budget_uses_preference_or_latency_default_and_reports_preparation(self):
+        self.handler.path = '/v1/audio/speech/stream'
+        self.handler._stream = Mock()
+        for override in (None, 48, float('nan')):
+            self.adapter._recent.clear()
+            prefs = {'voice': 'fixture', 'speed': 1.0}
+            if override is not None:
+                prefs['stream_segment_tokens'] = override
+            self.adapter.load_prefs.return_value = prefs
+            self.post({'input': '我先去看看，再和大家打招呼。'})
+            payload = self.handler._stream.call_args.args[0]
+            expected = 48 if override == 48 else self.adapter.DEFAULT_STREAM_SEGMENT_TOKENS
+            self.assertEqual(payload['max_text_tokens_per_segment'], expected)
+            self.assertIsInstance(self.handler._stream.call_args.kwargs['request_started'], float)
+            trace = self.adapter._last_preparation
+            self.assertGreaterEqual(trace['preparation_ms'], trace['pronunciation_ms'])
+            self.assertGreaterEqual(trace['preparation_ms'], trace['mood_ms'])
+            self.handler.path = '/health'
+            self.handler.do_GET()
+            health = json.loads(self.handler._send.call_args.args[1])
+            self.assertEqual(health['stream_segment_tokens'], expected)
+            self.handler.path = '/v1/audio/speech/stream'
+
     def test_acoustic_cue_only_returns_silence_without_model_calls(self):
         self.handler._stream = Mock()
         for path in ('/v1/audio/speech', '/v1/audio/speech/stream'):
@@ -262,7 +285,7 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(payload['input'], clean)
         self.assertLessEqual(sum(payload['emo_vector']), 0.45)
         self.assertEqual(speed, 1.04)
-        self.assertEqual(payload['max_text_tokens_per_segment'], 56)
+        self.assertEqual(payload['max_text_tokens_per_segment'], self.adapter.DEFAULT_STREAM_SEGMENT_TOKENS)
         self.assertEqual(max_chars, 40)
         self.adapter.classify_mood_decision.assert_not_called()
 

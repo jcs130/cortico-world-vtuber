@@ -1,0 +1,180 @@
+--- a/src/indextts/infer_v2_5.py
++++ b/src/indextts/infer_v2_5.py
+@@ -427 +427 @@
+-    def split_text_by_tokens(self, text, max_tokens, lang_prefix=""):
++    def split_text_by_tokens(self, text, max_tokens, lang_prefix="", prefer_clause_boundaries=False):
+@@ -433,0 +434,42 @@
++        chunks = []
++        if prefer_clause_boundaries:
++            # Streaming budgets end at a complete clause. Long clauses retain
++            # their words and phonetic atoms up to the model's position limit.
++            clause = ""
++            for piece, atomic in self._split_atomic_pieces(text):
++                if atomic:
++                    clause += piece
++                    continue
++                for part in re.split(r'(?<=[，。！？；,!?;\n])|(?<=\.)(?!\d)', piece):
++                    clause += part
++                    if re.search(r'[，。！？；,!?;\n]$|\.$', part):
++                        chunks.append(clause)
++                        clause = ""
++            if clause:
++                chunks.append(clause)
++            capacity_budget = capacity - 2 - self._token_len(lang_prefix)
++            chunks = [segment for clause in chunks for segment in (
++                self.split_text_by_tokens(clause, capacity - 2, lang_prefix)
++                if self._token_len(clause) > capacity_budget else [clause]
++            )]
++        else:
++            chunks = self._token_chunks(text, budget)
++
++        segments, current = [], ""
++        for chunk in chunks:
++            combined_tokens = self._token_len(current + chunk)
++            # Tiny prefixes do not provide enough playback time for the next
++            # GPU segment. Keep them with a complete following clause.
++            can_split = (not prefer_clause_boundaries or
++                         len(re.sub(r'[\W_]', '', self.SPLIT_PROTECTED_PATTERN.sub('a', current))) >= 6 or
++                         combined_tokens > capacity_budget)
++            if current and combined_tokens > budget and can_split:
++                segments.append(current)
++                current = chunk
++            else:
++                current += chunk
++        if current:
++            segments.append(current)
++        return segments or [text]
++
++    def _token_chunks(self, text, budget):
+@@ -455,10 +497 @@
+-        segments, current = [], ""
+-        for chunk in chunks:
+-            if current and self._token_len(current + chunk) > budget:
+-                segments.append(current)
+-                current = chunk
+-            else:
+-                current += chunk
+-        if current:
+-            segments.append(current)
+-        return segments or [text]
++        return chunks
+@@ -720 +753,2 @@
+-        segments = self.split_text_by_tokens(text, max_text_tokens_per_segment, lang_prefix)
++        segments = self.split_text_by_tokens(text, max_text_tokens_per_segment, lang_prefix,
++                                            prefer_clause_boundaries=stream_return)
+--- a/indextts/gateway/indextts_gateway.py
++++ b/indextts/gateway/indextts_gateway.py
+@@ -114 +114 @@
+-    validate_segment_tokens, wav_stream_header,
++    validate_num_beams, validate_segment_tokens, wav_stream_header,
+@@ -394,0 +395 @@
++        num_beams = validate_num_beams(payload.get("num_beams", 3))
+@@ -413 +414,2 @@
+-        stream_return=True, max_text_tokens_per_segment=segment_tokens, **kwargs,
++        stream_return=True, max_text_tokens_per_segment=segment_tokens,
++        num_beams=num_beams, **kwargs,
+@@ -435,2 +437,3 @@
+-    log.info("STREAM FIRST voice=%s mood=%s chars=%d first_ms=%d segment_tokens=%d",
+-             voice, mood or "-", len(text), first_ms, segment_tokens)
++    queue_ms = round((session.lock_acquired_at - session.started_at) * 1000)
++    log.info("STREAM FIRST voice=%s mood=%s chars=%d first_ms=%d queue_ms=%d segment_tokens=%d num_beams=%d",
++             voice, mood or "-", len(text), first_ms, queue_ms, segment_tokens, num_beams)
+@@ -467,0 +471 @@
++        "X-TTS-Queue-Ms": str(queue_ms), "X-TTS-Num-Beams": str(num_beams),
+--- a/indextts/gateway/gateway_stream.py
++++ b/indextts/gateway/gateway_stream.py
+@@ -35,0 +36,6 @@
++    return value
++
++
++def validate_num_beams(value: object) -> int:
++    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 3:
++        raise ValueError("num_beams must be an integer from 1 to 3")
+--- a/indextts/gateway/tests/test_gateway_stream.py
++++ b/indextts/gateway/tests/test_gateway_stream.py
+@@ -360 +360,2 @@
+-                        dict(voice="missing"), dict(text=123), dict(mood="missing")]:
++                        dict(voice="missing"), dict(text=123), dict(mood="missing"),
++                        dict(num_beams=0), dict(num_beams=True), dict(num_beams=1.5)]:
+@@ -362,0 +364,11 @@
++
++    async def test_stream_selects_low_latency_sampling_without_changing_voice_or_tokens(self):
++        response = await self.gateway.tts_stream(self.request(num_beams=1, max_text_tokens_per_segment=24))
++        self.assertEqual(response.status_code, 200)
++        self.assertEqual(response.headers['x-tts-num-beams'], '1')
++        self.assertGreaterEqual(int(response.headers['x-tts-queue-ms']), 0)
++        chunks = [chunk async for chunk in response.body_iterator]
++        self.assertTrue(chunks[0].startswith(wav_stream_header()))
++        self.assertEqual(self.model.calls[0]['num_beams'], 1)
++        self.assertEqual(self.model.calls[0]['spk_audio_prompt'], 'same-reference.wav')
++        self.assertEqual(self.model.calls[0]['max_text_tokens_per_segment'], 24)
+--- /dev/null
++++ b/indextts/gateway/tests/test_stream_boundaries.py
+@@ -0,0 +1,67 @@
++"""Exercise the installed splitter without importing torch or loading weights."""
++import ast
++from pathlib import Path
++import re
++import types
++import unittest
++
++
++class BoundaryTests(unittest.TestCase):
++    def setUp(self):
++        path = Path(__file__).resolve().parents[3] / 'src/indextts/infer_v2_5.py'
++        tree = ast.parse(path.read_text('utf-8'))
++        cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'IndexTTS2')
++        cls.body = [node for node in cls.body if (
++            isinstance(node, ast.FunctionDef) and node.name in (
++                'split_text_by_tokens', '_token_chunks', '_split_atomic_pieces')) or (
++            isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and
++                target.id == 'SPLIT_PROTECTED_PATTERN' for target in node.targets))]
++        module = ast.Module(body=[cls], type_ignores=[])
++        namespace = {'re': re}
++        exec(compile(module, str(path), 'exec'), namespace)
++        self.model = namespace['IndexTTS2'].__new__(namespace['IndexTTS2'])
++        self.model.gpt = types.SimpleNamespace(text_pos_embedding=types.SimpleNamespace(
++            emb=types.SimpleNamespace(num_embeddings=100)))
++        self.model._token_len = len
++
++    def test_stream_budget_keeps_the_whole_word_at_a_clause_end(self):
++        text = '今天我们去村庄看看。先带上面包和火把，再看看有没有需要帮助的朋友。'
++        parts = self.model.split_text_by_tokens(text, 9, prefer_clause_boundaries=True)
++        self.assertEqual(''.join(parts), text)
++        self.assertEqual(parts[0], '今天我们去村庄看看。')
++        self.assertTrue(all(part.endswith(('，', '。')) for part in parts))
++
++    def test_stream_preserves_phonetic_atoms_and_decimal_numbers(self):
++        hint = '<|SPECIAL_TOKEN_2|>ZHANG3<|SPECIAL_TOKEN_2|>'
++        text = '田里的麦子' + hint + '大了，距离还有12.5格。'
++        parts = self.model.split_text_by_tokens(text, 16, prefer_clause_boundaries=True)
++        self.assertEqual(parts, ['田里的麦子' + hint + '大了，', '距离还有12.5格。'])
++
++    def test_short_greeting_keeps_the_following_complete_clause_for_playback_runway(self):
++        hint = '<|SPECIAL_TOKEN_2|>HAO3<|SPECIAL_TOKEN_2|>'
++        text = '大家' + hint + '，今天我们去村庄看看。先带上火把。'
++        parts = self.model.split_text_by_tokens(text, 24, prefer_clause_boundaries=True)
++        self.assertEqual(parts[0], '大家' + hint + '，今天我们去村庄看看。')
++        self.assertEqual(''.join(parts), text)
++
++    def test_short_prefix_never_overflows_the_model_position_limit(self):
++        text = '好，' + '麦' * 97 + '。'
++        parts = self.model.split_text_by_tokens(text, 24, prefer_clause_boundaries=True)
++        self.assertEqual(''.join(parts), text)
++        self.assertTrue(all(len(part) <= 98 for part in parts))
++
++    def test_nonstream_budget_retains_existing_token_split_behavior(self):
++        text = '今天我们去村庄看看。先带上面包和火把。'
++        parts = self.model.split_text_by_tokens(text, 9)
++        self.assertEqual(''.join(parts), text)
++        self.assertTrue(all(len(part) <= 9 for part in parts))
++
++    def test_overcapacity_clause_still_respects_the_model_position_limit(self):
++        text = '麦' * 205 + '。'
++        parts = self.model.split_text_by_tokens(text, 24, prefer_clause_boundaries=True)
++        self.assertEqual(''.join(parts), text)
++        self.assertTrue(all(len(part) <= 98 for part in parts))
++
++
++if __name__ == '__main__':
++    unittest.main()

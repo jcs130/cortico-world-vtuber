@@ -16,8 +16,10 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 PORT = int(os.environ.get('CORTI_TTS_PORT', '8010'))
 if not 1 <= PORT <= 65535:
     raise ValueError('CORTI_TTS_PORT must be an integer between 1 and 65535')
-ADAPTER_VERSION = '19-sparse-pronunciation'
+ADAPTER_VERSION = '20-stream-latency'
+DEFAULT_STREAM_SEGMENT_TOKENS = 24
 _last_preparation = None
+_last_stream = None
 _upstream_stream_path = 'unverified'
 INDEXTTS_BASE = os.environ.get('CORTICO_INDEXTTS_URL', 'http://127.0.0.1:8087').rstrip('/')
 INDEXTTS = INDEXTTS_BASE + '/tts_raw'
@@ -227,9 +229,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b'\r\n')
         self.wfile.flush()
 
-    def _stream(self, payload, speed, clean, max_chars=40):
-        global _upstream_stream_path
+    def _stream(self, payload, speed, clean, max_chars=40, *, request_started=None):
+        global _upstream_stream_path, _last_stream
         started = time.monotonic()
+        request_started = started if request_started is None else request_started
+        preparation_ms = round((started - request_started) * 1000)
         response = None
         chunks = None
         sent = False
@@ -256,12 +260,15 @@ class Handler(BaseHTTPRequestHandler):
                 stream_path = 'compatibility-text-segments'
                 self.log_message('stream uses legacy segment synthesis: max_chars=%d', max_chars)
             _upstream_stream_path = stream_path
+            queue_ms = getattr(response, 'headers', {}).get('X-TTS-Queue-Ms')
+            queue_ms = int(queue_ms) if queue_ms is not None and queue_ms.isdigit() else None
             rate = read_pcm_header(response)
             chunks = tempo_chunks(response, rate, speed, FFMPEG)
             first = next(chunks, None)
             if not first:
                 raise ValueError('empty audio stream')
             first_ms = round((time.monotonic() - started) * 1000)
+            request_first_ms = round((time.monotonic() - request_started) * 1000)
             self.send_response(200)
             self.send_header('Content-Type', 'audio/wav')
             self.send_header('Transfer-Encoding', 'chunked')
@@ -269,6 +276,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('X-TTS-Streaming', 'text-segments')
             self.send_header('X-TTS-Upstream-Mode', stream_path)
             self.send_header('X-TTS-First-Audio-Ms', str(first_ms))
+            self.send_header('X-TTS-Preparation-Ms', str(preparation_ms))
+            self.send_header('X-TTS-Request-First-Audio-Ms', str(request_first_ms))
             self.end_headers()
             sent = True
             # Remember as soon as playback can start, including interrupted phrases.
@@ -280,8 +289,16 @@ class Handler(BaseHTTPRequestHandler):
                 byte_count += len(chunk)
             self.wfile.write(b'0\r\n\r\n')
             self.wfile.flush()
-            self.log_message('stream ok: voice=%s first=%dms total=%dms speed=%.2f pcm=%d',
-                             payload['voice'], first_ms, round((time.monotonic() - started) * 1000), speed, byte_count)
+            _last_stream = {
+                'at_ms': round(time.time() * 1000), 'voice': payload['voice'],
+                'upstream_mode': stream_path, 'preparation_ms': preparation_ms,
+                'first_audio_ms': request_first_ms, 'upstream_first_audio_ms': first_ms,
+                'upstream_queue_ms': queue_ms,
+                'total_ms': round((time.monotonic() - request_started) * 1000),
+                'audio_ms': round(byte_count * 1000 / (rate * 2)),
+                'segment_tokens': payload.get('max_text_tokens_per_segment'),
+            }
+            self.log_message('stream ok: %s', json.dumps(_last_stream))
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
             self.log_message('stream cancelled: upstream closed')
@@ -322,12 +339,15 @@ class Handler(BaseHTTPRequestHandler):
                 'spoken_text_policy': 'chinese-levels-fields-numbers',
                 'upstream_stream_path': _upstream_stream_path,
                 'last_preparation': _last_preparation,
+                'last_stream': _last_stream,
+                'stream_segment_tokens': int(bounded_number(prefs.get('stream_segment_tokens'), DEFAULT_STREAM_SEGMENT_TOKENS, 16, 120)),
             }).encode(), 'application/json')
         else:
             self._send(404, b'{"error":"not found"}', 'application/json')
 
     def do_POST(self):
         global _last_preparation
+        request_started = time.monotonic()
         n = int(self.headers.get('Content-Length') or 0)
         raw = self.rfile.read(n) if n else b''
         if self.path.rstrip('/') in ('/v1/audio/speech', '/v1/audio/speech/stream'):
@@ -385,6 +405,7 @@ class Handler(BaseHTTPRequestHandler):
 
             # Keep mood classification and dedup on readable text; phonetic hints
             # are solely a synthesis concern, including both streaming paths.
+            pronunciation_started = time.monotonic()
             resolved = normalize_pronunciation(clean)
             preparation = {
                 'at_ms': round(time.time() * 1000),
@@ -393,6 +414,9 @@ class Handler(BaseHTTPRequestHandler):
                 'synthesis_chars': len(resolved), 'voice': voice,
                 'phonetic_hints': len(re.findall(r'<[^<>|]+\|[^<>]+>', resolved)),
                 'streaming': streaming,
+                'mood_ms': decision_ms,
+                'pronunciation_ms': round((time.monotonic() - pronunciation_started) * 1000),
+                'preparation_ms': round((time.monotonic() - request_started) * 1000),
             }
             _last_preparation = preparation
             self.log_message('text-prepared: %s', json.dumps({
@@ -412,10 +436,11 @@ class Handler(BaseHTTPRequestHandler):
 
             if streaming:
                 speed = bounded_number(speed, 1.0, 0.25, 4.0)
-                tokens = bounded_number(prefs.get('stream_segment_tokens'), 56, 16, 120)
+                tokens = bounded_number(prefs.get('stream_segment_tokens'), DEFAULT_STREAM_SEGMENT_TOKENS, 16, 120)
                 payload['max_text_tokens_per_segment'] = int(tokens)
+                payload['num_beams'] = 1
                 max_chars = int(bounded_number(prefs.get('stream_segment_chars'), 40, 16, 120))
-                self._stream(payload, speed, clean, max_chars)
+                self._stream(payload, speed, clean, max_chars, request_started=request_started)
                 return
 
             try:
