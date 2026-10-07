@@ -179,6 +179,8 @@ export interface TtsVoiceInfo {
 
 /** `tts.state`:server 状态 + 生效档案 + 声线库一次问齐 */
 export interface TtsPanelState extends TtsState {
+  speech?: import('../tts-speech.ts').TtsSpeechPreferences;
+  speechVoices?: string[];
   /** server 探得通(合成要它在跑;启停在「挂载」面板) */
   reachable: boolean;
   profile: TtsProfile;

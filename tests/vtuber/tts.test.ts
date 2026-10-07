@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { decodeWav, extractEnvelope, pcm16ToWav, StreamingEnvelope, TtsClient, TtsSkipped } from '../../src/tts.ts';
 import { makeRawWav, makeWav } from './helpers.ts';
+import { TTS_SPEECH_DEFAULTS } from '../../src/tts-speech.ts';
 
 describe('decodeWav / extractEnvelope', () => {
   it('解出采样与时长;响段包络高于静段', () => {
@@ -49,6 +50,29 @@ describe('decodeWav / extractEnvelope', () => {
 });
 
 describe('TtsClient', () => {
+  it.each(['whole', 'stream'] as const)('%s applies changed speech settings to the next request', async (mode) => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const wav = makeWav(new Array(1600).fill(0.3));
+    const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(wav.slice().buffer);
+    }) as typeof fetch;
+    let speech = { ...TTS_SPEECH_DEFAULTS, enabled: true, voice: 'fixture-a' };
+    const client = new TtsClient({ url: 'http://fixture.invalid', fetchImpl, profile: () => ({ speech }) });
+    const synth = () => mode === 'whole' ? client.synth('你好') : client.synthStream('你好', { pcm() {} });
+    await synth();
+    speech = { ...speech, voice: 'fixture-b', speed: 0.9, emotionMix: 0, emotionMinConfidence: 0.85 };
+    await synth();
+    expect(bodies.map(body => ({ voice: body.voice, speed: body.speed,
+      emotionMix: body.emotion_mix, emotionMinConfidence: body.emotion_min_confidence }))).toEqual([
+      { voice: 'fixture-a', speed: TTS_SPEECH_DEFAULTS.speed,
+        emotionMix: TTS_SPEECH_DEFAULTS.emotionMix, emotionMinConfidence: TTS_SPEECH_DEFAULTS.emotionMinConfidence },
+      { voice: speech.voice, speed: speech.speed, emotionMix: speech.emotionMix,
+        emotionMinConfidence: speech.emotionMinConfidence },
+    ]);
+    expect(bodies.every(body => !('reference_audio' in body))).toBe(true);
+  });
+
   it.each(['whole', 'stream'] as const)('%s distinguishes an explicit duplicate skip from other HTTP failures', async (mode) => {
     const fetchImpl = (async () => new Response('{"error":"dedup"}', { status: 410 })) as typeof fetch;
     const client = new TtsClient({ url: 'http://fixture.invalid', fetchImpl });

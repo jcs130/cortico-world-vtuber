@@ -69,6 +69,7 @@ import {
   type TtsSynthProfile,
 } from './tts.ts';
 import { TtsService, TTS_SERVICE_DEFAULTS, type TtsServiceConfig, type TtsServiceState } from './tts-service.ts';
+import { TTS_SPEECH_DEFAULTS, type TtsSpeechPreferences } from './tts-speech.ts';
 import { modelsRoot, runtimesRoot } from 'cortico/paths.ts';
 import { ModelStore, type ModelId, type ModelState } from './runtime/models.ts';
 import { PINNED_RELEASE, defaultBackend, planFor, type Backend, type ReleasePlan } from './runtime/release.ts';
@@ -147,6 +148,7 @@ export const VTUBER_DEFAULTS = {
   /** VoxCPM2 server;VTS 占 8001,TTS 用 8010 */
   ttsUrl: 'http://127.0.0.1:8010',
   ttsService: { ...TTS_SERVICE_DEFAULTS },
+  ttsSpeech: { ...TTS_SPEECH_DEFAULTS },
   /** 自备运行时目录;空 = 走面板的托管下载 */
   ttsRuntimeDir: '',
   /** 运行时版本;空 = 包里钉住的那个 */
@@ -417,6 +419,26 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
       'worlds.vtuber.ttsService.maxRestarts': {
         type: 'integer', minimum: 0, maximum: 10, title: '语音自动恢复次数', 'x-hot': false,
         description: '一次手动启动或扩展加载期间的恢复上限；0 关闭自动恢复。',
+      },
+      'worlds.vtuber.ttsSpeech.enabled': {
+        type: 'boolean', title: '由 Corti 配置 IndexTTS 声线', 'x-hot': true,
+        description: '开启后每次合成使用下面的配置；关闭后沿用适配器偏好文件。',
+      },
+      'worlds.vtuber.ttsSpeech.voice': {
+        type: 'string', title: 'IndexTTS 音色', 'x-hot': true,
+        description: '模型服务中的音色名称；留空沿用适配器当前音色。',
+      },
+      'worlds.vtuber.ttsSpeech.speed': {
+        type: 'number', minimum: 0.5, maximum: 2, title: 'IndexTTS 语速', 'x-hot': true,
+        description: '1 为参考语速；下一次合成生效。',
+      },
+      'worlds.vtuber.ttsSpeech.emotionMix': {
+        type: 'number', minimum: 0, maximum: 0.45, title: 'IndexTTS 语气强度', 'x-hot': true,
+        description: '0 沿用参考语气，数值越大情绪越明显。',
+      },
+      'worlds.vtuber.ttsSpeech.emotionMinConfidence': {
+        type: 'number', minimum: 0, maximum: 1, title: 'IndexTTS 语气置信度', 'x-hot': true,
+        description: '选择器置信度低于此值时保留参考语气。',
       },
       'worlds.vtuber.ttsRuntimeDir': {
         type: 'string',
@@ -806,6 +828,7 @@ export interface VtuberWorldOptions {
   streamPort?: number;
   ttsUrl?: string;
   ttsService?: Partial<TtsServiceConfig>;
+  ttsSpeech?: () => TtsSpeechPreferences;
   /** 自备的运行时目录;非空就不走托管下载(自编译、签过名的构建走这里) */
   ttsRuntimeDir?: () => string;
   /** 托管下载钉住的 release;留空用包里钉的那个 */
@@ -928,7 +951,8 @@ export interface VtuberOverlayConsole {
 
 export interface VtuberTtsConsole {
   state(): Promise<
-    TtsServiceState & { reachable: boolean; profile: TtsProfile; voices: TtsVoiceInfo[]; voicesDir: string }
+    TtsServiceState & { reachable: boolean; profile: TtsProfile; voices: TtsVoiceInfo[]; voicesDir: string;
+      speech: TtsSpeechPreferences; speechVoices: string[] }
   >;
   /** 运行时与权重的安装状态 */
   runtime(): {
@@ -1461,6 +1485,7 @@ export class VtuberWorld implements World {
   private readonly ttsVoicesDirOpt?: () => string;
   private readonly live2dDirOpt?: () => string;
   private readonly ttsProfile: TtsProfile;
+  private readonly ttsSpeechOpt?: () => TtsSpeechPreferences;
   private readonly onTtsProfile?: (profile: TtsProfile) => void;
   private readonly decaySec?: () => VtuberDecaySec;
   private readonly modelProfileOpt?: () => string;
@@ -1516,6 +1541,7 @@ export class VtuberWorld implements World {
   /** 杂谈/游戏模式的弹幕攒批(听弹幕模式逐条即时,不进这里) */
 
   constructor(opts: VtuberWorldOptions = {}) {
+    this.ttsSpeechOpt = opts.ttsSpeech;
     this.musicLibrary = new MusicLibrary(() => opts.musicDir?.() ?? VTUBER_DEFAULTS.musicDir);
     this.musicVolumeOpt = opts.musicVolume;
     this.musicGeneration = new MusicGenerationClient({
@@ -2588,6 +2614,8 @@ export class VtuberWorld implements World {
         profile: { ...this.ttsProfile },
         voices: this.listVoices(),
         voicesDir: this.voicesDir(),
+        speech: { ...(this.ttsSpeechOpt?.() ?? TTS_SPEECH_DEFAULTS) },
+        speechVoices: await this.ttsServer.listVoices(),
       }),
       runtime: () => ({ kind: this.ttsServer.state().kind, service: this.ttsServer.state(), ...this.ttsRuntimeState(), models: this.ttsModelStates() }),
       installRuntime: () => this.installTtsRuntime(),
@@ -2637,7 +2665,10 @@ export class VtuberWorld implements World {
         }
         if (this.performer) this.performer.enqueuePreparedSpeech(piece);
         else void this.audio.play(piece).then(({ ended }) => ended).catch(() => {});
-        const voice = audition?.refAudio ?? this.ttsProfile.refAudio;
+        const speech = this.ttsSpeechOpt?.();
+        const voice = this.ttsServer.state().kind === 'indextts'
+          ? (speech?.enabled && speech.voice.trim() ? speech.voice.trim() : this.ttsServer.state().health?.voice)
+          : audition?.refAudio ?? this.ttsProfile.refAudio;
         return {
           message: `合成 OK:${Math.round(piece.durationMs)}ms 音频,耗时 ${synthMs}ms;声线 ${
             voice ?? '(无参考音频)'
@@ -2782,6 +2813,10 @@ export class VtuberWorld implements World {
 
   /** 组装一次合成的请求档案;参考音频按文件名缓存 base64 */
   private synthProfileOf(p: TtsProfile): TtsSynthProfile {
+    if (this.ttsServer.state().kind === 'indextts') {
+      const speech = this.ttsSpeechOpt?.();
+      return speech?.enabled ? { speech } : {};
+    }
     const out: TtsSynthProfile = {
       seed: p.seed,
       cfgValue: p.cfgValue,

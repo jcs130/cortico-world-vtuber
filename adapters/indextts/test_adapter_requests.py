@@ -45,14 +45,44 @@ class RequestTests(unittest.TestCase):
         self.original_urlopen = urllib.request.urlopen
         return super().run(result)
 
-    def request(self, text):
-        raw = json.dumps({"input": text}, ensure_ascii=False).encode("utf-8")
+    def post(self, body):
+        raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.handler.headers = {"Content-Length": str(len(raw))}
         self.handler.rfile = io.BytesIO(raw)
         self.handler.do_POST()
+
+    def request(self, text):
+        self.post({"input": text})
         self.assertEqual(self.handler._send.call_args.args[0], 200)
         request = self.adapter.urllib.request.urlopen.call_args.args[0]
         return json.loads(request.data), self.adapter.retempo.call_args.args[1]
+
+    def test_request_settings_override_preferences_for_whole_and_stream_without_mutating_them(self):
+        prefs = {"voice": "fixture-default", "speed": 1.0, "emotion_mix": 0.35}
+        self.adapter.load_prefs.return_value = prefs
+        self.handler._stream = Mock()
+        for path in ('/v1/audio/speech', '/v1/audio/speech/stream'):
+            with self.subTest(path=path):
+                self.handler.path = path
+                self.post({'input': '我先去看看。' if path.endswith('/stream') else '大家好。', 'voice': ' fixture-override ', 'speed': 0.9,
+                           'emotion_mix': 0, 'emotion_min_confidence': 0.9})
+                if path.endswith('/stream'):
+                    payload, speed, _, _ = self.handler._stream.call_args.args
+                else:
+                    payload = json.loads(self.adapter.urllib.request.urlopen.call_args.args[0].data)
+                    speed = self.adapter.retempo.call_args.args[1]
+                self.assertEqual(payload['voice'], 'fixture-override')
+                self.assertEqual(speed, 0.9)
+                self.assertNotIn('mood', payload)
+                self.assertNotIn('emo_vector', payload)
+                self.assertEqual(prefs, {'voice': 'fixture-default', 'speed': 1.0, 'emotion_mix': 0.35})
+
+    def test_default_request_voice_preserves_adapter_preference_and_bounds_speed(self):
+        self.adapter.load_prefs.return_value = {'voice': 'fixture-default', 'speed': 0.95, 'emotion_mix': 0}
+        self.post({'input': '你好。', 'voice': 'default', 'speed': 9})
+        payload = json.loads(self.adapter.urllib.request.urlopen.call_args.args[0].data)
+        self.assertEqual(payload['voice'], 'fixture-default')
+        self.assertEqual(self.adapter.retempo.call_args.args[1], 2)
 
     def test_low_confidence_omits_both_gateway_emotion_fields(self):
         self.adapter.classify_mood_decision.return_value = ("happy", 0.49)

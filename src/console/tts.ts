@@ -23,6 +23,7 @@ import {
   type TtsTestResult,
   type TtsVoiceInfo,
 } from './client.ts';
+import { speechControls } from './tts-speech.ts';
 
 const DESC =
   '参考音频存放在参数页选定的声线库目录,同名 .txt 是它的转写。带转写按续写克隆(Hi-Fi)合成,'
@@ -143,6 +144,8 @@ export const ttsPanel: ConsolePanel = {
     card.body.appendChild(player);
 
     const profileElements = Array.from(card.body.children).filter(el => el !== headBar && el !== testBar && el !== player);
+    const controls = speechControls(ctx, refresh);
+    card.body.prepend(controls.el);
     const backendNote = dimLine(ctx);
     card.body.appendChild(backendNote);
     mountRuntimeSection(ctx);
@@ -248,24 +251,26 @@ export const ttsPanel: ConsolePanel = {
       renderDirty();
     }
 
-    /** 合成要 server 在跑;它的启停在「挂载」面板,这里只跟着它的可达性开关试听 */
+    /** 试听只在所选服务可达时启用。 */
     async function refresh(): Promise<void> {
       try {
         const st = await ctx.invoke<TtsPanelState>('state');
         if (ctx.signal.aborted) return;
         voicesDir = st.voicesDir || '';
         reachable = !!st.reachable;
-        if (!reachable) say('TTS server 不在跑,去「挂载」里启动');
+        if (!reachable) say('语音服务不可达，可在上方启动。');
+        controls.render(st);
         const usesProfile = !st.kind || st.kind === 'voxcpm2';
         profileElements.forEach(el => { (el as HTMLElement).hidden = !usesProfile; });
         if (usesProfile) renderProfile(st.profile, st.voices);
         else {
-          activeChip.textContent = String(st.health?.voice ?? st.kind);
-          backendNote.textContent = '声线与语速使用后端配置；下方试听沿用现役设置。';
+          activeChip.textContent = String(st.speech?.enabled && st.speech.voice ? st.speech.voice : st.health?.voice ?? st.kind);
+          backendNote.textContent = st.speech?.enabled ? '使用已保存的网页声线配置。' : '沿用适配器声线偏好。';
         }
       } catch (err) {
         if (ctx.signal.aborted) return;
         reachable = false;
+        controls.unavailable();
         say(`不可用: ${errText(err)}`, true);
       } finally {
         renderActions();
@@ -353,7 +358,7 @@ export const ttsPanel: ConsolePanel = {
       say('合成中…');
       try {
         // 带上面板当前的档案:选了新声线还没保存时,试听听到的就是它
-        const out = await ctx.invoke<TtsTestResult>('test', [testInput.value, formProfile()]);
+        const out = await ctx.invoke<TtsTestResult>('test', [testInput.value, savedProfile ? formProfile() : undefined]);
         if (ctx.signal.aborted) return;
         say(out.message || 'OK');
         if (out.wav) {
@@ -460,7 +465,7 @@ function mountRuntimeSection(ctx: ConsolePanelContext): void {
         ? '适配器随扩展发布。Python、模型网关和声线偏好文件在配置页设置；启停位于「挂载」。'
         : '连接配置的语音地址；本扩展不启动或关闭外部服务。'));
       const health = st.service?.health;
-      if (health?.voice) rows.appendChild(dimLine(ctx, `当前声线：${String(health.voice)}`));
+      if (health?.voice) rows.appendChild(dimLine(ctx, `适配器默认声线：${String(health.voice)}`));
       if (health?.preferences_file) rows.appendChild(dimLine(ctx, `声线偏好：${String(health.preferences_file)}`));
       if (st.service?.detail) rows.appendChild(dimLine(ctx, st.service.detail));
       return;

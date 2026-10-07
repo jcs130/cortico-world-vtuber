@@ -22,7 +22,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 PORT = int(os.environ.get('CORTI_TTS_PORT', '8010'))
 if not 1 <= PORT <= 65535:
     raise ValueError('CORTI_TTS_PORT must be an integer between 1 and 65535')
-ADAPTER_VERSION = '17-context-pronunciation'
+ADAPTER_VERSION = '18-console-preferences'
 INDEXTTS_BASE = os.environ.get('CORTICO_INDEXTTS_URL', 'http://127.0.0.1:8087').rstrip('/')
 INDEXTTS = INDEXTTS_BASE + '/tts_raw'
 INDEXTTS_STREAM = INDEXTTS_BASE + '/tts_stream'
@@ -363,16 +363,16 @@ class Handler(BaseHTTPRequestHandler):
             mood_source = 'tag' if tag_mood else ('decision' if decision_mood else ('regex' if mood else 'neutral'))
 
             prefs = load_prefs()
-            voice = (prefs.get('voice') or 'taozi').strip() or 'taozi'
-            try:
-                gspeed = float(prefs.get('speed', 1.0) or 1.0)
-            except Exception:
-                gspeed = 1.0
+            requested_voice = body.get('voice')
+            voice = (requested_voice.strip() if isinstance(requested_voice, str)
+                     and requested_voice.strip() not in ('', 'default') else
+                     (prefs.get('voice') or 'taozi').strip() or 'taozi')
+            gspeed = bounded_number(body.get('speed', prefs.get('speed')), 1.0, 0.5, 2.0)
             vec = emotion_mix_vector(
                 mood, MOOD_VECS.get(mood), source=mood_source,
                 confidence=decision_conf, intensity=tag_k,
-                max_mix=prefs.get('emotion_mix', DEFAULT_EMOTION_MIX),
-                minimum_confidence=prefs.get('emotion_min_confidence', DEFAULT_CONFIDENCE),
+                max_mix=body.get('emotion_mix', prefs.get('emotion_mix', DEFAULT_EMOTION_MIX)),
+                minimum_confidence=body.get('emotion_min_confidence', prefs.get('emotion_min_confidence', DEFAULT_CONFIDENCE)),
             )
             # A mood label without a vector would cause the gateway to recreate a
             # full-strength preset. Natural requests must omit both fields.

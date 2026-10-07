@@ -147,6 +147,7 @@ let shuttingDown = false;
 function configGetters(initial: EngineConfigSnapshot): Partial<VtuberWorldOptions> {
   snap = initial;
   const out: Partial<VtuberWorldOptions> = {};
+  if ('ttsSpeech' in initial) out.ttsSpeech = () => snap.ttsSpeech ?? VTUBER_DEFAULTS.ttsSpeech;
   if ('audioDevice' in initial) out.audioDevice = () => snap.audioDevice ?? VTUBER_DEFAULTS.audioDevice;
   if ('audioMirrorSystem' in initial) {
     out.audioMirrorSystem = () => snap.audioMirrorSystem ?? VTUBER_DEFAULTS.audioMirrorSystem;

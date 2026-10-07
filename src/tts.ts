@@ -12,6 +12,7 @@
  */
 
 import type { AlignedUnit } from './align.ts';
+import type { TtsSpeechPreferences } from './tts-speech.ts';
 import { SilenceScanner, scanSilence, type SilenceReport } from './silence-scan.ts';
 
 /** 整段包络与流式增量包络共用的只读接口。 */
@@ -248,6 +249,7 @@ export function extractEnvelope(wav: PcmAudio): Envelope {
 
 /** 单次合成携带的声线与生成参数;undefined 字段不进请求体(用 server 默认) */
 export interface TtsSynthProfile {
+  speech?: TtsSpeechPreferences;
   referenceAudioB64?: string;
   /** 参考音频的转写;与 referenceAudioB64 同给才有意义 */
   refText?: string;
@@ -317,6 +319,12 @@ export class TtsClient {
     if (p.inferenceTimesteps !== undefined) body.inference_timesteps = p.inferenceTimesteps;
     if (p.maxSteps !== undefined) body.max_steps = p.maxSteps;
     if (p.temperature !== undefined) body.temperature = p.temperature;
+    if (p.speech) {
+      if (p.speech.voice.trim()) body.voice = p.speech.voice.trim();
+      body.speed = p.speech.speed;
+      body.emotion_mix = p.speech.emotionMix;
+      body.emotion_min_confidence = p.speech.emotionMinConfidence;
+    }
     if (p.referenceAudioB64) {
       body.reference_audio = p.referenceAudioB64;
       if (p.refText) body.prompt_text = p.refText;
@@ -376,6 +384,12 @@ export class TtsClient {
     if (p.inferenceTimesteps !== undefined) body.inference_timesteps = p.inferenceTimesteps;
     if (p.maxSteps !== undefined) body.max_steps = p.maxSteps;
     if (p.temperature !== undefined) body.temperature = p.temperature;
+    if (p.speech) {
+      if (p.speech.voice.trim()) body.voice = p.speech.voice.trim();
+      body.speed = p.speech.speed;
+      body.emotion_mix = p.speech.emotionMix;
+      body.emotion_min_confidence = p.speech.emotionMinConfidence;
+    }
     if (p.referenceAudioB64) {
       body.reference_audio = p.referenceAudioB64;
       if (p.refText) body.prompt_text = p.refText;

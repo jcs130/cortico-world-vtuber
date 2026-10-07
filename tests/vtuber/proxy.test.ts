@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EventEnvelope, WorldHost, PushOptions } from 'cortico/core/types.ts';
 import { PassThrough } from 'node:stream';
-import { HANDOFF_NOTE } from '../../src/world.ts';
+import { HANDOFF_NOTE, type VtuberWorldOptions } from '../../src/world.ts';
+import { TTS_SPEECH_DEFAULTS } from '../../src/tts-speech.ts';
 import { attachStdio, VtuberWorldProxy } from '../../src/proxy.ts';
 import { makeWav, recordingLogger, type LogLine } from './helpers.ts';
 
@@ -130,11 +131,12 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
   let tts: Server;
   let ttsUrl: string;
   const ttsInputs: string[] = [];
+  const ttsBodies: Array<Record<string, unknown>> = [];
   let serverDir: string;
   let proxy: VtuberWorldProxy;
   let live2dDir = '';
 
-  async function freshProxy(): Promise<void> {
+  async function freshProxy(options: Partial<VtuberWorldOptions> = {}): Promise<void> {
     if (proxy) await proxy.stop();
     proxy = new VtuberWorldProxy({
       botName: 'bot', streamPort: 0, vtsWsUrl: 'ws://127.0.0.1:1', ttsUrl,
@@ -142,6 +144,7 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
       ttsVoicesDir: () => join(serverDir, 'voices'), live2dDir: () => live2dDir,
       musicDir: () => existsSync(join(serverDir, 'catalog.json')) ? serverDir : '',
       musicVolume: () => 0.4,
+      ...options,
     });
     await proxy.start(host);
   }
@@ -157,7 +160,9 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
       req.on('data', (chunk) => chunks.push(chunk));
       req.on('end', () => {
         try {
-          const input = JSON.parse(Buffer.concat(chunks).toString('utf8')).input;
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          const input = body.input;
+          ttsBodies.push(body);
           if (typeof input === 'string') ttsInputs.push(input);
         } catch { /* health request */ }
         res.writeHead(200, { 'Content-Type': 'audio/wav' });
@@ -202,6 +207,20 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
 
   it('代理工具表声明台词、打断与歌曲', () => {
     expect(proxy.tools().map((tool) => tool.name)).toEqual(['vtuber_act', 'vtuber_interrupt', 'vtuber_music']);
+  });
+
+  it('hot speech preferences cross the engine boundary and change synthesis without restarting it', async () => {
+    let speech = { ...TTS_SPEECH_DEFAULTS, enabled: true, voice: 'fixture-a' };
+    await freshProxy({ ttsService: { kind: 'indextts' }, ttsSpeech: () => speech });
+    const enginePid = (proxy as unknown as { child: { pid: number } }).child.pid;
+    await proxy.alignConsole().synth('第一句。');
+    expect(ttsBodies.at(-1)?.voice).toBe(speech.voice);
+    speech = { ...speech, voice: 'fixture-b', speed: 0.85, emotionMix: 0 };
+    await proxy.alignConsole().synth('第二句。');
+    expect(ttsBodies.at(-1)).toMatchObject({ voice: speech.voice, speed: speech.speed, emotion_mix: speech.emotionMix });
+    expect(ttsBodies.at(-1)).not.toHaveProperty('reference_audio');
+    expect((proxy as unknown as { child: { pid: number } }).child.pid).toBe(enginePid);
+    await freshProxy();
   });
 
   it('vtuber_act 直连:回执从子进程原样返回,空 script 沉默', async () => {

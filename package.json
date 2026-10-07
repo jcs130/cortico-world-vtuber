@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-vtuber",
-  "version": "0.1.1-music.3",
+  "version": "0.1.1-music.4",
   "type": "module",
   "description": "Cortico World: Live2D VTuber performance — VTube Studio wiring, streaming TTS, forced alignment, subtitle overlay",
   "license": "AGPL-3.0-or-later",

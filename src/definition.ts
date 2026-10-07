@@ -19,6 +19,7 @@ export interface VtuberConfigSection {
   streamPort: number;
   ttsUrl: string;
   ttsService: import('./tts-service.ts').TtsServiceConfig;
+  ttsSpeech: import('./tts-speech.ts').TtsSpeechPreferences;
   ttsRuntimeDir: string;
   ttsRuntimeRelease: string;
   ttsBaseLmFile: string;
@@ -85,6 +86,7 @@ export const VTUBER: WorldDefinition<VtuberConfigSection> = {
       streamPort: cfg.streamPort,
       ttsUrl: cfg.ttsUrl,
       ttsService: cfg.ttsService,
+      ttsSpeech: () => cfg.ttsSpeech ?? VTUBER_DEFAULTS.ttsSpeech,
       ttsRuntimeDir: () => cfg.ttsRuntimeDir,
       ttsRuntimeRelease: () => cfg.ttsRuntimeRelease,
       ttsBaseLmFile: () => cfg.ttsBaseLmFile,

@@ -22,6 +22,7 @@ import type { OverlayConfig, TtsProfile, VtuberDecaySec } from './world.ts';
  * 键的在场集在 init 时定死,之后的快照只更新取值。
  */
 export interface EngineConfigSnapshot {
+  ttsSpeech?: import('./tts-speech.ts').TtsSpeechPreferences;
   audioDevice?: string;
   audioMirrorSystem?: boolean;
   audioSecondary?: string;

@@ -806,6 +806,7 @@ export class VtuberWorldProxy implements World {
     const o = this.opts;
     const d = VTUBER_DEFAULTS;
     const s: EngineConfigSnapshot = {};
+    if (o.ttsSpeech) s.ttsSpeech = structuredClone(o.ttsSpeech() ?? d.ttsSpeech);
     if (o.audioDevice) s.audioDevice = o.audioDevice() ?? d.audioDevice;
     if (o.audioMirrorSystem) s.audioMirrorSystem = o.audioMirrorSystem() ?? d.audioMirrorSystem;
     if (o.audioSecondary) s.audioSecondary = o.audioSecondary() ?? d.audioSecondary;

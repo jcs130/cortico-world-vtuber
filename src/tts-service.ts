@@ -76,6 +76,7 @@ export class TtsService {
   private starting: Promise<TtsServiceState> | null = null;
   private stopping: Promise<TtsServiceState> | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private voiceCatalog: { at: number; voices: string[] } | null = null;
 
   private beginLaunch(generation: number): Promise<TtsServiceState> {
     const pending = this.launch(generation).finally(() => {
@@ -122,6 +123,21 @@ export class TtsService {
     const ready = result.kind === 'ready' && (!this.proc || result.health.instance_id === this.token);
     if (ready) this.health = result.health;
     return ready;
+  }
+
+  async listVoices(): Promise<string[]> {
+    if (this.config.kind !== 'indextts') return [];
+    if (this.voiceCatalog && Date.now() - this.voiceCatalog.at < 60_000) return this.voiceCatalog.voices;
+    try {
+      const response = await this.fetchImpl(`${this.config.upstreamUrl.replace(/\/$/, '')}/voices`,
+        { signal: AbortSignal.timeout(2000) });
+      if (!response.ok) return [];
+      const body = await response.json() as { voices?: unknown };
+      if (!Array.isArray(body.voices)) return [];
+      const voices = body.voices.filter((voice): voice is string => typeof voice === 'string' && !!voice.trim());
+      this.voiceCatalog = { at: Date.now(), voices };
+      return voices;
+    } catch { return []; }
   }
 
   async start(): Promise<TtsServiceState> {

@@ -4,6 +4,11 @@ This adapter exposes `POST /v1/audio/speech`, `POST /v1/audio/speech/stream`
 and a read-only `GET /health`, using an already-running IndexTTS gateway.
 It does not load a second speech model or play audio itself.
 
+Both synthesis endpoints accept request-scoped `voice`, `speed` (0.5–2),
+`emotion_mix` (0–0.45) and `emotion_min_confidence` (0–1). Missing fields use
+the deployment preference file; an empty or `default` voice also keeps that
+preference. Overrides do not modify the preference file or other clients.
+
 ## Text-segment streaming
 
 The stream returns a fixed 44-byte WAV header followed by mono PCM16LE.
@@ -138,7 +143,7 @@ python indextts_adapter.py
 For detached Windows startup, use the existing deployment supervisor or a
 hidden `Start-Process` helper. A launcher needs all five Python source files and
 `polyphonic_readings.json` in the
-same directory. Inspect `/health` for `version: "17-context-pronunciation"`,
+same directory. Inspect `/health` for `version: "18-console-preferences"`,
 `pronunciation.context_ready: true` and the
 expected port before changing CortiV's `worlds.vtuber.ttsUrl` to that instance.
 The adapter's POST endpoint is `/v1/audio/speech`; `ttsUrl` is its base URL.
