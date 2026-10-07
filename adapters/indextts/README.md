@@ -43,6 +43,7 @@ more prosody context; smaller segments can begin speaking sooner.
 - Chinese enchantment and explicit level labels read canonical Roman levels
   aloud: `锋利 II` → `锋利二级`, `耐久 Ⅲ` → `耐久三级`, `第 XV 层` → `第十五层`.
   Adjacent labels are all converted: `效率V耐久II` → `效率五级耐久二级`.
+  `经验修补 I` and its `修补 I` alias also read their level.
   English words, model names, player IDs and bare Roman tokens are retained.
 - Synthesis uses readable Chinese numeric tokens (`1、2、3` → `一、二、三`).
   Counts, signed coordinates and decimals keep their values. Leading-zero
@@ -76,6 +77,17 @@ more prosody context; smaller segments can begin speaking sooner.
   A dependency or inference failure uses the small unambiguous phrase fallback;
   `/health` reports availability, last analysis time and fallback count.
   Syntax follows [IndexTTS pronunciation control](https://github.com/index-tts/index-tts).
+- Automatic hints leave neutral-tone syllables as Chinese characters, including
+  `了`, `的` and auxiliary `着`/`得`. Common contextual homographs retain explicit
+  non-neutral readings from the modern reading set in `polyphonic_readings.json`.
+  Other characters retain their sentence text, including dictionary homographs
+  outside this reviewed set. Caller hints remain supported.
+  `/health` reports `annotation_policy: sparse-nonneutral`.
+- Each synthesis request logs `text-prepared` with its original script, readable
+  speech and actual phonetic input. Health keeps only the latest preparation's
+  timestamp, input hash, lengths, voice and hint count. `upstream_stream_path`
+  and `X-TTS-Upstream-Mode` distinguish the native and compatibility paths;
+  the initial health value is `unverified` until a stream is requested.
 - Complete VoxCPM acoustic cues (`[sigh]`, `[laughing]`, `[breath]`, `[Uhm]`,
   `[Shh]`, `Question-*`, `Confirmation-en`, `Surprise-*`, `Dissatisfaction-hnn`)
   are removed before either IndexTTS endpoint receives text. Known emotional

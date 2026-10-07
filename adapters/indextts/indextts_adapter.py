@@ -1,12 +1,6 @@
 # -*- coding: utf-8 -*-
-"""IndexTTS adapter: reference prosody, contextual pronunciation and segment streaming.
-
-Layer 1: Stage direction tags (unchanged — LLM's own choice)
-Layer 2: StartLux-Decision API (NEW — 18ms vs regex guessing)
-Layer 3: Regex fallback (if decision server down)
-Layer 4: Neutral (no mood)
-"""
-import json, os, re, subprocess, sys, io, time, difflib, urllib.request, shutil
+"""IndexTTS HTTP adapter: reference prosody, contextual pronunciation and segment streaming."""
+import json, os, re, subprocess, sys, io, time, difflib, urllib.request, shutil, hashlib
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from corti_speech_style import (
@@ -22,7 +16,9 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 PORT = int(os.environ.get('CORTI_TTS_PORT', '8010'))
 if not 1 <= PORT <= 65535:
     raise ValueError('CORTI_TTS_PORT must be an integer between 1 and 65535')
-ADAPTER_VERSION = '18-console-preferences'
+ADAPTER_VERSION = '19-sparse-pronunciation'
+_last_preparation = None
+_upstream_stream_path = 'unverified'
 INDEXTTS_BASE = os.environ.get('CORTICO_INDEXTTS_URL', 'http://127.0.0.1:8087').rstrip('/')
 INDEXTTS = INDEXTTS_BASE + '/tts_raw'
 INDEXTTS_STREAM = INDEXTTS_BASE + '/tts_stream'
@@ -232,6 +228,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def _stream(self, payload, speed, clean, max_chars=40):
+        global _upstream_stream_path
         started = time.monotonic()
         response = None
         chunks = None
@@ -242,6 +239,7 @@ class Handler(BaseHTTPRequestHandler):
                 headers={'Content-Type': 'application/json'})
             try:
                 response = urllib.request.urlopen(request, timeout=90)
+                stream_path = 'native-text-segments'
             except urllib.error.HTTPError as error:
                 if error.code not in (404, 405):
                     raise
@@ -255,7 +253,9 @@ class Handler(BaseHTTPRequestHandler):
                     with urllib.request.urlopen(req, timeout=90) as audio:
                         return audio.read()
                 response = SegmentedPcmSource(pronunciation_segments(payload['input'], max_chars), synthesize)
+                stream_path = 'compatibility-text-segments'
                 self.log_message('stream uses legacy segment synthesis: max_chars=%d', max_chars)
+            _upstream_stream_path = stream_path
             rate = read_pcm_header(response)
             chunks = tempo_chunks(response, rate, speed, FFMPEG)
             first = next(chunks, None)
@@ -267,6 +267,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Transfer-Encoding', 'chunked')
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-TTS-Streaming', 'text-segments')
+            self.send_header('X-TTS-Upstream-Mode', stream_path)
             self.send_header('X-TTS-First-Audio-Ms', str(first_ms))
             self.end_headers()
             sent = True
@@ -319,11 +320,14 @@ class Handler(BaseHTTPRequestHandler):
                 'pronunciation_policy': pronunciation_health()['policy'],
                 'pronunciation': pronunciation_health(),
                 'spoken_text_policy': 'chinese-levels-fields-numbers',
+                'upstream_stream_path': _upstream_stream_path,
+                'last_preparation': _last_preparation,
             }).encode(), 'application/json')
         else:
             self._send(404, b'{"error":"not found"}', 'application/json')
 
     def do_POST(self):
+        global _last_preparation
         n = int(self.headers.get('Content-Length') or 0)
         raw = self.rfile.read(n) if n else b''
         if self.path.rstrip('/') in ('/v1/audio/speech', '/v1/audio/speech/stream'):
@@ -381,7 +385,20 @@ class Handler(BaseHTTPRequestHandler):
 
             # Keep mood classification and dedup on readable text; phonetic hints
             # are solely a synthesis concern, including both streaming paths.
-            payload = {'input': normalize_pronunciation(clean), 'voice': voice, 'language': 'Chinese'}
+            resolved = normalize_pronunciation(clean)
+            preparation = {
+                'at_ms': round(time.time() * 1000),
+                'input_sha256': hashlib.sha256(text.encode('utf-8')).hexdigest(),
+                'input_chars': len(text), 'spoken_chars': len(clean),
+                'synthesis_chars': len(resolved), 'voice': voice,
+                'phonetic_hints': len(re.findall(r'<[^<>|]+\|[^<>]+>', resolved)),
+                'streaming': streaming,
+            }
+            _last_preparation = preparation
+            self.log_message('text-prepared: %s', json.dumps({
+                **preparation, 'script': text, 'spoken': clean, 'synthesis': resolved,
+            }, ensure_ascii=False))
+            payload = {'input': resolved, 'voice': voice, 'language': 'Chinese'}
             if vec is not None:
                 payload['mood'] = mood
                 payload['emo_vector'] = vec

@@ -10,6 +10,8 @@ class SpokenTextTests(unittest.TestCase):
         self.assertEqual(normalize_spoken_text('效率V耐久II的，锋利IV耐久III的。'),
                          '效率五级耐久二级的，锋利四级耐久三级的。')
         self.assertEqual(normalize_spoken_text('保护I耐久II荆棘III'), '保护一级耐久二级荆棘三级')
+        self.assertEqual(normalize_spoken_text('锋利II、耐久III和经验修补I，修补Ⅰ。'),
+                         '锋利二级、耐久三级和经验修补一级，修补一级。')
 
     def test_arabic_count_and_numeric_sequence_do_not_depend_on_backend_reading(self):
         self.assertEqual(normalize_spoken_text('1、2、3，凑够16个小麦，12个面包。'),

@@ -1,4 +1,4 @@
-"""Pure request preparation for indextts_adapter_decision.py; no model or HTTP calls."""
+"""Pure text and emotion preparation for indextts_adapter.py."""
 
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ _ENCHANTMENTS = (
     "亡灵杀手", "节肢杀手", "火焰附加", "横扫之刃", "精准采集", "海之眷顾",
     "多重射击", "快速装填", "荆棘", "保护", "锋利", "击退", "抢夺", "效率",
     "耐久", "时运", "力量", "冲击", "火矢", "无限", "饵钓", "忠诚", "穿刺",
-    "激流", "引雷", "穿透", "风爆", "密度", "突破",
+    "激流", "引雷", "穿透", "风爆", "密度", "突破", "经验修补", "修补",
 )
 _ENCHANT_TOKEN = (
     r"(?P<label>" + "|".join(_ENCHANTMENTS) + r")\s*(?P<roman>" + _ROMAN_TOKEN + r")"

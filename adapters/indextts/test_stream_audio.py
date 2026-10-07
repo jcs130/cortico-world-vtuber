@@ -70,6 +70,8 @@ class StreamTests(unittest.TestCase):
         self.assertTrue(all('max_text_tokens_per_segment' not in payload for payload in requests[1:]))
         handler._send.assert_not_called()
         self.assertEqual(handler.wfile.getvalue(), b'0\r\n\r\n')
+        handler.send_header.assert_any_call('X-TTS-Upstream-Mode', 'compatibility-text-segments')
+        self.assertEqual(adapter._upstream_stream_path, 'compatibility-text-segments')
 
     def test_sentence_boundaries_preserve_input_without_midword_splitting(self):
         text = '先收好钓竿，再去岸上看看。魔力有12.5点。这里有伙伴，我去打个招呼。'

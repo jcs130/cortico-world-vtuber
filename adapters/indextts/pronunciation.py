@@ -31,6 +31,7 @@ _PROTECTED = re.compile(r'<[^<>\n]*>|`[^`\n]*`|https?://[^\s<>，。！？；]+'
 # A dictionary's default cannot pin these homographs: 长得快 / 路长得很,
 # 一行字 / 一行人. Their grammatical use is resolved in the whole sentence.
 _CONTEXT_DEPENDENT_PHRASES = frozenset(('长得', '一行'))
+_COMMON_READINGS = json.loads(Path(__file__).with_name('polyphonic_readings.json').read_text('utf-8'))
 
 
 def phrase_fallback(text: str) -> str:
@@ -71,7 +72,7 @@ class ReadingSelector:
 
     def __init__(self, url: str, timeout: float = 0.6, min_confidence: float = 0.8):
         self.url, self.timeout, self.min_confidence = url, timeout, min_confidence
-        self.criteria = json.loads(Path(__file__).with_name('polyphonic_readings.json').read_text('utf-8'))
+        self.criteria = _COMMON_READINGS
         self.requests = self.failures = self.last_selected = 0
         self.last_ms = 0.0
 
@@ -123,7 +124,7 @@ class ReadingSelector:
 
 
 class ContextPronunciation:
-    """Dictionary phrases precede CPU G2PW for unresolved polyphonic characters."""
+    """Resolve a bounded set of modern homographs in the complete utterance."""
 
     def __init__(self, converter, phrases=None, alternatives=None, selector=None):
         if phrases is None or alternatives is None:
@@ -157,9 +158,11 @@ class ContextPronunciation:
 
     @lru_cache(maxsize=4096)
     def candidates(self, char: str) -> frozenset[str]:
-        if not '\u3400' <= char <= '\u9fff' or char in '一不':
+        modern = _COMMON_READINGS.get(char)
+        if modern is None:
             return frozenset()
-        return frozenset(reading.upper() for reading in self.alternatives(char))
+        return frozenset(reading.upper() for reading in self.alternatives(char)
+                         if reading.upper() in modern)
 
     def resolve(self, text: str) -> str:
         plain, positions = text_projection(text)
@@ -192,6 +195,9 @@ class ContextPronunciation:
             reading = choices.get(i)
             # Taiwanese variants or malformed model output cannot introduce a new reading.
             if reading in self.candidates(plain[i]):
+                # Neutral particles retain their character and sentence prosody.
+                if reading.endswith('5'):
+                    continue
                 edits[positions[i]] = f'<{plain[i]}|{reading}>'
         result = ''.join(edits.get(i, char) for i, char in enumerate(text))
         return phrase_fallback(result)
@@ -229,6 +235,7 @@ def initialize_pronunciation(model_dir: str | None = None, tokenizer_dir: str | 
 def pronunciation_health() -> dict:
     selector = _resolver.selector if _resolver else None
     return {'policy': 'context-pinyin' if _resolver else 'phrase-pinyin-fallback',
+            'annotation_policy': 'sparse-nonneutral',
             'context_ready': _resolver is not None, 'initialization_error': _initialization_error,
             'fallback_count': _resolver.failures if _resolver else 0,
             'last_ms': round(_resolver.last_ms, 2) if _resolver else None,

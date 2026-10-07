@@ -7,6 +7,8 @@ from pathlib import Path
 import types
 import unittest
 from unittest.mock import Mock
+from unittest.mock import patch
+import pronunciation
 
 
 def load_adapter():
@@ -196,6 +198,32 @@ class RequestTests(unittest.TestCase):
         payload, _, clean, _ = self.handler._stream.call_args.args
         self.assertEqual(clean, '树苗正在生长，枝条的长度不同。')
         self.assertEqual(payload['input'], '树苗正在生<长|ZHANG3>，枝条的<长|CHANG2>度不同。')
+
+    def test_both_endpoints_preserve_neutral_particles_and_trace_the_actual_model_text(self):
+        alternatives = {'了': ['le5', 'liao3'], '的': ['de5', 'di4'],
+                        '也': ['ye3', 'yi2'], '长': ['zhang3', 'chang2']}
+        resolver = pronunciation.ContextPronunciation(
+            lambda text: [[alternatives.get(char, [char])[0] for char in text]],
+            phrases={'长大': ['ZHANG3', 'DA4']},
+            alternatives=lambda char: alternatives.get(char, [char]))
+        original = '小麦长大了，我的包也满了。'
+        expected = '小麦<长|ZHANG3>大了，我的包也满了。'
+        with patch.object(pronunciation, '_resolver', resolver):
+            for path in ('/v1/audio/speech', '/v1/audio/speech/stream'):
+                with self.subTest(path=path):
+                    self.adapter._recent.clear()
+                    self.handler.path = path
+                    self.handler._stream = Mock()
+                    self.post({'input': original})
+                    payload = (self.handler._stream.call_args.args[0] if path.endswith('/stream') else
+                               json.loads(self.adapter.urllib.request.urlopen.call_args.args[0].data))
+                    self.assertEqual(payload['input'], expected)
+                    traces = [args.args[1] for args in self.handler.log_message.call_args_list
+                              if args.args[0] == 'text-prepared: %s']
+                    trace = json.loads(traces[-1])
+                    self.assertEqual((trace['script'], trace['spoken'], trace['synthesis']),
+                                     (original, original, payload['input']))
+                    self.assertEqual(trace['phonetic_hints'], 1)
 
     def test_health_reports_version_port_and_bounded_mix(self):
         self.adapter.load_prefs.return_value = {"voice": "taozi", "emotion_mix": 10}
