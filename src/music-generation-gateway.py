@@ -161,7 +161,8 @@ def normalize_config(data: dict, base: Path | None = None) -> dict:
     if cfg["generationMode"] == "reference-timbre" and (not isinstance(cfg.get("referenceAudio"), str) or not cfg["referenceAudio"].strip() or cfg.get("referenceAudioAuthorized") is not True):
         raise GatewayError("需要已获授权的合成歌声参考音频配置。")
     for section, defaults in {
-        "comfy": {"requestTimeoutSec": 20, "generationTimeoutSec": 900, "pollIntervalSec": 2},
+        "comfy": {"requestTimeoutSec": 20, "generationTimeoutSec": 900, "pollIntervalSec": 2,
+                  "releaseMemoryAfterGeneration": False, "memoryReleaseTimeoutSec": 30, "maxPostprocessReservedMb": 256},
         "review": {"timeoutSec": 45, "extraBody": {}},
         "asr": {"language": "zh", "timeoutSec": 180, "device": "cpu", "cpuThreads": 2},
         "limits": {"maxQueue": 6, "maxJobsPerHour": 8, "maxRequesterJobsPerHour": 2},
@@ -189,7 +190,12 @@ def normalize_config(data: dict, base: Path | None = None) -> dict:
             raise ValueError()
     except (ValueError, TypeError):
         raise GatewayError("审核附加配置无效。") from None
-    for section, names in (("comfy", ("requestTimeoutSec", "generationTimeoutSec", "pollIntervalSec")), ("review", ("timeoutSec",)), ("asr", ("timeoutSec",))):
+    if type(cfg["comfy"]["releaseMemoryAfterGeneration"]) is not bool:
+        raise GatewayError("生成服务显存释放开关无效。")
+    budget = cfg["comfy"]["maxPostprocessReservedMb"]
+    if type(budget) is not int or not 128 <= budget <= 16384:
+        raise GatewayError("生成服务显存预算无效。")
+    for section, names in (("comfy", ("requestTimeoutSec", "generationTimeoutSec", "pollIntervalSec", "memoryReleaseTimeoutSec")), ("review", ("timeoutSec",)), ("asr", ("timeoutSec",))):
         for key in names:
             value = cfg[section][key]
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
@@ -478,6 +484,33 @@ class ExternalServices:
     def idle(self) -> bool:
         response = self._json(self.cfg["comfy"]["endpoint"].rstrip("/") + "/queue", timeout=self.cfg["comfy"]["requestTimeoutSec"])
         return isinstance(response, dict) and response.get("queue_running") == [] and response.get("queue_pending") == []
+
+    def release_generation_memory(self, cancelled) -> None:
+        cfg = self.cfg["comfy"]
+        if not cfg["releaseMemoryAfterGeneration"]:
+            return
+        endpoint = cfg["endpoint"].rstrip("/")
+        deadline = time.monotonic() + cfg["memoryReleaseTimeoutSec"]
+        requested = False
+        while not cancelled():
+            if self.idle():
+                if not requested:
+                    request = urllib.request.Request(endpoint + "/free",
+                        data=json.dumps({"unload_models": True, "free_memory": True}).encode("utf-8"),
+                        headers={"Content-Type": "application/json"})
+                    with urllib.request.urlopen(request, timeout=cfg["requestTimeoutSec"]) as response:
+                        response.read(1024)
+                    requested = True
+                stats = self._json(endpoint + "/system_stats", timeout=cfg["requestTimeoutSec"])
+                devices = stats.get("devices") if isinstance(stats, dict) else None
+                if not isinstance(devices, list) or not devices or any(not isinstance(d, dict) or not isinstance(d.get("type"), str) for d in devices):
+                    raise NeedsReview()
+                reserved = [d.get("torch_vram_total") for d in devices if isinstance(d, dict) and d.get("type") == "cuda"]
+                if all(type(value) in (int, float) and math.isfinite(value) and 0 <= value <= cfg["maxPostprocessReservedMb"] * 1048576 for value in reserved):
+                    return
+            if time.monotonic() >= deadline:
+                raise NeedsReview()
+            time.sleep(min(0.25, max(0, deadline - time.monotonic())))
 
     def submit(self, request: dict, job_id: str) -> str:
         prompt = json.loads(Path(self.cfg["promptTemplateFile"]).read_text(encoding="utf-8-sig"))
@@ -811,6 +844,9 @@ class MusicGenerationGateway:
         generated = artifacts / "generated.wav" if self.cfg["voiceConversion"]["enabled"] else audio
         self.services.convert(source, generated)
         inspect_wav(generated, request["durationSec"])
+        self.services.release_generation_memory(lambda: self._cancelled(job) or self.stopping.is_set())
+        if self._cancelled(job) or self.stopping.is_set():
+            return
         if self.cfg["voiceConversion"]["enabled"]:
             def on_stage(stage, message):
                 with self.condition:

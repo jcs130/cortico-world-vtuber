@@ -90,6 +90,9 @@ class FakeServices:
     def convert(self, source, destination):
         shutil.copyfile(source, destination)
 
+    def release_generation_memory(self, cancelled):
+        return
+
     def transcribe(self, audio):
         return self.asr()
 
@@ -580,6 +583,70 @@ class BoundaryTest(unittest.TestCase):
             services = gateway_module.ExternalServices(cfg)
             with self.assertRaises(gateway_module.NeedsReview):
                 services.transcribe(Path(directory) / "song.wav")
+
+    def test_memory_release_waits_for_idle_and_confirmed_reserved_memory(self):
+        cfg = self.memory_release_config()
+        cfg["comfy"]["releaseMemoryAfterGeneration"] = True
+        services = gateway_module.ExternalServices(cfg)
+        state = {"queue_reads": 0, "reserved_reads": 0, "released": False}
+        def read(url, **kwargs):
+            if url.endswith("/queue"):
+                state["queue_reads"] += 1
+                return {"queue_running": ["other-job"] if state["queue_reads"] == 1 else [], "queue_pending": []}
+            state["reserved_reads"] += 1
+            return {"devices": [{"type": "cuda", "torch_vram_total": (512 if state["reserved_reads"] == 1 else 100) * 1048576}]}
+        def release(request, **kwargs):
+            self.assertGreater(state["queue_reads"], 1)
+            self.assertFalse(state["released"])
+            state["released"] = True
+            return io.BytesIO(b"")
+        services._json = read
+        with patch.object(gateway_module.urllib.request, "urlopen", release):
+            services.release_generation_memory(lambda: False)
+        self.assertTrue(state["released"])
+        self.assertEqual(state["reserved_reads"], 2)
+
+    def test_busy_generation_service_is_never_interrupted_or_freed(self):
+        cfg = self.memory_release_config()
+        cfg["comfy"].update(releaseMemoryAfterGeneration=True, memoryReleaseTimeoutSec=0.01)
+        services = gateway_module.ExternalServices(cfg)
+        services._json = lambda *args, **kwargs: {"queue_running": ["other-job"], "queue_pending": []}
+        with patch.object(gateway_module.urllib.request, "urlopen", side_effect=AssertionError("shared service must remain running")):
+            with self.assertRaises(gateway_module.NeedsReview):
+                services.release_generation_memory(lambda: False)
+
+    def test_unreleased_or_unknown_memory_never_starts_postprocessing(self):
+        for devices in (None, [], [{}], [{"type": "cuda", "torch_vram_total": "unknown"}], [{"type": "cuda", "torch_vram_total": 1000 * 1048576}]):
+            cfg = self.memory_release_config()
+            cfg["comfy"].update(releaseMemoryAfterGeneration=True, memoryReleaseTimeoutSec=0.01)
+            services = gateway_module.ExternalServices(cfg)
+            services.idle = lambda: True
+            services._json = lambda *args, **kwargs: {"devices": devices}
+            with self.subTest(devices=devices), patch.object(gateway_module.urllib.request, "urlopen", return_value=io.BytesIO(b"")):
+                with self.assertRaises(gateway_module.NeedsReview):
+                    services.release_generation_memory(lambda: False)
+
+    def test_cancelled_or_disabled_memory_release_makes_no_service_request(self):
+        services = gateway_module.ExternalServices(self.memory_release_config())
+        services._json = lambda *args, **kwargs: self.fail("memory release is disabled or cancelled")
+        services.release_generation_memory(lambda: False)
+        services.cfg["comfy"]["releaseMemoryAfterGeneration"] = True
+        services.release_generation_memory(lambda: True)
+
+    def memory_release_config(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        return gateway_module.normalize_config({"stateDir": temporary.name, "musicDir": temporary.name,
+            "promptTemplateFile": "template.json", "referenceAudio": "voice.wav", "referenceAudioAuthorized": True,
+            "comfy": {"endpoint": "http://generation.invalid"}, "review": {"endpoint": "http://review.invalid", "model": "deployment-model"}})
+
+    def test_memory_release_requires_a_boolean_switch_and_finite_budget(self):
+        for options in ({"releaseMemoryAfterGeneration": "true"}, {"maxPostprocessReservedMb": True},
+                        {"maxPostprocessReservedMb": 0}, {"memoryReleaseTimeoutSec": float("nan")}):
+            raw = self.memory_release_config()
+            raw["comfy"].update(options)
+            with self.subTest(options=options), self.assertRaises(gateway_module.GatewayError):
+                gateway_module.normalize_config(raw)
 
     def test_asr_subprocess_uses_configured_ffmpeg_and_two_cpu_threads_without_gpu(self):
         with tempfile.TemporaryDirectory() as directory:
