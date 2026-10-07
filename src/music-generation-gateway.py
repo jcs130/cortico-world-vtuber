@@ -39,7 +39,7 @@ _voice_spec.loader.exec_module(voice_module)
 
 TERMINAL = {"ready", "rejected", "review", "failed", "cancelled"}
 PLACEHOLDER = "正在创作 AI 歌曲"
-DESCRIPTION = "AI生成原创歌曲，按观众主题创作"
+DESCRIPTION = "AI生成原创歌曲"
 MESSAGES = {
     "queued": "创作请求已排队。",
     "reviewing": "正在审核原创创作内容。",
@@ -897,7 +897,8 @@ class MusicGenerationGateway:
                     os.fsync(stream.fileno())
             os.replace(staging, destination)
             prefix = "generated/" + job["jobId"] + "/"
-            catalog["tracks"].append({"id": track_id, "title": job["request"]["title"], "wavFile": prefix + "song.wav", "lyricsFile": prefix + "lyrics.json", "description": DESCRIPTION, "aiGenerated": True, "contentApproved": True, "audioValidated": True})
+            description = f"{DESCRIPTION}；创作主题：{job['request']['requestText'][:900]}；曲风：{job['request']['style']}"
+            catalog["tracks"].append({"id": track_id, "title": job["request"]["title"], "wavFile": prefix + "song.wav", "lyricsFile": prefix + "lyrics.json", "description": description, "aiGenerated": True, "contentApproved": True, "audioValidated": True})
             if job.get("voiceConditioned") is True:
                 catalog["tracks"][-1].update(voiceConditioned=True, singingVoiceVerified=False, voiceProvenanceFile=prefix + "voice-provenance.json", vocalFile=prefix + "vocals.wav")
             atomic_json(catalog_file, catalog)

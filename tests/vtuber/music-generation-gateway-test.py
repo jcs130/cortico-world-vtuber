@@ -204,7 +204,10 @@ class GatewayTest(unittest.TestCase):
         catalog = json.loads((self.music / "catalog.json").read_text(encoding="utf-8"))
         track = catalog["tracks"][0]
         self.assertEqual(track["id"], job["trackId"])
-        self.assertEqual(track["description"], gateway_module.DESCRIPTION)
+        self.assertIn(REQUEST["requestText"], track["description"])
+        self.assertIn(REQUEST["style"], track["description"])
+        self.assertNotIn(REQUEST["requesterKey"], track["description"])
+        self.assertLessEqual(len(track["description"]), 2000)
         self.assertNotIn("requesterKey", track)
         for key in ("contentApproved", "audioValidated", "aiGenerated"):
             self.assertIs(track[key], True)
