@@ -25,7 +25,10 @@ _READINGS = {
         '长城', '长江', '长大衣',
     ), 'CHANG2'),
 }
-_PHRASES = re.compile('|'.join(re.escape(word) for word in sorted(_READINGS, key=len, reverse=True)))
+# Reviewed proper nouns use one phonetic atom for the complete word. Single-
+# character readings cannot tell the acoustic model which syllables form a name.
+_TERM_READINGS = {'苦力怕': 'KU3 LI4 PA4'}
+_PHRASES = re.compile('|'.join(re.escape(word) for word in sorted(_READINGS | _TERM_READINGS, key=len, reverse=True)))
 # Preserve explicit caller pronunciation, literal markup, code and URLs. A second
 # pass must not annotate the character inside a previously inserted hint.
 _PROTECTED = re.compile(r'<[^<>\n]*>|`[^`\n]*`|https?://[^\s<>，。！？；]+')
@@ -39,6 +42,8 @@ def phrase_fallback(text: str) -> str:
     """Use the small unambiguous lexicon when contextual dependencies are unavailable."""
     def annotate(match):
         phrase = match.group(0)
+        if phrase in _TERM_READINGS:
+            return f'<{phrase}|{_TERM_READINGS[phrase]}>'
         if _READINGS[phrase] == 'CHANG2':
             return phrase
         return phrase.replace('长', f'<长|{_READINGS[phrase]}>', 1)
@@ -246,6 +251,7 @@ def pronunciation_health() -> dict:
     selector = _resolver.selector if _resolver else None
     return {'policy': 'context-pinyin' if _resolver else 'phrase-pinyin-fallback',
             'annotation_policy': 'nondefault-nonneutral',
+            'term_policy': 'reviewed-whole-word', 'term_count': len(_TERM_READINGS),
             'context_ready': _resolver is not None, 'initialization_error': _initialization_error,
             'fallback_count': _resolver.failures if _resolver else 0,
             'last_ms': round(_resolver.last_ms, 2) if _resolver else None,

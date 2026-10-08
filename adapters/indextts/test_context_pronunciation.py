@@ -67,6 +67,12 @@ class ContextTests(unittest.TestCase):
         result = resolver().resolve('银行边重新种地，种子很重，还没发芽。')
         self.assertEqual(result, '银<行|HANG2>边<重|CHONG2>新<种|ZHONG4>地，种子很重，还没发芽。')
 
+    def test_proper_name_atom_keeps_full_context_for_other_homographs(self):
+        text = '树苗长得快，苦力怕在旁边，木板有长短。'
+        with patch.object(pronunciation, '_resolver', resolver(phrases={'长短': ['CHANG2', 'DUAN3']})):
+            self.assertEqual(pronunciation.normalize_pronunciation(text),
+                             '树苗<长|ZHANG3>得快，<苦力怕|KU3 LI4 PA4>在旁边，木板有长短。')
+
     def test_lexicon_precedes_model_and_longest_phrase_protects_coat(self):
         resolved = resolver(phrases={'长大': ['ZHANG3', 'DA4']}).resolve('长大衣，弹幕。')
         self.assertEqual(resolved, '长大衣，<弹|DAN4>幕。')

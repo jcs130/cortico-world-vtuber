@@ -12,6 +12,16 @@ class PronunciationTests(unittest.TestCase):
             '小麦<长|ZHANG3>大了，看看木板的长短。树苗生<长|ZHANG3>很快，测量一下长度。',
         )
 
+    def test_proper_name_is_one_pronunciation_atom_and_ordinary_words_stay_natural(self):
+        text = '苦力怕在旁边，苦力活不怕做。种子已经收好了。'
+        expected = '<苦力怕|KU3 LI4 PA4>在旁边，苦力活不怕做。种子已经收好了。'
+        self.assertEqual(normalize_pronunciation(text), expected)
+        self.assertEqual(normalize_pronunciation(expected), expected)
+
+    def test_term_dictionary_preserves_explicit_overrides_code_and_urls(self):
+        text = '<苦力怕|KU3 LI4 PA4>、`苦力怕`、https://example.test/苦力怕。'
+        self.assertEqual(normalize_pronunciation(text), text)
+
     def test_not_every_occurrence_is_growth_or_length(self):
         text = '村长、队长和长老说：树长得很快，这条路长得很，我不擅长。'
         self.assertEqual(normalize_pronunciation(text), text)

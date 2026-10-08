@@ -121,7 +121,7 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(clean, payload['input'])
         self.assertEqual(payload['voice'], 'taozi')
 
-    def test_game_name_has_no_inserted_word_boundary_or_phonetic_hint_on_either_endpoint(self):
+    def test_game_name_uses_one_whole_word_atom_on_either_endpoint_and_keeps_readable_text(self):
         text = '周围还有苦力怕和僵尸的动静，我先往北边走走，避开它们。'
         self.handler._stream = Mock()
         self.adapter.classify_mood_decision.return_value = ('calm', 0.9)
@@ -132,8 +132,10 @@ class RequestTests(unittest.TestCase):
                 self.post({'input': text})
                 payload = (self.handler._stream.call_args.args[0] if path.endswith('/stream') else
                            json.loads(self.adapter.urllib.request.urlopen.call_args.args[0].data))
-                self.assertEqual(payload['input'], text)
-                self.assertEqual(self.adapter._last_preparation['phonetic_hints'], 0)
+                self.assertEqual(payload['input'], text.replace('苦力怕', '<苦力怕|KU3 LI4 PA4>'))
+                self.assertEqual(self.adapter._last_preparation['phonetic_hints'], 1)
+                if path.endswith('/stream'):
+                    self.assertEqual(self.handler._stream.call_args.args[2], text)
 
     def test_stream_budget_uses_preference_or_latency_default_and_reports_preparation(self):
         self.handler.path = '/v1/audio/speech/stream'

@@ -67,6 +67,11 @@ the shared model from synthesis. Missing queue timing is reported as null.
 
 ## Reference prosody and pronunciation
 
+- Reviewed proper nouns can use one complete-word phonetic atom. The pronunciation
+  lexicon renders `苦力怕` as `<苦力怕|KU3 LI4 PA4>` for synthesis, preserving its
+  readable text for subtitles and dedup. This avoids treating the final syllable
+  as an independent word. Ordinary words remain natural Chinese; existing caller
+  hints, code and URLs are preserved. Health reports `term_policy` and `term_count`.
 - Calm and low-confidence automatic emotion labels keep reference prosody.
   Both `mood` and `emo_vector` are omitted, because the gateway interprets a
   lone `mood` field as a full-strength preset.
@@ -194,7 +199,7 @@ For detached Windows startup, use the existing deployment supervisor or a
 hidden `Start-Process` helper. A launcher needs the Python source files including
 `speech_segments.py`, and
 `polyphonic_readings.json` in the
-same directory. Inspect `/health` for `version: "23-sentence-prosody"`,
+same directory. Inspect `/health` for `version: "24-word-prosody"`,
 `pronunciation.context_ready: true` and the
 expected port before changing CortiV's `worlds.vtuber.ttsUrl` to that instance.
 The adapter's POST endpoint is `/v1/audio/speech`; `ttsUrl` is its base URL.
