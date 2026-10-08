@@ -149,7 +149,11 @@ its timestamp, the exact accepted sample hash and the reference hash with
 the private deployment, not in the extension's defaults. An explicitly
 accepted audition can be curated into the deployment's library with a
 matching vocal stem and lyric timestamps; retain the raw transcription and
-any lyric uncertainty. Archive older methods' catalog entries if the live
+any lyric uncertainty. Publish complete caption lines supported by the final
+audio; omit unconfirmed lines. Keep uncertainty in the review evidence rather
+than inserting ellipsis placeholders or joining verified fragments into a line.
+The composition draft alone does not establish what was sung. Archive older
+methods' catalog entries if the live
 library should use only the selected voice, preserving all original assets.
 This is separate from approving a generated job: the gateway still applies
 its full content/audio/lyric checks to each new song, and does not turn an
