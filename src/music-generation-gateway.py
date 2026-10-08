@@ -35,6 +35,9 @@ from pathlib import Path
 _voice_spec = importlib.util.spec_from_file_location("music_voice", Path(__file__).with_name("music_voice.py"))
 voice_module = importlib.util.module_from_spec(_voice_spec)
 _voice_spec.loader.exec_module(voice_module)
+_asr_spec = importlib.util.spec_from_file_location("music_asr", Path(__file__).with_name("music_asr.py"))
+asr_module = importlib.util.module_from_spec(_asr_spec)
+_asr_spec.loader.exec_module(asr_module)
 
 
 TERMINAL = {"ready", "rejected", "review", "failed", "cancelled"}
@@ -164,7 +167,7 @@ def normalize_config(data: dict, base: Path | None = None) -> dict:
         "comfy": {"requestTimeoutSec": 20, "generationTimeoutSec": 900, "pollIntervalSec": 2,
                   "releaseMemoryAfterGeneration": False, "memoryReleaseTimeoutSec": 30, "maxPostprocessReservedMb": 256},
         "review": {"timeoutSec": 45, "extraBody": {}},
-        "asr": {"language": "zh", "timeoutSec": 180, "device": "cpu", "cpuThreads": 2},
+        "asr": {"backend": "whisper", "language": "zh", "timeoutSec": 180, "device": "cpu", "cpuThreads": 2},
         "limits": {"maxQueue": 6, "maxJobsPerHour": 8, "maxRequesterJobsPerHour": 2},
         "validation": {"minLyricCoverage": 0.88, "minTranscriptCoverage": 0.75, "minLineCoverage": 0.8},
         "policy": {"additionalRules": "", "streamTopics": "Everyday fictional themes, nature, games, companionship and ordinary life."},
@@ -211,10 +214,13 @@ def normalize_config(data: dict, base: Path | None = None) -> dict:
     for key in ("additionalRules", "streamTopics"):
         if not isinstance(cfg["policy"][key], str) or len(cfg["policy"][key]) > 8000:
             raise GatewayError("语义审核政策配置无效。")
-    if cfg["asr"].get("modelFile"):
-        if not isinstance(cfg["asr"]["modelFile"], str):
-            raise GatewayError("本地识别模型配置无效。")
-        cfg["asr"]["modelFile"] = str((base / cfg["asr"]["modelFile"]).resolve())
+    if cfg["asr"]["backend"] not in ("whisper", "qwen3"):
+        raise GatewayError("识别后端配置无效。")
+    for key in ("modelFile", "modelDir", "alignerDir"):
+        if cfg["asr"].get(key):
+            if not isinstance(cfg["asr"][key], str):
+                raise GatewayError("本地识别模型配置无效。")
+            cfg["asr"][key] = str((base / cfg["asr"][key]).resolve())
     if cfg["asr"]["device"] not in ("cpu", "cuda") or type(cfg["asr"]["cpuThreads"]) is not int or not 1 <= cfg["asr"]["cpuThreads"] <= 16:
         raise GatewayError("识别设备或 CPU 预算配置无效。")
     if "pythonFile" in cfg["asr"]:
@@ -343,12 +349,14 @@ def transcript_anchors(transcript: dict, duration: float) -> tuple[list[str], li
     for segment in segments:
         if not isinstance(segment, dict):
             raise NeedsReview()
-        no_speech, log_probability, compression = (segment.get(key) for key in ("no_speech_prob", "avg_logprob", "compression_ratio"))
-        if not all(finite_number(value) for value in (no_speech, log_probability, compression)) or not 0 <= no_speech <= 1 or not -1 <= log_probability <= 0 or not 0 < compression <= 2.4:
+        log_probability, compression = (segment.get(key) for key in ("avg_logprob", "compression_ratio"))
+        if not all(finite_number(value) for value in (log_probability, compression)) or not -1 <= log_probability <= 0 or not 0 < compression <= 2.4:
             raise NeedsReview()
-        # Whisper repeats window scores across segments. High no-speech probability
-        # only indicates silence with weak decoding; every word still needs evidence.
-        if no_speech > 0.6 and log_probability <= -1:
+        if transcript.get("recognizer", "whisper") == "whisper":
+            no_speech = segment.get("no_speech_prob")
+            if not finite_number(no_speech) or not 0 <= no_speech <= 1 or no_speech > 0.6 and log_probability <= -1:
+                raise NeedsReview()
+        elif transcript.get("recognizer") != "qwen3" or transcript.get("confidenceSource") != "decoderTokens":
             raise NeedsReview()
         words = segment.get("words")
         if not isinstance(words, list):
@@ -637,13 +645,22 @@ class ExternalServices:
             raise NeedsReview()
         subprocess.run([self.cfg["ffmpegFile"], "-nostdin", "-v", "error", "-y", "-i", str(source), "-map", "0:a:0", "-ac", "2", "-ar", "48000", "-c:a", "pcm_s16le", str(destination)], capture_output=True, timeout=90, check=True)
 
-    def transcribe(self, audio: Path) -> dict:
+    def transcribe(self, audio: Path, source: Path | None = None) -> dict:
         cfg = self.cfg["asr"]
-        model = cfg.get("modelFile")
-        if not model or not Path(model).is_file():
+        native = cfg["backend"] == "qwen3"
+        model = cfg.get("modelDir" if native else "modelFile")
+        if not model or not (Path(model).is_dir() if native else Path(model).is_file()):
             raise NeedsReview()
         command = [cfg.get("pythonFile", sys.executable), str(Path(__file__).resolve()), "--asr-worker", str(audio), "--asr-model", model,
-                   "--asr-language", cfg["language"], "--asr-device", cfg["device"], "--asr-cpu-threads", str(cfg["cpuThreads"])]
+                   "--asr-language", cfg["language"], "--asr-device", cfg["device"], "--asr-cpu-threads", str(cfg["cpuThreads"]), "--asr-backend", cfg["backend"]]
+        if native:
+            if not cfg.get("alignerDir") or not Path(cfg["alignerDir"]).is_dir():
+                raise NeedsReview()
+            command.extend(["--asr-aligner", cfg["alignerDir"]])
+            if source is not None:
+                command.extend(["--asr-transcript", str(source)])
+        elif source is not None:
+            raise NeedsReview()
         flags = subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0
         environment = os.environ.copy()
         threads = str(cfg["cpuThreads"])
@@ -956,15 +973,22 @@ class MusicGenerationGateway:
         try:
             transcript = validate_transcript(self.services.transcribe(audio))
             atomic_json(artifacts / "asr.json", transcript)
+            if transcript.get("recognizer", "whisper") != self.cfg["asr"]["backend"]:
+                raise NeedsReview()
             # Decode quality is checked before semantic review so uncertain audio
             # cannot be reported as established unsafe content.
             transcript_anchors(transcript, duration)
             review_decision(self.services.review("audio", request, transcript))
             lyric_transcript = transcript
             if job.get("voiceConditioned") is True:
-                # Review the complete mix; align captions against the converted vocal
-                # stem so instrumental passages cannot supply lyric timestamps.
-                lyric_transcript = validate_transcript(self.services.transcribe(artifacts / "vocals.wav"))
+                if self.cfg["asr"]["backend"] == "qwen3":
+                    # Re-align the independently recognized mix text on the vocal stem;
+                    # no draft lyrics enter recognition or this timing pass.
+                    lyric_transcript = validate_transcript(self.services.transcribe(artifacts / "vocals.wav", artifacts / "asr.json"))
+                    if lyric_transcript["text"] != transcript["text"]:
+                        raise NeedsReview()
+                else:
+                    lyric_transcript = validate_transcript(self.services.transcribe(artifacts / "vocals.wav"))
                 atomic_json(artifacts / "asr-vocals.json", lyric_transcript)
             lines = align_lyrics(request["lyrics"], lyric_transcript, duration, self.cfg["validation"])
         except (Rejected, NeedsReview):
@@ -1055,7 +1079,9 @@ def make_server(gateway: MusicGenerationGateway) -> ThreadingHTTPServer:
         def do_GET(self):
             try:
                 if self.path == "/health":
-                    self._reply(200, {"ok": gateway.worker.is_alive(), "service": "original-song-gateway", "asrConfigured": bool(gateway.cfg["asr"].get("modelFile")), "voiceConversionEnabled": gateway.cfg["voiceConversion"]["enabled"], "generationMode": gateway.cfg["generationMode"]})
+                    asr = gateway.cfg["asr"]
+                    configured = bool(asr.get("modelDir") and asr.get("alignerDir")) if asr["backend"] == "qwen3" else bool(asr.get("modelFile"))
+                    self._reply(200, {"ok": gateway.worker.is_alive(), "service": "original-song-gateway", "asrConfigured": configured, "asrBackend": asr["backend"], "voiceConversionEnabled": gateway.cfg["voiceConversion"]["enabled"], "generationMode": gateway.cfg["generationMode"]})
                 elif self.path == "/jobs":
                     self._reply(200, gateway.list())
                 elif re.fullmatch(r"/jobs/[a-f0-9]{32}", self.path):
@@ -1106,13 +1132,22 @@ def make_server(gateway: MusicGenerationGateway) -> ThreadingHTTPServer:
     return Server((gateway.cfg["host"], gateway.cfg["port"]), Handler)
 
 
-def asr_worker(audio: str, model: str, language: str, device: str = "cpu", cpu_threads: int = 2) -> None:
-    # A checkpoint file path prevents Whisper from downloading a model.
-    if not Path(model).is_file():
+def asr_worker(audio: str, model: str, language: str, device: str = "cpu", cpu_threads: int = 2,
+               backend: str = "whisper", aligner: str | None = None, source: str | None = None) -> None:
+    if not (Path(model).is_dir() if backend == "qwen3" else Path(model).is_file()):
         raise NeedsReview()
     if device not in ("cpu", "cuda") or type(cpu_threads) is not int or not 1 <= cpu_threads <= 16:
         raise NeedsReview()
     voice_module.set_worker_priority(device)
+    if backend == "qwen3":
+        if not aligner or not Path(aligner).is_dir():
+            raise NeedsReview()
+        if source and Path(source).stat().st_size > 2 * 1024 * 1024:
+            raise NeedsReview()
+        transcript = validate_transcript(json.loads(Path(source).read_text(encoding="utf-8"))) if source else None
+        result = asr_module.run(audio, model, aligner, language, device, cpu_threads, transcript)
+        sys.stdout.buffer.write(json.dumps(result, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+        return
     import torch
     import whisper
     torch.set_num_threads(cpu_threads)
@@ -1130,9 +1165,13 @@ def main() -> int:
     parser.add_argument("--asr-language", default="zh")
     parser.add_argument("--asr-device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--asr-cpu-threads", type=int, default=2)
+    parser.add_argument("--asr-backend", choices=("whisper", "qwen3"), default="whisper")
+    parser.add_argument("--asr-aligner")
+    parser.add_argument("--asr-transcript")
     args = parser.parse_args()
     if args.asr_worker:
-        asr_worker(args.asr_worker, args.asr_model, args.asr_language, args.asr_device, args.asr_cpu_threads)
+        asr_worker(args.asr_worker, args.asr_model, args.asr_language, args.asr_device, args.asr_cpu_threads,
+                   args.asr_backend, args.asr_aligner, args.asr_transcript)
         return 0
     if not args.config:
         parser.error("--config is required")

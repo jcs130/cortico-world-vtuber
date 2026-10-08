@@ -317,6 +317,37 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(self.await_state(self.gateway.enqueue(REQUEST)["jobId"])["state"], "review")
         self.assertFalse((self.music / "catalog.json").exists())
 
+    def test_native_alignment_uses_independent_mix_text_and_preserves_its_words(self):
+        self.enable_voice()
+        self.gateway.cfg["asr"]["backend"] = "qwen3"
+        mix = transcript_for(REQUEST["lyrics"])
+        mix.update(recognizer="qwen3", confidenceSource="decoderTokens")
+        for segment in mix["segments"]:
+            segment.pop("no_speech_prob")
+        def recognize(path, source=None):
+            if source is None:
+                return copy.deepcopy(mix)
+            actual = json.loads(source.read_text(encoding="utf-8"))
+            self.assertEqual(actual, mix)
+            for segment in actual["segments"]:
+                for word in segment["words"]:
+                    word["start"] += .25
+                    word["end"] += .25
+            return actual
+        self.services.transcribe = recognize
+        ready = self.await_state(self.gateway.enqueue(REQUEST)["jobId"])
+        self.assertEqual(ready["state"], "ready")
+        self.assertEqual(self.services.reviews[-1][2], mix)
+        captions = json.loads((self.music / "generated" / ready["jobId"] / "lyrics.json").read_text(encoding="utf-8"))["lines"]
+        self.assertEqual(captions[0]["atMs"], 2250)
+        def changed(path, source=None):
+            return transcript_for("被替换的文字") if source else copy.deepcopy(mix)
+        self.services.transcribe = changed
+        job = self.await_state(self.gateway.enqueue({**REQUEST, "requestKey": "changed-native-alignment"})["jobId"])
+        self.assertEqual(job["state"], "review")
+        catalog = json.loads((self.music / "catalog.json").read_text(encoding="utf-8"))
+        self.assertEqual([track["id"] for track in catalog["tracks"]], [ready["trackId"]])
+
     def test_cancelled_review_never_submits_or_publishes(self):
         entered, release = self.block_review()
         receipt = self.gateway.enqueue(REQUEST)
@@ -570,6 +601,33 @@ class GatewayTest(unittest.TestCase):
 
 
 class BoundaryTest(unittest.TestCase):
+    def test_decoder_confidence_tracks_multibyte_tokens_without_reencoding(self):
+        prefixes = ["language Chinese<asr_text>", "language Chinese<asr_text>�", "language Chinese<asr_text>阳", "language Chinese<asr_text>阳光。"]
+        tokenizer = types.SimpleNamespace(all_special_ids=[], decode=lambda ids, **kwargs: prefixes[len(ids)-1])
+        confidence, average = gateway_module.asr_module.decoder_confidence(tokenizer, [1,2,3,4], [.99,.6,.9,.8], "阳光。")
+        self.assertEqual(confidence, [.6,.8])
+        self.assertAlmostEqual(average, sum(math.log(value) for value in (.99,.6,.9,.8))/4)
+        for text, probabilities in (("另一句话", [.99,.6,.9,.8]), ("阳光。", [.99,.6]), ("阳光。", [.99,float("nan"),.9,.8])):
+            with self.subTest(text=text, probabilities=probabilities), self.assertRaises(ValueError):
+                gateway_module.asr_module.decoder_confidence(tokenizer, [1,2,3,4], probabilities, text)
+
+    def test_native_phrase_alignment_keeps_measured_spans_and_rejects_missing_words(self):
+        text = "太阳，照亮小路。"
+        timestamps = [{"text":char,"start_time":index*.4,"end_time":(index+1)*.4} for index, char in enumerate("太阳照亮小路")]
+        timestamps[0]["end_time"] = 0
+        transcript = gateway_module.asr_module.aligned_transcript(text, [.9]*6, -.2, timestamps)
+        gateway_module.validate_transcript(transcript)
+        chars, times = gateway_module.transcript_anchors(transcript, 30)
+        self.assertEqual("".join(chars), "太阳照亮小路")
+        self.assertEqual(times[0][0], timestamps[0]["start_time"])
+        self.assertEqual(times[-1][1], timestamps[-1]["end_time"])
+        self.assertNotIn("no_speech_prob", transcript["segments"][0])
+        with self.assertRaises(ValueError):
+            gateway_module.asr_module.aligned_transcript(text, [.9]*6, -.2, timestamps[:-1])
+        transcript["segments"][0]["words"][0]["probability"] = .1
+        with self.assertRaises(gateway_module.NeedsReview):
+            gateway_module.transcript_anchors(transcript, 30)
+
     def test_natural_trailing_silence_is_trimmed_without_changing_sung_audio(self):
         with tempfile.TemporaryDirectory() as directory:
             source, prepared = Path(directory) / "source.wav", Path(directory) / "prepared.wav"

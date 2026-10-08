@@ -1,0 +1,9 @@
+transformers==5.13.0
+huggingface-hub==1.33.0
+tokenizers==0.22.2
+safetensors==0.8.0
+accelerate>=1.12,<2
+torch>=2.2
+numpy>=2,<3
+scipy>=1.15,<2
+soundfile>=0.13,<1

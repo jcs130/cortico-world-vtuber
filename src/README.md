@@ -32,8 +32,8 @@
 ### `music-generation-gateway.py` 部署
 
 运行 `python src/music-generation-gateway.py --config /absolute/private/gateway.json`。
-该独立服务只绑定本机，Python 环境需已有 CPU 版 Whisper、PyTorch 与本地识别模型；
-使用部署现有的 FFmpeg 和 ComfyUI，不下载模型，不中断共享 GPU 队列。
+该独立服务只绑定本机，识别运行环境与本地模型由部署配置提供，后端选择见
+[music-generation-gateway.md](music-generation-gateway.md)。使用部署现有的 FFmpeg 和 ComfyUI，不在任务中下载模型，不中断共享 GPU 队列。
 可选安装 OpenCC，在歌词完整度比对时统一简繁字形；原始转写与送审文字仍保留，不按草稿改写唱词。
 私有 JSON 配置包含：
 
@@ -63,7 +63,7 @@ API 模板必须含 `TextEncodeAceStepAudio1.5`、`EmptyAceStep1.5LatentAudio`�
 
 `asr.device` 默认为 `cpu`，`asr.cpuThreads` 默认为 2（范围 1–16）。可用
 `asr.pythonFile` 指定独立识别运行环境，并在已验证 CUDA 运行环境中选择 `device:"cuda"`。
-识别仍只加载本地 `modelFile`；CPU 与 CUDA 都使用独立低优先级进程，Windows CUDA
+识别只加载所选后端的本地模型；CPU 与 CUDA 都使用独立低优先级进程，Windows CUDA
 进程也设置较低的 GPU 调度优先级。更换设备不改变内容审核或歌词验收条件。
 
 `POST /jobs` 接受 `{requestKey,requesterKey?,requestText,title,lyrics,style,durationSec,intro?,outro?}`，
