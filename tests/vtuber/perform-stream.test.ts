@@ -62,10 +62,11 @@ describe('PerformStream', () => {
     cleanup = [];
   });
 
-  async function makeStream() {
+  async function makeStream(sourceId?: string) {
     const danmaku: Array<{ text: string; from: string }> = [];
     const stream = new PerformStream({
       preferredPort: 0,
+      sourceId,
       snapshot: () => ({ mode: 'chat', status: '[演出状态] 测试' }),
       onDanmakuIn: (text, from) => danmaku.push({ text, from }),
     });
@@ -73,6 +74,24 @@ describe('PerformStream', () => {
     cleanup.push(() => stream.stop());
     return { stream, danmaku };
   }
+
+  it('reports the owning bot and rejects mismatched source subscriptions', async () => {
+    const { stream } = await makeStream('own-bot');
+    const identity = await fetch(new URL('/identity', stream.overlayUrl));
+    expect(identity.headers.get('cache-control')).toBe('no-store');
+    expect(await identity.json()).toEqual({ sourceId: 'own-bot' });
+    expect((await fetch(stream.overlayUrl + '?source=other-bot')).status).toBe(403);
+    expect((await fetch(stream.streamUrl + '?source=other-bot')).status).toBe(403);
+    expect(stream.subscriberCount).toBe(0);
+    expect((await fetch(stream.overlayUrl)).status).toBe(200);
+    const own = subscribe(stream.streamUrl + '?source=own-bot');
+    cleanup.push(own.close);
+    await own.ready;
+    await waitFor(() => own.events.length > 0);
+    stream.emit('subtitle', { text: 'Own caption' });
+    await waitFor(() => own.events.length > 1);
+    expect(own.events[1].data).toMatchObject({ type: 'subtitle', text: 'Own caption' });
+  });
 
   it('订阅即收 snapshot;事件带单调 id 广播给所有订阅者', async () => {
     const { stream } = await makeStream();

@@ -1567,6 +1567,7 @@ export class VtuberWorld implements World {
     this.onOverlayConfig = opts.onOverlayConfig;
     this.stream = new PerformStream({
       preferredPort: opts.streamPort ?? VTUBER_DEFAULTS.streamPort,
+      sourceId: this.botName,
       snapshot: () => ({
         status: this.statusLine(),
         // 初始快照包含当前 overlay 配置;后续变更通过 overlay.config 事件发送。

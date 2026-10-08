@@ -60,6 +60,8 @@ export interface PerformStreamOptions {
   /** 偏好端口;被占自动顺延(0 = 随机空闲口) */
   preferredPort: number;
   host?: string;
+  /** Bot identity shared with the game viewer; display labels do not select a source. */
+  sourceId?: string;
   /** 新订阅者的现状快照(snapshot 事件的数据体) */
   snapshot: () => Record<string, unknown>;
   /** 观众弹幕入站 */
@@ -238,8 +240,20 @@ export class PerformStream {
   }
 
   private onRequest(url: string, res: ServerResponse): void {
-    const raw = url.split('?')[0];
+    const parsed = new URL(url, 'http://localhost');
+    const raw = parsed.pathname;
     const path = raw === '/' ? '/overlay' : raw.replace(/\/$/, '') || '/';
+    if (path === '/identity') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ sourceId: this.opts.sourceId ?? null }));
+      return;
+    }
+    const source = parsed.searchParams.get('source');
+    if (source !== null && source !== this.opts.sourceId) {
+      res.writeHead(403, { 'Cache-Control': 'no-store' }).end();
+      return;
+    }
     const asset = OVERLAY_FILES[path];
     if (asset) {
       try {
@@ -255,7 +269,7 @@ export class PerformStream {
       return;
     }
     if (path !== '/stream') {
-      res.writeHead(404, { 'Content-Type': 'text/plain' }).end('perform stream: GET /overlay | /stream');
+      res.writeHead(404, { 'Content-Type': 'text/plain' }).end('perform stream: GET /identity | /overlay | /stream');
       return;
     }
     res.writeHead(200, {

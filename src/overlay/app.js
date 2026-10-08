@@ -65,6 +65,13 @@
   }
 
   const params = new URLSearchParams(location.search);
+  if (params.get('ingame') === '1' && window.parent !== window) {
+    const host = (name) => name === 'localhost' || name === '[::1]' || /^127\./.test(name) ? 'loopback' : name;
+    try {
+      const parent = new URL(document.referrer);
+      if (!['http:', 'https:'].includes(parent.protocol) || host(parent.hostname) !== host(location.hostname)) return;
+    } catch { return; }
+  }
   if (params.get('bg') === 'dim') document.body.classList.add('bg-dim');
   if (params.get('ingame') === '1') document.body.classList.add('ingame');
   const foregroundParentOrigin = (() => {

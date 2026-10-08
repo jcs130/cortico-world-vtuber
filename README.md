@@ -1,4 +1,7 @@
+<!-- Owner: src/world.ts, src/perform-stream.ts, src/overlay/app.js -->
 # cortico-world-vtuber
+
+`GET /identity` 返回当前 bot 的 `sourceId`，供游戏 viewer 选择同一 bot 的演出流。`/overlay` 和 `/stream` 的可选 `source` 参数必须匹配该身份；省略时保留独立 OBS 用法。嵌入游戏的字幕页仅接受同主机父页面，回环地址视作同一主机；缺少来源时不订阅。
 
 [Cortico](https://github.com/Pal-AI-Lab/Cortico) 的 VTuber 演出 World,以独立 npm 包发布。
 

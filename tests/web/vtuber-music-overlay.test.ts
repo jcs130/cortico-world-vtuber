@@ -10,6 +10,7 @@ let dom: any;
 let stream: any;
 
 function startOverlay(url = 'http://localhost:7792/overlay', parent?: { postMessage: ReturnType<typeof vi.fn> }, referrer?: string): void {
+  stream = null;
   dom = new JSDOM(page, { url, referrer, runScripts: 'outside-only' });
   if (parent) Object.defineProperty(dom.window, 'parent', { value: parent });
   const style = dom.window.document.createElement('style');
@@ -178,19 +179,35 @@ describe('歌曲 overlay', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('独立 overlay 和无可信父页面地址时不广播音频状态', () => {
-    for (const [url, referrer] of [
-      ['http://localhost:7792/overlay', 'http://localhost:7793/'],
-      ['http://localhost:7792/overlay?ingame=1', undefined],
-      ['http://localhost:7792/overlay?ingame=1', 'file:///local/viewer.html'],
-    ]) {
+  it('独立 overlay 不向父页面广播音频状态', () => {
+      dom.window.close();
+      const parent = { postMessage: vi.fn() };
+      startOverlay('http://localhost:7792/overlay', parent, 'http://localhost:7793/');
+      stream.send({ type: 'music', music: playback() });
+      stream.send({ type: 'subtitle', cues: [{ text: 'Speech', atMs: 0, durMs: 5000 }] });
+      expect(parent.postMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 'file:///local/viewer.html', 'http://192.0.2.7:7793/'])('外来游戏页面 %s 不订阅本机字幕与歌曲', referrer => {
+      dom.window.close();
+      const parent = { postMessage: vi.fn() };
+      startOverlay('http://localhost:7792/overlay?ingame=1&speaker=Another', parent, referrer);
+      expect(stream).toBeNull();
+      expect(parent.postMessage).not.toHaveBeenCalled();
+      expect(dom.window.document.getElementById('bubbles').textContent).toBe('');
+      expect(dom.window.document.getElementById('music-card').hidden).toBe(true);
+  });
+
+  it.each([
+    ['http://127.0.0.1:7792/overlay?ingame=1', 'http://localhost:7793/'],
+    ['http://192.0.2.7:7793/overlay?ingame=1', 'http://192.0.2.7:7793/'],
+  ])('同主机页面 %s 保留字幕与歌曲', (url, referrer) => {
       dom.window.close();
       const parent = { postMessage: vi.fn() };
       startOverlay(url, parent, referrer);
       stream.send({ type: 'music', music: playback() });
       stream.send({ type: 'subtitle', cues: [{ text: 'Speech', atMs: 0, durMs: 5000 }] });
-      expect(parent.postMessage).not.toHaveBeenCalled();
-      dom.window.dispatchEvent(new dom.window.Event('pagehide'));
-    }
+      expect(parent.postMessage).toHaveBeenCalled();
+      expect(dom.window.document.getElementById('music-card').hidden).toBe(false);
   });
 });
