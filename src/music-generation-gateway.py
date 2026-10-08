@@ -334,8 +334,7 @@ def finite_number(value: object) -> bool:
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
 
 
-def align_lyrics(lyrics: str, transcript: dict, duration: float, thresholds: dict) -> list[dict]:
-    lines = lyric_lines(lyrics)
+def transcript_anchors(transcript: dict, duration: float) -> tuple[list[str], list[tuple[float, float]]]:
     chars, times = [], []
     segments = transcript.get("segments")
     if not isinstance(segments, list) or not segments:
@@ -367,6 +366,12 @@ def align_lyrics(lyrics: str, transcript: dict, duration: float, thresholds: dic
                 chars.append(char)
                 times.append((start + (end - start) * i / len(text), start + (end - start) * (i + 1) / len(text)))
             previous_end = end
+    return chars, times
+
+
+def align_lyrics(lyrics: str, transcript: dict, duration: float, thresholds: dict) -> list[dict]:
+    lines = lyric_lines(lyrics)
+    chars, times = transcript_anchors(transcript, duration)
     recognized = normalized("".join(chars))
     if len(recognized) != len(times):
         raise NeedsReview()
@@ -444,6 +449,41 @@ def inspect_wav(path: Path, requested_duration: float) -> float:
         if not total or peak / 32768 < 0.01 or math.sqrt(squared / total) / 32768 < 0.002 or active / windows < 0.7 or (windows - last_active) / 10 > 5:
             raise NeedsReview()
         return duration
+
+
+def prepare_wav(source: Path, destination: Path, requested_duration: float) -> float:
+    if source.stat().st_size > 268435456:
+        raise NeedsReview()
+    temporary = destination.with_name(destination.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        with wave.open(str(source), "rb") as audio:
+            rate, frames = audio.getframerate(), audio.getnframes()
+            if audio.getsampwidth() != 2 or audio.getcomptype() != "NONE" or not 1 <= audio.getnchannels() <= 2 or not 30 <= frames / rate <= 120:
+                raise NeedsReview()
+            end = frames
+            while end:
+                start = max(0, end - max(1, rate // 10))
+                audio.setpos(start)
+                samples = array.array("h", audio.readframes(end - start))
+                if sys.byteorder != "little":
+                    samples.byteswap()
+                if math.sqrt(sum(value * value for value in samples) / len(samples)) / 32768 >= 0.002:
+                    break
+                end = start
+            keep = min(frames, end + rate // 2)
+            audio.rewind()
+            with wave.open(str(temporary), "wb") as output:
+                output.setparams(audio.getparams())
+                remaining = keep
+                while remaining:
+                    count = min(remaining, rate)
+                    output.writeframes(audio.readframes(count))
+                    remaining -= count
+        duration = inspect_wav(temporary, requested_duration)
+        os.replace(temporary, destination)
+        return duration
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class ExternalServices:
@@ -756,6 +796,30 @@ class MusicGenerationGateway:
                 self._state(job, "cancelled")
             return self._public(job)
 
+    def revalidate(self, job_id: str) -> dict:
+        with self.condition:
+            job = self.jobs.get(job_id)
+            if not job:
+                raise GatewayError("找不到该创作任务。", 404)
+            if job["state"] == "ready" or job["state"] not in TERMINAL and job.get("revalidation") is True:
+                return self._public(job)
+            if job["state"] not in ("review", "rejected") or job.get("inputApproved") is not True or not job.get("promptId"):
+                raise GatewayError("仅可重新校验已审核输入、已生成音频的任务。", 409)
+            if sum(item["state"] not in TERMINAL for item in self.jobs.values()) >= self.cfg["limits"]["maxQueue"]:
+                raise GatewayError("创作队列已满，请稍后再试。", 429)
+            audio = self.state_dir / "artifacts" / job_id / "generated.wav"
+            if not audio.is_file():
+                raise GatewayError("原始生成音频不存在，不能重新校验。", 409)
+            attempt = job.get("validationAttempt", 0) + 1
+            atomic_json(audio.parent / ("validation-attempt-" + str(attempt) + ".json"), job)
+            job.update(revalidation=True, validationAttempt=attempt, generatedAudioSha256=voice_module.digest(audio))
+            for key in ("contentApproved", "audioValidated", "trackId"):
+                job.pop(key, None)
+            self._state(job, "validating")
+            self.pending.append(job_id)
+            self.condition.notify()
+            return self._public(job)
+
     def _cancelled(self, job: dict) -> bool:
         with self.condition:
             return job["state"] == "cancelled" or self.stopping.is_set()
@@ -770,7 +834,13 @@ class MusicGenerationGateway:
             if self._cancelled(job):
                 continue
             try:
-                self._run(job)
+                if job.get("revalidation") is True:
+                    generated = self.state_dir / "artifacts" / job["jobId"] / "generated.wav"
+                    if voice_module.digest(generated) != job["generatedAudioSha256"]:
+                        raise NeedsReview()
+                    self._validate(job, generated)
+                else:
+                    self._run(job)
             except Rejected:
                 with self.condition:
                     self._state(job, "rejected")
@@ -839,11 +909,17 @@ class MusicGenerationGateway:
             self._state(job, "validating")
         artifacts = self.state_dir / "artifacts" / job["jobId"]
         artifacts.mkdir(parents=True, exist_ok=True)
-        source, audio = artifacts / "source.audio", artifacts / "song.wav"
+        source = artifacts / "source.audio"
         self.services.fetch(result["output"], source)
-        generated = artifacts / "generated.wav" if self.cfg["voiceConversion"]["enabled"] else audio
+        generated = artifacts / "generated.wav"
         self.services.convert(source, generated)
-        inspect_wav(generated, request["durationSec"])
+        self._validate(job, generated)
+
+    def _validate(self, job: dict, generated: Path) -> None:
+        request = job["request"]
+        artifacts, audio = generated.parent, generated.parent / "song.wav"
+        prepared = artifacts / "prepared.wav" if self.cfg["voiceConversion"]["enabled"] else audio
+        prepare_wav(generated, prepared, request["durationSec"])
         self.services.release_generation_memory(lambda: self._cancelled(job) or self.stopping.is_set())
         if self._cancelled(job) or self.stopping.is_set():
             return
@@ -854,7 +930,7 @@ class MusicGenerationGateway:
                         job.update(stage=stage, message=message, updatedAt=now_iso())
                         self._save(job)
             try:
-                voice_audio, provenance = self.services.voice_process(generated, artifacts / ("voice-" + uuid.uuid4().hex),
+                voice_audio, provenance = self.services.voice_process(prepared, artifacts / ("voice-" + uuid.uuid4().hex),
                                                        int(job["jobId"][:8], 16), lambda: self._cancelled(job), on_stage)
                 if provenance.get("voiceConditioned") is not True or provenance.get("singingVoiceVerified") is not False:
                     raise NeedsReview()
@@ -880,6 +956,9 @@ class MusicGenerationGateway:
         try:
             transcript = validate_transcript(self.services.transcribe(audio))
             atomic_json(artifacts / "asr.json", transcript)
+            # Decode quality is checked before semantic review so uncertain audio
+            # cannot be reported as established unsafe content.
+            transcript_anchors(transcript, duration)
             review_decision(self.services.review("audio", request, transcript))
             lyric_transcript = transcript
             if job.get("voiceConditioned") is True:
@@ -1009,6 +1088,8 @@ def make_server(gateway: MusicGenerationGateway) -> ThreadingHTTPServer:
                     self._reply(202, gateway.enqueue(data))
                 elif re.fullmatch(r"/jobs/[a-f0-9]{32}/cancel", self.path):
                     self._reply(200, gateway.cancel(self.path.split("/")[2]))
+                elif re.fullmatch(r"/jobs/[a-f0-9]{32}/revalidate", self.path):
+                    self._reply(202, gateway.revalidate(self.path.split("/")[2]))
                 else:
                     raise GatewayError("找不到该网关接口。", 404)
             except GatewayError as error:
@@ -1037,7 +1118,7 @@ def asr_worker(audio: str, model: str, language: str, device: str = "cpu", cpu_t
     torch.set_num_threads(cpu_threads)
     torch.set_num_interop_threads(cpu_threads)
     loaded = whisper.load_model(model, device=device)
-    result = loaded.transcribe(audio, language=language, temperature=0.0, beam_size=5, best_of=1, fp16=device == "cuda", word_timestamps=True, condition_on_previous_text=False, verbose=None)
+    result = loaded.transcribe(audio, language=language, temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0), beam_size=5, best_of=5, fp16=device == "cuda", word_timestamps=True, condition_on_previous_text=False, verbose=None)
     sys.stdout.buffer.write(json.dumps({"text": result.get("text", ""), "segments": result.get("segments", [])}, ensure_ascii=False).encode("utf-8"))
 
 

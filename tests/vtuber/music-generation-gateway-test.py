@@ -436,6 +436,26 @@ class GatewayTest(unittest.TestCase):
         self.assertNotIn("audioValidated", job)
         self.assertFalse((self.music / "catalog.json").exists())
 
+    def test_repetitive_or_weak_decode_requires_review_before_semantic_rejection(self):
+        for index, fault in enumerate(("compression", "confidence", "timing")):
+            transcript = transcript_for(REQUEST["lyrics"])
+            if fault == "compression":
+                transcript["segments"][0]["compression_ratio"] = 6.9
+            elif fault == "confidence":
+                transcript["segments"][0]["words"][0]["probability"] = 0.01
+            else:
+                transcript["segments"][0]["words"][0]["end"] = 31
+            self.services.asr = lambda value=transcript: copy.deepcopy(value)
+            self.services.review_audio = lambda request, value: {**ALLOW, "decision": "reject"}
+            with self.subTest(fault=fault):
+                job = self.await_state(self.gateway.enqueue({**REQUEST, "requestKey": "uncertain-decode-" + str(index)})["jobId"])
+                self.assertEqual(job["state"], "review")
+                self.assertFalse(any(phase == "audio" for phase, _, _ in self.services.reviews))
+                saved = json.loads((self.state / "artifacts" / job["jobId"] / "asr.json").read_text(encoding="utf-8"))
+                self.assertEqual(saved, transcript)
+                self.assertNotIn("audioValidated", job)
+                self.assertFalse((self.music / "catalog.json").exists())
+
     def test_rate_cap_and_queue_cap_do_not_defeat_request_deduplication(self):
         entered, release = self.block_review()
         self.gateway.cfg["limits"].update(maxQueue=1, maxRequesterJobsPerHour=1)
@@ -450,6 +470,60 @@ class GatewayTest(unittest.TestCase):
         with self.assertRaises(gateway_module.GatewayError) as error:
             self.gateway.enqueue({**REQUEST, "requestKey": "second"})
         self.assertEqual(error.exception.status, 429)
+
+    def test_revalidation_reuses_original_audio_and_runs_every_publication_gate(self):
+        self.services.asr = lambda: {"text": "", "segments": []}
+        job = self.await_state(self.gateway.enqueue(REQUEST)["jobId"])
+        self.assertEqual(job["state"], "review")
+        generated = self.state / "artifacts" / job["jobId"] / "generated.wav"
+        before = gateway_module.voice_module.digest(generated)
+        self.services.asr = lambda: transcript_for(REQUEST["lyrics"])
+        self.services.submit = lambda *args: self.fail("Revalidation must not generate again")
+        self.services.fetch = lambda *args: self.fail("Revalidation must reuse the retained audio")
+        receipt = self.gateway.revalidate(job["jobId"])
+        self.assertEqual(receipt["jobId"], job["jobId"])
+        ready = self.await_state(job["jobId"])
+        self.assertEqual(ready["state"], "ready")
+        self.assertTrue(ready["audioValidated"])
+        self.assertEqual(gateway_module.voice_module.digest(generated), before)
+        previous = json.loads(generated.with_name("validation-attempt-1.json").read_text(encoding="utf-8"))
+        self.assertEqual(previous["state"], "review")
+        self.assertEqual(len(self.services.submissions), 1)
+        self.assertEqual(self.gateway.revalidate(job["jobId"]), ready)
+
+    def test_duplicate_active_revalidation_is_idempotent_and_cancellable(self):
+        self.services.asr = lambda: {"text": "", "segments": []}
+        job = self.await_state(self.gateway.enqueue(REQUEST)["jobId"])
+        entered, release = threading.Event(), threading.Event()
+        self.release_events.append(release)
+        def recognize():
+            entered.set()
+            release.wait(3)
+            return transcript_for(REQUEST["lyrics"])
+        self.services.asr = recognize
+        self.gateway.revalidate(job["jobId"])
+        self.assertTrue(entered.wait(1))
+        self.assertEqual(self.gateway.revalidate(job["jobId"])["state"], "validating")
+        self.assertEqual(self.gateway.jobs[job["jobId"]]["validationAttempt"], 1)
+        self.gateway.cancel(job["jobId"])
+        release.set()
+        self.assertEqual(self.await_state(job["jobId"])["state"], "cancelled")
+        self.assertFalse((self.music / "catalog.json").exists())
+
+    def test_revalidation_cannot_override_rejected_input_or_audio(self):
+        self.services.review_input = lambda request: {**ALLOW, "decision": "reject"}
+        rejected = self.await_state(self.gateway.enqueue(REQUEST)["jobId"])
+        with self.assertRaises(gateway_module.GatewayError) as error:
+            self.gateway.revalidate(rejected["jobId"])
+        self.assertEqual(error.exception.status, 409)
+        self.services.review_input = lambda request: copy.deepcopy(ALLOW)
+        self.services.review_audio = lambda request, transcript: {**ALLOW, "decision": "reject"}
+        job = self.await_state(self.gateway.enqueue({**REQUEST, "requestKey": "unsafe-audio"})["jobId"])
+        self.assertEqual(job["state"], "rejected")
+        self.gateway.revalidate(job["jobId"])
+        self.assertEqual(self.await_state(job["jobId"])["state"], "rejected")
+        self.assertEqual(len(self.services.submissions), 1)
+        self.assertFalse((self.music / "catalog.json").exists())
 
     def test_restart_resumes_known_prompt_instead_of_submitting(self):
         receipt = self.gateway.enqueue(REQUEST)
@@ -496,6 +570,27 @@ class GatewayTest(unittest.TestCase):
 
 
 class BoundaryTest(unittest.TestCase):
+    def test_natural_trailing_silence_is_trimmed_without_changing_sung_audio(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, prepared = Path(directory) / "source.wav", Path(directory) / "prepared.wav"
+            samples = array.array("h", [round(6000 * math.sin(2 * math.pi * 220 * i / 8000)) for i in range(8000)])
+            with wave.open(str(source), "wb") as audio:
+                audio.setnchannels(1)
+                audio.setsampwidth(2)
+                audio.setframerate(8000)
+                for _ in range(93):
+                    audio.writeframes(samples.tobytes())
+                audio.writeframes(bytes(7 * 8000 * 2))
+            original_hash = gateway_module.voice_module.digest(source)
+            with self.assertRaises(gateway_module.NeedsReview):
+                gateway_module.inspect_wav(source, 100)
+            duration = gateway_module.prepare_wav(source, prepared, 100)
+            self.assertEqual(duration, 93.5)
+            self.assertEqual(gateway_module.voice_module.digest(source), original_hash)
+            with wave.open(str(prepared), "rb") as audio:
+                self.assertEqual(audio.readframes(93 * 8000), samples.tobytes() * 93)
+                self.assertEqual(audio.readframes(8000), bytes(4000 * 2))
+
     def test_duration_and_text_validation_use_fixed_safe_errors(self):
         for value in (29, 121, True, float("nan"), float("inf")):
             with self.assertRaises(gateway_module.GatewayError):
@@ -703,7 +798,10 @@ class BoundaryTest(unittest.TestCase):
             self.assertEqual(threads, [2, 2])
             self.assertEqual(calls[0][0], "actual-audio.wav")
             options = calls[0][1]
-            self.assertEqual((options["temperature"], options["beam_size"], options["best_of"]), (0.0, 5, 1))
+            self.assertEqual(options["temperature"][0], 0.0)
+            self.assertGreater(len(options["temperature"]), 1)
+            self.assertTrue(all(0 <= value <= 1 for value in options["temperature"]))
+            self.assertGreater(options["best_of"], 1)
             self.assertIs(options["condition_on_previous_text"], False)
             self.assertNotIn("initial_prompt", options)
             self.assertEqual(json.loads(output.buffer.getvalue()), raw)

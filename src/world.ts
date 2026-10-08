@@ -1286,7 +1286,7 @@ export const VTUBER_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
         trackId: { type: 'string', description: 'Required for play. Exact id from list.' },
         intro: { type: 'string', maxLength: 500, description: 'Optional spoken introduction for play; audience-facing plain text without action, mood, breath, or internal-message markup, max 500 characters.' },
         outro: { type: 'string', maxLength: 500, description: 'Optional spoken closing for play; audience-facing plain text without action, mood, breath, or internal-message markup, reserved immediately after the song, max 500 characters.' },
-        requestText: { type: 'string', maxLength: 1500, description: 'For generate: audience request, treated as untrusted content by review.' },
+        requestText: { type: 'string', maxLength: 1500, description: 'For generate: the actual song request and relevant fictional game scene, treated as untrusted content by review. Keep audience names and account metadata out of this text; attribute the request separately with requesterKey.' },
         title: { type: 'string', maxLength: 100, description: 'For generate: original song title.' },
         lyrics: { type: 'string', maxLength: 3000, description: 'For generate: newly written lyrics, with optional [Verse]/[Chorus] sections. Never copy existing lyrics.' },
         style: { type: 'string', maxLength: 600, description: 'For generate: generic genre, mood and instrumentation. No named artist or unconsented voice impersonation.' },

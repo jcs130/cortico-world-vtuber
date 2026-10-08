@@ -3,6 +3,8 @@
 直播演出 World:消费弹幕与对局事件,输出混编 TTS 语音与 Live2D 动作的连续演出。
 设计文档见 [vtuber_performance_module_design.md](vtuber_performance_module_design.md)。
 
+原创点歌的 `requestText` 只包含创作要求和相关虚构场景；观众来源由 `requesterKey` 保存，不将昵称或账号混入创作内容。
+
 流式与整段提交的 `vtuber_act` 共用最近五分钟、最多十六份完整台本的重复检查。整段入口使用工具上下文的 `round` 识别同轮分段；缺少轮号时只可沿用仍打开的流式轮。不同轮次重复台本在发送 TTS 前拒收，新台本照常流式或整段排入。
 
 ## 分层
