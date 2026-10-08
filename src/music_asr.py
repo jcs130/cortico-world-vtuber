@@ -65,6 +65,31 @@ def aligned_transcript(text, confidence, log_probability, timestamps):
                           "compression_ratio": len(text.encode("utf-8")) / len(zlib.compress(text.encode("utf-8"))), "words": words}]}
 
 
+def repair_zero_spans(transcript, reference, duration, realign):
+    words = transcript["segments"][0]["words"]
+    anchors = [word for segment in reference["segments"] for word in segment["words"]]
+    if len(words) != len(anchors) or any(word["word"] != anchor["word"] for word, anchor in zip(words, anchors)):
+        raise ValueError("Alignment must preserve independent phrases")
+    windows = []
+    for index, word in enumerate(words):
+        if word["end"] > word["start"]:
+            continue
+        left = max(anchors[index - 1]["end"], words[index - 1]["end"]) if index else 0
+        right = min(anchors[index + 1]["start"], words[index + 1]["start"]) if index + 1 < len(anchors) else duration
+        if not 0 <= left < right <= duration:
+            raise ValueError("Invalid measured alignment window")
+        measured = realign(left, right, word["word"])
+        candidate = aligned_transcript(word["word"], [word["probability"]] * len(characters(word["word"])),
+                                       transcript["segments"][0]["avg_logprob"], measured)["segments"][0]["words"]
+        if len(candidate) != 1 or not 0 <= candidate[0]["start"] < candidate[0]["end"] <= right - left:
+            raise ValueError("Unresolved zero-width phrase")
+        word.update(start=left + candidate[0]["start"], end=left + candidate[0]["end"])
+        windows.append({"wordIndex": index, "start": left, "end": right})
+    if windows:
+        transcript["alignmentWindows"] = windows
+    return transcript
+
+
 def run(audio, model_dir, aligner_dir, language, device, cpu_threads, source=None):
     import soundfile as sf
     import torch
@@ -102,10 +127,15 @@ def run(audio, model_dir, aligner_dir, language, device, cpu_threads, source=Non
         log_probability = source["segments"][0]["avg_logprob"]
     processor = AutoProcessor.from_pretrained(aligner_dir, local_files_only=True)
     model = AutoModelForTokenClassification.from_pretrained(aligner_dir, dtype=dtype, device_map=device, attn_implementation="sdpa", local_files_only=True)
-    inputs, word_lists = processor.prepare_forced_aligner_inputs(audio=samples, transcript=text, language=language)
-    inputs = inputs.to(model.device, model.dtype)
-    with torch.inference_mode():
-        output = model(**inputs)
-    timestamps = processor.decode_forced_alignment(logits=output.logits, input_ids=inputs["input_ids"], word_lists=word_lists,
-                                                  timestamp_token_id=model.config.timestamp_token_id)[0]
-    return aligned_transcript(text, confidence, log_probability, timestamps)
+    def align_segment(segment, phrase):
+        inputs, word_lists = processor.prepare_forced_aligner_inputs(audio=segment, transcript=phrase, language=language)
+        inputs = inputs.to(model.device, model.dtype)
+        with torch.inference_mode():
+            output = model(**inputs)
+        return processor.decode_forced_alignment(logits=output.logits, input_ids=inputs["input_ids"], word_lists=word_lists,
+                                                 timestamp_token_id=model.config.timestamp_token_id)[0]
+    result = aligned_transcript(text, confidence, log_probability, align_segment(samples, text))
+    if source is not None:
+        result = repair_zero_spans(result, source, len(samples) / 16000,
+            lambda left, right, phrase: align_segment(samples[round(left * 16000):round(right * 16000)], phrase))
+    return result

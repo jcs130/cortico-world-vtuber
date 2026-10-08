@@ -35,6 +35,7 @@
 该独立服务只绑定本机，识别运行环境与本地模型由部署配置提供，后端选择见
 [music-generation-gateway.md](music-generation-gateway.md)。使用部署现有的 FFmpeg 和 ComfyUI，不在任务中下载模型，不中断共享 GPU 队列。
 可选安装 OpenCC，在歌词完整度比对时统一简繁字形；原始转写与送审文字仍保留，不按草稿改写唱词。
+可选安装 `requirements-music-gateway.txt` 中的拼音词典，在字形匹配不足时复核中文同音字；完整度阈值不变。
 私有 JSON 配置包含：
 
 ```json

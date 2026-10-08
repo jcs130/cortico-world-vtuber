@@ -601,6 +601,48 @@ class GatewayTest(unittest.TestCase):
 
 
 class BoundaryTest(unittest.TestCase):
+    def test_zero_width_vocal_phrase_realigns_measured_audio_without_inventing_time(self):
+        original = {"segments":[{"avg_logprob":-.2, "words":[
+            {"word":"太阳。","start":1,"end":2,"probability":.9},
+            {"word":"小路。","start":2,"end":2,"probability":.8},
+            {"word":"星光。","start":6,"end":7,"probability":.9}]}]}
+        reference = copy.deepcopy(original)
+        reference["segments"][0]["words"][0]["end"] = 1.8
+        reference["segments"][0]["words"][2]["start"] = 6.3
+        reference["segments"][0]["words"][1].update(start=3,end=5)
+        measured = [{"text":"小","start_time":1,"end_time":1.4},{"text":"路","start_time":1.4,"end_time":2.5}]
+        result = gateway_module.asr_module.repair_zero_spans(copy.deepcopy(original), reference, 10, lambda *args: measured)
+        repaired = result["segments"][0]["words"][1]
+        self.assertEqual((repaired["start"], repaired["end"], repaired["probability"]), (3,4.5,.8))
+        self.assertEqual(result["alignmentWindows"], [{"wordIndex":1,"start":2,"end":6}])
+        self.assertEqual(original["segments"][0]["words"][1]["end"], 2)
+        for invalid in ([], [{"text":"小路","start_time":0,"end_time":0}], [{"text":"小路","start_time":0,"end_time":20}]):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                gateway_module.asr_module.repair_zero_spans(copy.deepcopy(original), reference, 10, lambda *args: invalid)
+
+    @unittest.skipUnless(gateway_module.pinyin_converter(), "Offline pronunciation dictionary unavailable")
+    def test_sung_homophones_preserve_draft_captions_and_raw_transcript(self):
+        lyrics = "我沿着石阶慢慢前行\n挖呀挖呀轻轻地唱"
+        actual = "我沿着时间慢慢前行\n哇呀哇呀轻轻的唱"
+        transcript = transcript_for(actual)
+        before = copy.deepcopy(transcript)
+        thresholds = {"minLyricCoverage": .88, "minTranscriptCoverage": .75, "minLineCoverage": .8}
+        captions = gateway_module.align_lyrics(lyrics, transcript, 30, thresholds)
+        self.assertEqual([line["text"] for line in captions], gateway_module.lyric_lines(lyrics))
+        self.assertEqual(transcript, before)
+        self.assertLess(captions[0]["endMs"], captions[1]["atMs"])
+        for mismatch in ("站在山顶看着天边\n哇呀哇呀轻轻的唱", "我沿着时间慢慢前行"):
+            with self.subTest(mismatch=mismatch), self.assertRaises(gateway_module.NeedsReview):
+                gateway_module.align_lyrics(lyrics, transcript_for(mismatch), 30, thresholds)
+
+    def test_unavailable_pronunciation_dictionary_keeps_character_validation(self):
+        thresholds = {"minLyricCoverage": .88, "minTranscriptCoverage": .75, "minLineCoverage": .8}
+        lyrics = "我沿着石阶慢慢前行"
+        with patch.object(gateway_module, "pinyin_converter", return_value=None):
+            self.assertEqual(gateway_module.align_lyrics(lyrics, transcript_for(lyrics), 30, thresholds)[0]["text"], lyrics)
+            with self.assertRaises(gateway_module.NeedsReview):
+                gateway_module.align_lyrics(lyrics, transcript_for("我沿着时间慢慢前行"), 30, thresholds)
+
     def test_decoder_confidence_tracks_multibyte_tokens_without_reencoding(self):
         prefixes = ["language Chinese<asr_text>", "language Chinese<asr_text>�", "language Chinese<asr_text>阳", "language Chinese<asr_text>阳光。"]
         tokenizer = types.SimpleNamespace(all_special_ids=[], decode=lambda ids, **kwargs: prefixes[len(ids)-1])
@@ -687,11 +729,11 @@ class BoundaryTest(unittest.TestCase):
         self.assertEqual(transcript, unchanged)
         self.assertEqual(transcript["text"], traditional.replace("\n", ""))
 
-    def test_unavailable_script_conversion_does_not_claim_unverified_coverage(self):
+    def test_unavailable_script_and_pronunciation_conversion_cannot_verify_coverage(self):
         original = "太阳带着书本走过山间\n小路开满花朵让风轻轻吹"
         traditional = "太陽帶著書本走過山間\n小路開滿花朵讓風輕輕吹"
         thresholds = {"minLyricCoverage": 0.88, "minTranscriptCoverage": 0.75, "minLineCoverage": 0.8}
-        with patch.object(gateway_module, "simplified_converter", lambda: None):
+        with patch.object(gateway_module, "simplified_converter", lambda: None), patch.object(gateway_module, "pinyin_converter", return_value=None):
             with self.assertRaises(gateway_module.NeedsReview):
                 gateway_module.align_lyrics(original, transcript_for(traditional), 30, thresholds)
 

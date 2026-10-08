@@ -336,6 +336,25 @@ def normalized(text: str) -> str:
     return unicode_characters(converter.convert(text) if converter else text)
 
 
+@functools.lru_cache(maxsize=1)
+def pinyin_converter():
+    try:
+        from pypinyin import lazy_pinyin
+        return lazy_pinyin
+    except ImportError:
+        return None
+
+
+def pronunciation_keys(text: str) -> list[tuple[str, str]]:
+    converter = pinyin_converter()
+    if converter is None:
+        raise NeedsReview()
+    syllables = converter(text, errors=lambda value: list(value))
+    if len(syllables) != len(text):
+        raise NeedsReview()
+    return [("sound", sound) if sound != char else ("char", char) for char, sound in zip(text, syllables)]
+
+
 def finite_number(value: object) -> bool:
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
 
@@ -384,9 +403,19 @@ def align_lyrics(lyrics: str, transcript: dict, duration: float, thresholds: dic
     if len(recognized) != len(times):
         raise NeedsReview()
     source_lines = [normalized(line) for line in lines]
-    source = "".join(source_lines)
     if not recognized or any(not line for line in source_lines):
         raise NeedsReview()
+    try:
+        return align_lines(lines, source_lines, recognized, times, duration, thresholds)
+    except NeedsReview:
+        # Sung melody changes lexical tone; homophones retain the same syllable.
+        # Independent ASR text and its semantic review remain unchanged.
+        return align_lines(lines, [pronunciation_keys(line) for line in source_lines],
+                           pronunciation_keys(recognized), times, duration, thresholds)
+
+
+def align_lines(lines, source_lines, recognized, times, duration, thresholds):
+    source = [char for line in source_lines for char in line]
     # Match in order so repeated chorus lines cannot share an audio interval.
     matches = difflib.SequenceMatcher(None, source, recognized, autojunk=False).get_matching_blocks()
     anchors = {block.a + i: block.b + i for block in matches for i in range(block.size)}
