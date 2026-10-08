@@ -25,14 +25,16 @@ the response instead of reporting successful EOF or replaying heard speech.
 Cancelling closes upstream and the converter; a running model finishes its
 current text segment before cancellation takes effect.
 
-`stream_segment_tokens` defaults to 24 (16–120) for the native generator.
-The adapter controls both native and compatibility synthesis at complete commas or sentence
-ends, retaining punctuation runs, closing quotes, decimals and phonetic atoms.
-Comma prefixes shorter than six readable characters join the following clause;
-complete sentence ends are retained even under the old length target.
-Long unpunctuated clauses stay intact up to the model's position capacity.
-`stream_segment_chars` is accepted for compatibility with older preferences;
-it no longer merges independent clauses just to fill a character quota.
+The adapter controls both native and compatibility synthesis at sentence ends,
+retaining punctuation runs, closing quotes, decimals and phonetic atoms.
+Short comma clauses stay together so the model can generate one continuous
+intonation. `stream_segment_chars` defaults to 40 readable characters (16–120):
+longer sentences split at complete comma clauses, with prefixes shorter than six
+readable characters attached to their following clause. This is a soft target;
+long unpunctuated clauses stay intact up to the model's position capacity.
+`stream_segment_tokens` defaults to 120 (16–120), leaving room for these phrases
+and their pronunciation hints. A smaller explicit native budget can cause extra
+model-side segmentation. It is independent of the adapter's readable-length target.
 Native clause streams are joined as one PCM stream with one WAV header, retaining
 voice and emotion parameters. Cancellation never opens a later clause. Streaming
 utterances keep their clause requests together at the adapter queue, so later
@@ -117,7 +119,8 @@ the shared model from synthesis. Missing queue timing is reported as null.
   Other characters retain their sentence text, including dictionary homographs
   outside this reviewed set. Caller hints remain supported.
   `/health` reports `annotation_policy: nondefault-nonneutral` and
-  `stream_segment_policy: punctuation-short-prefixes`.
+  `stream_segment_policy: sentences-soft-clause-limit` and the effective
+  `stream_segment_chars` target.
 - Each synthesis request logs `text-prepared` with its original script, readable
   speech and actual phonetic input. Health keeps only the latest preparation's
   timestamp, input hash, lengths, voice and hint count. `upstream_stream_path`
@@ -164,7 +167,7 @@ The existing `voice` and `speed` preferences remain compatible. Optional keys:
   "speed": 1.0,
   "emotion_mix": 0.35,
   "emotion_min_confidence": 0.65,
-  "stream_segment_tokens": 24,
+  "stream_segment_tokens": 120,
   "stream_segment_chars": 40
 }
 ```
@@ -191,7 +194,7 @@ For detached Windows startup, use the existing deployment supervisor or a
 hidden `Start-Process` helper. A launcher needs the Python source files including
 `speech_segments.py`, and
 `polyphonic_readings.json` in the
-same directory. Inspect `/health` for `version: "22-native-clauses"`,
+same directory. Inspect `/health` for `version: "23-sentence-prosody"`,
 `pronunciation.context_ready: true` and the
 expected port before changing CortiV's `worlds.vtuber.ttsUrl` to that instance.
 The adapter's POST endpoint is `/v1/audio/speech`; `ttsUrl` is its base URL.

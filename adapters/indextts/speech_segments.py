@@ -16,12 +16,13 @@ def readable_length(text: str) -> int:
     return len(re.sub(r'[\W_]', '', text))
 
 
-def punctuation_segments(text: str, min_clause_chars: int = 6) -> list[str]:
-    """Split complete clauses; short comma prefixes keep their following clause.
+def punctuation_segments(text: str, min_clause_chars: int = 6, *, max_chars: int = 40) -> list[str]:
+    """Keep a sentence's prosody; split long sentences at complete clauses.
 
     Never split words, pronunciation atoms, decimals, quotes or punctuation runs.
     Text is preserved exactly, including spaces at a boundary. A caller with a
-    hard model capacity must handle an oversized clause separately.
+    hard model capacity must handle an oversized clause separately. max_chars
+    is a soft readable-length target; short comma clauses share synthesis.
     """
     units = _ATOMS.findall(text)
     clauses, part, pending = [], '', False
@@ -38,7 +39,10 @@ def punctuation_segments(text: str, min_clause_chars: int = 6) -> list[str]:
         clauses.append(part)
     segments, current = [], ''
     for clause in clauses:
-        if current and (_HARD_END.search(current) or readable_length(current) >= min_clause_chars):
+        sentence_end = _HARD_END.search(current)
+        clause_limit = (readable_length(current) >= min_clause_chars
+                        and readable_length(current + clause) > max_chars)
+        if current and (sentence_end or clause_limit):
             segments.append(current)
             current = clause
         else:

@@ -272,8 +272,8 @@ def normalize_pronunciation(text: str) -> str:
 def pronunciation_segments(text: str, max_chars: int = 40) -> list[str]:
     """Keep punctuation/closing quotes together and preserve pronunciation atoms.
 
-    Punctuation is the streaming boundary, not a character quota. Very short
-    comma prefixes join the next complete clause to give playback some runway.
-    max_chars remains a soft compatibility hint; no word is cut to meet it.
+    Sentence ends are boundaries. Commas become boundaries only when adjoining
+    complete clauses exceed max_chars; pronunciation atoms count as their text.
+    No word is cut to meet this soft target.
     """
-    return punctuation_segments(text)
+    return punctuation_segments(text, max_chars=max_chars)

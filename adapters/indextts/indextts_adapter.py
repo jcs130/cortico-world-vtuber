@@ -16,8 +16,10 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 PORT = int(os.environ.get('CORTI_TTS_PORT', '8010'))
 if not 1 <= PORT <= 65535:
     raise ValueError('CORTI_TTS_PORT must be an integer between 1 and 65535')
-ADAPTER_VERSION = '22-native-clauses'
-DEFAULT_STREAM_SEGMENT_TOKENS = 24
+ADAPTER_VERSION = '23-sentence-prosody'
+# The adapter bounds complete phrases. Leave the native model enough token
+# room to retain that context, including pronunciation annotations.
+DEFAULT_STREAM_SEGMENT_TOKENS = 120
 _last_preparation = None
 _last_stream = None
 _upstream_stream_path = 'unverified'
@@ -356,7 +358,8 @@ class Handler(BaseHTTPRequestHandler):
                 'last_preparation': _last_preparation,
                 'last_stream': _last_stream,
                 'stream_segment_tokens': int(bounded_number(prefs.get('stream_segment_tokens'), DEFAULT_STREAM_SEGMENT_TOKENS, 16, 120)),
-                'stream_segment_policy': 'punctuation-short-prefixes',
+                'stream_segment_policy': 'sentences-soft-clause-limit',
+                'stream_segment_chars': int(bounded_number(prefs.get('stream_segment_chars'), 40, 16, 120)),
             }).encode(), 'application/json')
         else:
             self._send(404, b'{"error":"not found"}', 'application/json')

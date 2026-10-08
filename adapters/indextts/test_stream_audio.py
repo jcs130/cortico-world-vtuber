@@ -86,11 +86,11 @@ class StreamTests(unittest.TestCase):
         handler._send = Mock()
         handler._chunk = Mock()
         handler.wfile = io.BytesIO()
-        payload = {'voice': 'taozi', 'input': '种子已经收好了，接下来把小麦种下去。',
+        payload = {'voice': 'taozi', 'input': '种子已经收好了。接下来把小麦种下去。',
                    'emo_vector': [0.1, 0, 0, 0, 0, 0, 0, 0], 'num_beams': 1}
         with patch.object(adapter.urllib.request, 'urlopen', side_effect=respond):
             handler._stream(payload, 1.0, payload['input'])
-        self.assertEqual([part['input'] for part in payloads], ['种子已经收好了，', '接下来把小麦种下去。'])
+        self.assertEqual([part['input'] for part in payloads], ['种子已经收好了。', '接下来把小麦种下去。'])
         for part in payloads:
             self.assertEqual(part['voice'], payload['voice'])
             self.assertEqual(part['emo_vector'], payload['emo_vector'])
