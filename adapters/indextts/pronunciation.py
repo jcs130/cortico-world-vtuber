@@ -36,6 +36,15 @@ _PROTECTED = re.compile(r'<[^<>\n]*>|`[^`\n]*`|https?://[^\s<>，。！？；]+'
 # 一行字 / 一行人. Their grammatical use is resolved in the whole sentence.
 _CONTEXT_DEPENDENT_PHRASES = frozenset(('长得', '一行'))
 _COMMON_READINGS = json.loads(Path(__file__).with_name('polyphonic_readings.json').read_text('utf-8'))
+# These grammatical homographs have produced the wrong ordinary reading in the
+# acoustic model. Pin their contextual reading, including the neutral 得; other
+# default/neutral syllables retain Chinese text for natural prosody.
+_CONTEXT_HINT_CHARACTERS = frozenset(('得', '还', '没'))
+_REVIEWED_PHRASES = {
+    word: [reading if char == '长' else None for char in word]
+    for word, reading in _READINGS.items()
+}
+_REVIEWED_PHRASES['弹幕'] = ['DAN4', None]
 
 
 def phrase_fallback(text: str) -> str:
@@ -157,8 +166,7 @@ class ContextPronunciation:
             for char in word:
                 branch = branch.setdefault(char, {})
             branch[''] = [reading.upper() for reading in readings]
-        # Technical homographs and longest-match protection use the same lexicon.
-        for word, readings in {'弹幕': ['DAN4', 'MU4'], '长大衣': ['CHANG2', 'DA4', 'YI1']}.items():
+        for word, readings in _REVIEWED_PHRASES.items():
             branch = self.trie
             for char in word:
                 branch = branch.setdefault(char, {})
@@ -177,9 +185,9 @@ class ContextPronunciation:
         readings = self.alternatives(char)
         return readings[0].upper() if readings else None
 
-    def resolve(self, text: str) -> str:
+    def resolve(self, text: str, trace: list[dict] | None = None) -> str:
         plain, positions = text_projection(text)
-        choices = {}
+        dictionary, reviewed = {}, {}
         index = 0
         while index < len(plain):
             branch, cursor, match = self.trie, index, None
@@ -189,31 +197,55 @@ class ContextPronunciation:
                     match = cursor, branch['']
             if match:
                 end, readings = match
-                choices.update(zip(range(index, end), readings)); index = end
+                word = plain[index:end]
+                dictionary.update((i, reading) for i, reading in zip(range(index, end), readings) if reading)
+                if word in _REVIEWED_PHRASES:
+                    reviewed.update((i, reading) for i, reading in zip(range(index, end), readings) if reading)
+                index = end
             else:
                 index += 1
         ambiguous = [i for i, char in enumerate(plain)
                      if positions[i] is not None and len(self.candidates(char)) > 1]
-        missing = [i for i in ambiguous if i not in choices]
-        if missing:
+        unresolved = [i for i in ambiguous if i not in reviewed]
+        model, review = {}, {}
+        if unresolved:
             with self.lock:
                 readings = self.converter(plain)[0]
             if len(readings) != len(plain):
                 raise ValueError('context pronunciation lost source alignment')
-            choices.update((i, readings[i].upper()) for i in missing if isinstance(readings[i], str))
+            model = {i: readings[i].upper() for i in unresolved
+                     if isinstance(readings[i], str) and readings[i].upper() in self.candidates(plain[i])}
             if self.selector:
-                choices.update(self.selector(plain, missing))
+                # Review dictionary matches too: a substring such as 没收 in
+                # 收没收下 can cross grammatical boundaries. Spend the bounded
+                # review budget on known acoustic ambiguities and proposed
+                # non-default hints before ordinary readings.
+                targets = sorted(unresolved, key=lambda i: (
+                    plain[i] not in _CONTEXT_HINT_CHARACTERS,
+                    model.get(i, dictionary.get(i)) == self.ordinary_reading(plain[i]), i))
+                selected = self.selector(plain, targets)
+                review = {i: reading for i, reading in selected.items()
+                          if i in unresolved and reading in self.candidates(plain[i])}
+        choices = {**dictionary, **model, **review, **reviewed}
+        conflicts = {i for i in unresolved if i not in review and i in model
+                     and dictionary.get(i) in self.candidates(plain[i]) and dictionary[i] != model[i]}
+        for i in conflicts:
+            choices.pop(i, None)
         edits = {}
         for i in ambiguous:
             reading = choices.get(i)
+            source = ('unresolved-conflict' if i in conflicts else
+                      'reviewed-phrase' if i in reviewed else 'selector' if i in review else
+                      'context-model' if i in model else 'dictionary')
             # Taiwanese variants or malformed model output cannot introduce a new reading.
             if reading in self.candidates(plain[i]):
-                # A hint replaces the Chinese character with a phonetic atom in
-                # IndexTTS. Keep ordinary words/reduplication in natural text;
-                # only a non-default reading needs this intervention.
-                if reading.endswith('5') or reading == self.ordinary_reading(plain[i]):
-                    continue
-                edits[positions[i]] = f'<{plain[i]}|{reading}>'
+                contextual_hint = plain[i] in _CONTEXT_HINT_CHARACTERS and source != 'dictionary'
+                if contextual_hint or (not reading.endswith('5') and reading != self.ordinary_reading(plain[i])):
+                    edits[positions[i]] = f'<{plain[i]}|{reading}>'
+            if trace is not None:
+                trace.append({'index': positions[i], 'character': plain[i], 'dictionary': dictionary.get(i),
+                              'model': model.get(i), 'review': review.get(i), 'reading': reading,
+                              'source': source, 'hinted': positions[i] in edits})
         result = ''.join(edits.get(i, char) for i, char in enumerate(text))
         return phrase_fallback(result)
 
@@ -250,7 +282,9 @@ def initialize_pronunciation(model_dir: str | None = None, tokenizer_dir: str | 
 def pronunciation_health() -> dict:
     selector = _resolver.selector if _resolver else None
     return {'policy': 'context-pinyin' if _resolver else 'phrase-pinyin-fallback',
-            'annotation_policy': 'nondefault-nonneutral',
+            'annotation_policy': 'context-homographs-sparse',
+            'context_hint_characters': sorted(_CONTEXT_HINT_CHARACTERS),
+            'dictionary_policy': 'context-reviewed',
             'term_policy': 'reviewed-whole-word', 'term_count': len(_TERM_READINGS),
             'context_ready': _resolver is not None, 'initialization_error': _initialization_error,
             'fallback_count': _resolver.failures if _resolver else 0,
@@ -262,14 +296,17 @@ def pronunciation_health() -> dict:
                          'last_ms': round(getattr(selector, 'last_ms', 0), 2)}}
 
 
-def normalize_pronunciation(text: str) -> str:
+def normalize_pronunciation(text: str, trace: list[dict] | None = None) -> str:
     if not _resolver:
         return phrase_fallback(text)
     started = time.perf_counter()
     try:
-        return _resolver.resolve(text)
-    except Exception:
+        return _resolver.resolve(text, trace)
+    except Exception as error:
         _resolver.failures += 1
+        if trace is not None:
+            trace.clear()
+            trace.append({'source': 'phrase-fallback', 'reason': type(error).__name__})
         return phrase_fallback(text)
     finally:
         _resolver.last_ms = (time.perf_counter() - started) * 1000

@@ -99,8 +99,13 @@ the shared model from synthesis. Missing queue timing is reported as null.
   facts, item properties and coordinates are retained. Existing pronunciation
   markup such as `<行|XING2>` is retained.
 - Prepared local G2PW resources resolve polyphonic characters in the complete
-  utterance, after dictionary phrase matching. Context-dependent homographs such
-  as `长得` and `一行` bypass a dictionary's default reading. Only readings in the character's
+  utterance. Dictionary phrase matches are proposals; a substring can cross a
+  grammatical boundary (`收没收下` contains the characters `没收`). Context inference
+  and the optional semantic reviewer can correct these matches. A small reviewed
+  phrase lexicon retains unambiguous growth, length and technical readings.
+  Context-dependent homographs such as `长得` and `一行` bypass a dictionary's default reading.
+  Unreviewed dictionary/model disagreements retain natural text until a semantic
+  review resolves them. Only readings in the character's
   Mandarin lexicon are accepted. Explicit hints, code and URLs remain intact.
   Ordinary, native streaming and compatibility synthesis share the resolved
   input; compatibility segments retain the selected readings from earlier
@@ -110,24 +115,31 @@ the shared model from synthesis. Missing queue timing is reported as null.
   classifier for unresolved common homographs. `polyphonic_readings.json` gives
   each candidate's meaning. Each query marks its own target in a clause, with
   preceding context available; different uses of the same character do not share
-  one classifier state. Dictionary readings
-  remain authoritative. Choices below 0.8 confidence, invalid choices or a
-  0.6-second total review budget retain G2PW's reading; `/health` exposes selector failures.
+  one classifier state. Review includes unreviewed dictionary matches, prioritizing
+  the reported acoustic ambiguities and proposed non-default hints within a
+  0.6-second total budget. Choices below 0.8 confidence and invalid choices are ignored;
+  `/health` exposes selector failures.
   A dependency or inference failure uses the small unambiguous phrase fallback;
   `/health` reports availability, last analysis time and fallback count.
   Syntax follows [IndexTTS pronunciation control](https://github.com/index-tts/index-tts).
 - Automatic hints leave neutral-tone syllables as Chinese characters, including
-  `了`, `的` and auxiliary `着`/`得`. Common contextual homographs retain explicit
+  `了`, `的` and auxiliary `着`. Common contextual homographs retain explicit
   non-neutral readings only when they differ from the dictionary's ordinary
   first reading. For example, `种子` and `看看` stay in natural Chinese while
   `种下` and growth-related `长` retain their distinguishing pronunciation.
-  Other characters retain their sentence text, including dictionary homographs
+  `得`, `还` and `没` use explicit contextual readings even when the dictionary
+  lists that reading first. This includes neutral `得` in `有得挖`, `hái` in
+  `还得继续`, and `méi` in `收没收下`. A dictionary's first reading does not establish
+  which pronunciation the acoustic model will produce. Other characters retain their sentence text, including dictionary homographs
   outside this reviewed set. Caller hints remain supported.
-  `/health` reports `annotation_policy: nondefault-nonneutral` and
+  `/health` reports `annotation_policy: context-homographs-sparse`,
+  `dictionary_policy: context-reviewed`, `context_hint_characters`, and
   `stream_segment_policy: sentences-soft-clause-limit` and the effective
   `stream_segment_chars` target.
 - Each synthesis request logs `text-prepared` with its original script, readable
-  speech and actual phonetic input. Health keeps only the latest preparation's
+  speech, actual phonetic input and per-character dictionary/model/review choices.
+  Each choice identifies its source and whether it produced a hint.
+  Health keeps only the latest preparation's
   timestamp, input hash, lengths, voice and hint count. `upstream_stream_path`
   and `X-TTS-Upstream-Mode` distinguish the native and compatibility paths;
   the initial health value is `unverified` until a stream is requested.
@@ -199,7 +211,7 @@ For detached Windows startup, use the existing deployment supervisor or a
 hidden `Start-Process` helper. A launcher needs the Python source files including
 `speech_segments.py`, and
 `polyphonic_readings.json` in the
-same directory. Inspect `/health` for `version: "24-word-prosody"`,
+same directory. Inspect `/health` for `version: "25-context-homographs"`,
 `pronunciation.context_ready: true` and the
 expected port before changing CortiV's `worlds.vtuber.ttsUrl` to that instance.
 The adapter's POST endpoint is `/v1/audio/speech`; `ttsUrl` is its base URL.

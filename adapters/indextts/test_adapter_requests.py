@@ -264,6 +264,33 @@ class RequestTests(unittest.TestCase):
                                      (original, original, payload['input']))
                     self.assertEqual(trace['phonetic_hints'], 1)
 
+    def test_both_endpoints_review_dictionary_negation_and_use_identical_hints(self):
+        text = '还有得挖，还得继续，收没收下。'
+        alternatives = {'得': ['de2', 'dei3', 'de5'], '还': ['hai2', 'huan2'], '没': ['mei2', 'mo4']}
+        readings = {0: 'HAI2', 2: 'DE5', 5: 'HAI2', 6: 'DEI3', 11: 'MO4'}
+        resolver = pronunciation.ContextPronunciation(
+            lambda value: [[readings.get(i, char) for i, char in enumerate(value)]],
+            phrases={'没收': ['MO4', 'SHOU1']},
+            alternatives=lambda char: alternatives.get(char, [char]),
+            selector=lambda value, positions: {i: 'MEI2' for i in positions if value[i] == '没'})
+        expected = '<还|HAI2>有<得|DE5>挖，<还|HAI2><得|DEI3>继续，收<没|MEI2>收下。'
+        self.handler._stream = Mock()
+        with patch.object(pronunciation, '_resolver', resolver):
+            for path in ('/v1/audio/speech', '/v1/audio/speech/stream'):
+                with self.subTest(path=path):
+                    self.adapter._recent.clear()
+                    self.handler.path = path
+                    self.post({'input': text})
+                    payload = (self.handler._stream.call_args.args[0] if path.endswith('/stream') else
+                               json.loads(self.adapter.urllib.request.urlopen.call_args.args[0].data))
+                    self.assertEqual(payload['input'], expected)
+                    trace = json.loads([args.args[1] for args in self.handler.log_message.call_args_list
+                                       if args.args[0] == 'text-prepared: %s'][-1])
+                    self.assertEqual(trace['spoken'], text)
+                    self.assertEqual(trace['readings'][-1]['source'], 'selector')
+                    self.assertEqual(trace['readings'][-1]['dictionary'], 'MO4')
+                    self.assertEqual(trace['readings'][-1]['reading'], 'MEI2')
+
     def test_health_reports_version_port_and_bounded_mix(self):
         self.adapter.load_prefs.return_value = {"voice": "taozi", "emotion_mix": 10}
         self.handler.path = "/health"

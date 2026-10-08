@@ -16,7 +16,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 PORT = int(os.environ.get('CORTI_TTS_PORT', '8010'))
 if not 1 <= PORT <= 65535:
     raise ValueError('CORTI_TTS_PORT must be an integer between 1 and 65535')
-ADAPTER_VERSION = '24-word-prosody'
+ADAPTER_VERSION = '25-context-homographs'
 # The adapter bounds complete phrases. Leave the native model enough token
 # room to retain that context, including pronunciation annotations.
 DEFAULT_STREAM_SEGMENT_TOKENS = 120
@@ -425,7 +425,8 @@ class Handler(BaseHTTPRequestHandler):
             # Keep mood classification and dedup on readable text; phonetic hints
             # are solely a synthesis concern, including both streaming paths.
             pronunciation_started = time.monotonic()
-            resolved = normalize_pronunciation(clean)
+            reading_trace = []
+            resolved = normalize_pronunciation(clean, reading_trace)
             preparation = {
                 'at_ms': round(time.time() * 1000),
                 'input_sha256': hashlib.sha256(text.encode('utf-8')).hexdigest(),
@@ -439,7 +440,7 @@ class Handler(BaseHTTPRequestHandler):
             }
             _last_preparation = preparation
             self.log_message('text-prepared: %s', json.dumps({
-                **preparation, 'script': text, 'spoken': clean, 'synthesis': resolved,
+                **preparation, 'script': text, 'spoken': clean, 'synthesis': resolved, 'readings': reading_trace,
             }, ensure_ascii=False))
             payload = {'input': resolved, 'voice': voice, 'language': 'Chinese'}
             if vec is not None:

@@ -15,7 +15,7 @@ ALTERNATIVES = {'还': ['hai2', 'huan2'], '重': ['zhong4', 'chong2'], '行': ['
 def contextual(text):
     readings = [char for char in text]
     for i, char in enumerate(text):
-        if char == '还': readings[i] = 'huan2' if '借给' in text else 'hai2'
+        if char == '还': readings[i] = 'huan2' if '借给' in text or text[i+1:].startswith(('给', '你')) else 'hai2'
         elif char == '重': readings[i] = 'chong2' if text[i + 1:].startswith('新') else 'zhong4'
         elif char == '行': readings[i] = 'hang2' if text[:i].endswith('银') or text[i + 1:].startswith('字') else 'xing2'
         elif char == '种': readings[i] = 'zhong3' if text[i + 1:].startswith('子') else 'zhong4'
@@ -51,9 +51,9 @@ class ContextTests(unittest.TestCase):
             resolved.append(next(readings) if char in alternatives else char)
         model = ContextPronunciation(lambda text: [resolved], phrases={},
             alternatives=lambda char: alternatives.get(char, [char]))
-        self.assertEqual(model.resolve(phrase), '了解以后睡一觉了，我<得|DEI3>做得好。')
+        self.assertEqual(model.resolve(phrase), '了解以后睡一觉了，我<得|DEI3>做<得|DE5>好。')
         self.assertEqual(model.resolve('<了|LIAO3>' + phrase[1:]),
-                         '<了|LIAO3>解以后睡一觉了，我<得|DEI3>做得好。')
+                         '<了|LIAO3>解以后睡一觉了，我<得|DEI3>做<得|DE5>好。')
 
     def test_recorded_rare_readings_never_override_ordinary_dialogue(self):
         alternatives = {'肚': ['du4', 'du3'], '差': ['cha4', 'cha1', 'chai1'], '了': ['le5', 'liao3']}
@@ -65,7 +65,7 @@ class ContextTests(unittest.TestCase):
 
     def test_multiple_homographs_are_selected_in_their_sentence_context(self):
         result = resolver().resolve('银行边重新种地，种子很重，还没发芽。')
-        self.assertEqual(result, '银<行|HANG2>边<重|CHONG2>新<种|ZHONG4>地，种子很重，还没发芽。')
+        self.assertEqual(result, '银<行|HANG2>边<重|CHONG2>新<种|ZHONG4>地，种子很重，<还|HAI2>没发芽。')
 
     def test_proper_name_atom_keeps_full_context_for_other_homographs(self):
         text = '树苗长得快，苦力怕在旁边，木板有长短。'
@@ -101,7 +101,8 @@ class ContextTests(unittest.TestCase):
     def test_alignment_or_backend_failure_falls_back_without_breaking_speech(self):
         broken = resolver(lambda text: [[]])
         with patch.object(pronunciation, '_resolver', broken):
-            self.assertEqual(pronunciation.normalize_pronunciation('小麦长大了。'), '小麦<长|ZHANG3>大了。')
+            self.assertEqual(pronunciation.normalize_pronunciation('小麦长大了，还没收获。'),
+                             '小麦<长|ZHANG3>大了，还没收获。')
             self.assertEqual(pronunciation.pronunciation_health()['fallback_count'], 1)
 
     def test_legacy_segments_retain_reading_selected_from_previous_clause(self):
@@ -110,7 +111,7 @@ class ContextTests(unittest.TestCase):
         segments = pronunciation_segments(full, 10)
         self.assertEqual(''.join(segments), full)
         self.assertIn('<还|HUAN2>', segments[-1])
-        self.assertEqual(resolver().resolve('等会还你。'), '等会还你。')
+        self.assertEqual(resolver().resolve('等会还你。'), '等会<还|HUAN2>你。')
         self.assertEqual(pronunciation_segments('<长|CHANG2>长的山间小路，树苗正在<长|ZHANG3>大。', 8),
                          ['<长|CHANG2>长的山间小路，', '树苗正在<长|ZHANG3>大。'])
 
@@ -143,7 +144,56 @@ class ContextTests(unittest.TestCase):
         refined.selector = lambda text, positions: seen.extend(positions) or {positions[0]: 'ZHANG3'}
         result = refined.resolve('长短不同，还给你，<长|CHANG2>。')
         self.assertNotIn(0, seen)
-        self.assertEqual(result, '长短不同，还给你，<长|CHANG2>。')
+        self.assertEqual(result, '长短不同，<还|HUAN2>给你，<长|CHANG2>。')
+
+    def test_dictionary_substring_crossing_a_negation_is_reviewed_and_traceable(self):
+        text = '收没收下，淹没了洞口，没有水。'
+        alternatives = {'没': ['mei2', 'mo4']}
+        model = ContextPronunciation(
+            lambda value: [[('MEI2' if value[i:i+2] == '没有' else 'MO4') if char == '没' else char
+                            for i, char in enumerate(value)]],
+            phrases={'没收': ['MO4', 'SHOU1'], '淹没': ['YAN1', 'MO4'], '没有': ['MEI2', 'YOU3']},
+            alternatives=lambda char: alternatives.get(char, [char]))
+        seen = []
+        def review(value, positions):
+            seen.extend(positions)
+            return {i: ('MO4' if value[i-1:i] == '淹' else 'MEI2') for i in positions}
+        model.selector = review
+        trace = []
+        self.assertEqual(model.resolve(text, trace),
+                         '收<没|MEI2>收下，淹<没|MO4>了洞口，<没|MEI2>有水。')
+        self.assertIn(1, seen)
+        negation = trace[0]
+        self.assertEqual((negation['dictionary'], negation['model'], negation['review'], negation['reading']),
+                         ('MO4', 'MO4', 'MEI2', 'MEI2'))
+        self.assertEqual(negation['source'], 'selector')
+
+    def test_default_and_neutral_readings_of_reported_homographs_are_explicit(self):
+        text = '还有得挖，还得继续，得到矿石，没带镐。'
+        alternatives = {'还': ['hai2', 'huan2'], '得': ['de2', 'dei3', 'de5'], '没': ['mei2', 'mo4']}
+        readings = {0: 'HAI2', 2: 'DE5', 5: 'HAI2', 6: 'DEI3', 10: 'DE2', 15: 'MEI2'}
+        model = ContextPronunciation(
+            lambda value: [[readings.get(i, char) for i, char in enumerate(value)]],
+            phrases={}, alternatives=lambda char: alternatives.get(char, [char]))
+        expected = '<还|HAI2>有<得|DE5>挖，<还|HAI2><得|DEI3>继续，<得|DE2>到矿石，<没|MEI2>带镐。'
+        self.assertEqual(model.resolve(text), expected)
+        self.assertEqual(model.resolve(expected), expected)
+
+    def test_unreviewed_dictionary_model_disagreement_does_not_force_a_hint(self):
+        model = resolver(lambda text: [['ZHONG4' if char == '种' else char for char in text]],
+                         phrases={'这种': ['ZHE4', 'ZHONG3']})
+        trace = []
+        self.assertEqual(model.resolve('这种材料。', trace), '这种材料。')
+        self.assertEqual(trace[0]['source'], 'unresolved-conflict')
+        self.assertFalse(trace[0]['hinted'])
+
+    def test_bounded_review_prioritizes_reported_acoustic_ambiguities(self):
+        model = resolver(phrases={'重新': ['CHONG2', 'XIN1']})
+        order = []
+        model.selector = lambda text, positions: order.extend(positions) or {}
+        model.resolve('重新走一行，还给你。')
+        self.assertEqual(order[0], 6)
+        self.assertIn(0, order)
 
     def test_seed_noun_and_reduplication_remain_natural_but_planting_is_disambiguated(self):
         model = ContextPronunciation(contextual,
