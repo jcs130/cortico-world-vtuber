@@ -377,6 +377,21 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(payload['input'], '效率五级耐久二级，生<长|ZHANG3>进度五，成熟需要到七，冷却还剩一点二五秒。')
         self.assertNotIn('cooldownRemainingMs', payload['input'])
 
+    def test_normal_and_stream_requests_convert_recorded_resource_fractions_before_backend(self):
+        self.handler._stream = Mock()
+        text = '生命12/20，饥饿10/20，进度11/20，日期11/20。'
+        expected = '生命二十分之十二，饥饿二十分之十，进度二十分之十一，日期十一月二十日。'
+        for path in ('/v1/audio/speech', '/v1/audio/speech/stream'):
+            with self.subTest(path=path):
+                self.adapter._recent.clear()
+                self.handler.path = path
+                self.post({'input': text, 'segment_text': False})
+                payload = (self.handler._stream.call_args.args[0] if path.endswith('/stream') else
+                           json.loads(self.adapter.urllib.request.urlopen.call_args.args[0].data))
+                self.assertEqual(payload['input'], expected)
+                if path.endswith('/stream'):
+                    self.assertEqual(self.handler._stream.call_args.args[2], expected)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -143,7 +143,7 @@ class ReadingSelector:
 class ContextPronunciation:
     """Resolve a bounded set of modern homographs in the complete utterance."""
 
-    def __init__(self, converter, phrases=None, alternatives=None, selector=None):
+    def __init__(self, converter, phrases=None, alternatives=None, selector=None, words=None):
         if phrases is None or alternatives is None:
             from pypinyin import pinyin, Style
             from pypinyin.phrases_dict import phrases_dict
@@ -154,6 +154,7 @@ class ContextPronunciation:
                                                 neutral_tone_with_five=True)[0]
         self.converter = converter
         self.selector = selector
+        self.words = words
         self.lock = threading.Lock()
         self.failures = 0
         self.last_ms = 0.0
@@ -246,6 +247,28 @@ class ContextPronunciation:
                 trace.append({'index': positions[i], 'character': plain[i], 'dictionary': dictionary.get(i),
                               'model': model.get(i), 'review': review.get(i), 'reading': reading,
                               'source': source, 'hinted': positions[i] in edits})
+        if self.words and edits:
+            for word, start, end in self.words(plain):
+                if not re.fullmatch(r'[\u3400-\u9fff]{2,}', word):
+                    continue
+                source_positions = positions[start:end]
+                # Explicit hints and literals have no editable source positions.
+                if (None in source_positions or source_positions != list(range(source_positions[0], source_positions[0] + len(word)))
+                        or not any(i in edits for i in source_positions)):
+                    continue
+                readings = [choices.get(i, self.ordinary_reading(plain[i])) for i in range(start, end)]
+                if any(not reading or not re.fullmatch(r'[A-ZÜV]+[1-5]', reading) for reading in readings):
+                    continue
+                # A conflicting dictionary match can cross a grammatical boundary,
+                # as in 收没收下. It cannot establish a pronunciation word.
+                if any(i in conflicts or (i in dictionary and choices.get(i) != dictionary[i])
+                       for i in range(start, end)):
+                    continue
+                edits.update((i, '') for i in source_positions)
+                edits[source_positions[0]] = f'<{word}|{" ".join(readings)}>'
+                if trace is not None:
+                    trace.append({'source': 'word-prosody', 'word': word, 'index': source_positions[0],
+                                  'reading': ' '.join(readings)})
         result = ''.join(edits.get(i, char) for i, char in enumerate(text))
         return phrase_fallback(result)
 
@@ -267,12 +290,16 @@ def initialize_pronunciation(model_dir: str | None = None, tokenizer_dir: str | 
             if not resource.is_file():
                 raise FileNotFoundError('prepared local pronunciation resource missing')
         from g2pw import G2PWConverter
+        from jieba import Tokenizer
         converter = G2PWConverter(model_dir=model_dir, model_source=tokenizer_dir, style='pinyin',
                                   enable_non_tradional_chinese=True, turnoff_tqdm=True)
         # Upstream treats zero as unset; Windows must not spawn DataLoader workers per utterance.
         converter.num_workers = 0
         selector_url = os.environ.get('CORTICO_PRONUNCIATION_DECISION_URL')
-        _resolver = ContextPronunciation(converter, selector=ReadingSelector(selector_url) if selector_url else None)
+        word_tokenizer = Tokenizer()
+        word_tokenizer.initialize()
+        _resolver = ContextPronunciation(converter, selector=ReadingSelector(selector_url) if selector_url else None,
+                                        words=lambda text: word_tokenizer.tokenize(text, HMM=False))
         _initialization_error = None
     except Exception as error:
         _resolver = None
@@ -282,7 +309,7 @@ def initialize_pronunciation(model_dir: str | None = None, tokenizer_dir: str | 
 def pronunciation_health() -> dict:
     selector = _resolver.selector if _resolver else None
     return {'policy': 'context-pinyin' if _resolver else 'phrase-pinyin-fallback',
-            'annotation_policy': 'context-homographs-sparse',
+            'annotation_policy': 'context-words-sparse' if _resolver and _resolver.words else 'context-homographs-sparse',
             'context_hint_characters': sorted(_CONTEXT_HINT_CHARACTERS),
             'dictionary_policy': 'context-reviewed',
             'term_policy': 'reviewed-whole-word', 'term_count': len(_TERM_READINGS),

@@ -16,7 +16,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 PORT = int(os.environ.get('CORTI_TTS_PORT', '8010'))
 if not 1 <= PORT <= 65535:
     raise ValueError('CORTI_TTS_PORT must be an integer between 1 and 65535')
-ADAPTER_VERSION = '25-context-homographs'
+ADAPTER_VERSION = '26-context-word-prosody'
 # The adapter bounds complete phrases. Leave the native model enough token
 # room to retain that context, including pronunciation annotations.
 DEFAULT_STREAM_SEGMENT_TOKENS = 120

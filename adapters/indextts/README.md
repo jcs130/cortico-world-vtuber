@@ -94,6 +94,9 @@ the shared model from synthesis. Missing queue timing is reported as null.
   Counts, signed coordinates and decimals keep their values. Leading-zero
   strings are read digit by digit; numeric parts of IDs and model names are retained.
   Literal code, URLs and explicit pronunciation hints are retained.
+  Slash fractions use denominator-first Chinese: `11/20` → `二十分之十一`.
+  Dates require a full year/month/day or an explicit date label such as
+  `日期11/20`; month-sized numerators alone do not establish dates.
 - Known Minecraft fields use spoken labels. `age 5/7` becomes
   `生长进度五，成熟需要到七`; it does not predict a growth time.
   `health` / `food` / `mana` ratios retain current and maximum values;
@@ -138,7 +141,15 @@ the shared model from synthesis. Missing queue timing is reported as null.
   `还得继续`, and `méi` in `收没收下`. A dictionary's first reading does not establish
   which pronunciation the acoustic model will produce. Other characters retain their sentence text, including dictionary homographs
   outside this reviewed set. Caller hints remain supported.
-  `/health` reports `annotation_policy: context-homographs-sparse`,
+  Automatically selected hints cover the containing dictionary word as one
+  pronunciation atom: `有没有` becomes `<有没有|YOU3 MEI2 YOU3>` instead of
+  `有<没|MEI2>有`. All syllables of that word share one pronunciation atom;
+  speech requests retain complete sentences. Ordinary words without a selected
+  hint remain Chinese.
+  Explicit caller hints, code and URLs retain their original representation.
+  A dictionary match conflicting with the contextual reading cannot establish
+  an annotation span, including the grammatical question `收没收下`.
+  `/health` reports `annotation_policy: context-words-sparse`,
   `dictionary_policy: context-reviewed`, `context_hint_characters`, and
   `stream_segment_policy: sentences-soft-clause-limit` and the effective
   `stream_segment_chars` target.
@@ -217,7 +228,7 @@ For detached Windows startup, use the existing deployment supervisor or a
 hidden `Start-Process` helper. A launcher needs the Python source files including
 `speech_segments.py`, and
 `polyphonic_readings.json` in the
-same directory. Inspect `/health` for `version: "25-context-homographs"`,
+same directory. Inspect `/health` for `version: "26-context-word-prosody"`,
 `pronunciation.context_ready: true` and the
 expected port before changing CortiV's `worlds.vtuber.ttsUrl` to that instance.
 The adapter's POST endpoint is `/v1/audio/speech`; `ttsUrl` is its base URL.

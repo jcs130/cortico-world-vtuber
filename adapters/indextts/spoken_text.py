@@ -2,6 +2,7 @@
 
 import re
 from decimal import Decimal
+from datetime import date
 
 from corti_speech_style import normalize_level_speech
 
@@ -12,7 +13,17 @@ _PROTECTED = re.compile(
     r'|(?:玩家|账号|用户名|昵称|ID|id|名叫|我叫|叫作|叫做)\s*[:：]?\s*[\"“‘]?'
     r'[A-Za-z0-9_]+(?![A-Za-z0-9_])'
 )
-_NUMBER = re.compile(r'(?<![A-Za-z0-9_.:/+\-])[-+]?\d+(?:\.\d+)?(?![A-Za-z0-9_.:/+\-])')
+_NUMBER = re.compile(r'(?<![A-Za-z0-9_.:/／+\-])[-+]?\d+(?:\.\d+)?(?![A-Za-z0-9_.:/／+\-])')
+_FULL_DATE = re.compile(
+    r'(?<![A-Za-z0-9_.:/+\-])(?P<year>[12]\d{3})[/／]'
+    r'(?P<month>\d{1,2})[/／](?P<day>\d{1,2})(?![A-Za-z0-9_./／])')
+_NAMED_DATE = re.compile(
+    r'(?P<prefix>(?:(?:日期|生日|纪念日)\s*(?:(?:是|为|在|定在|[:：=])\s*)?'
+    r'|(?:今天|明天|昨天)\s*(?:是|为)\s*))'
+    r'(?P<month>\d{1,2})\s*[/／]\s*(?P<day>\d{1,2})(?![A-Za-z0-9_./／])')
+_FRACTION = re.compile(
+    r'(?<![A-Za-z0-9_.:/／+\-])(?P<current>[-+]?\d+(?:\.\d+)?)\s*[/／]\s*'
+    r'(?P<maximum>[-+]?\d+(?:\.\d+)?)(?![A-Za-z0-9_./／+\-])')
 _AGE_PROGRESS = re.compile(
     r'(?<![A-Za-z0-9_])age\s*(?:[=:：]|才|是|还在|还是|到了?|为)?\s*'
     r'(?P<current>\d{1,2})\s*/\s*(?P<maximum>\d{1,2})(?![A-Za-z0-9_./])'
@@ -81,6 +92,17 @@ def chinese_number(token: str) -> str:
 def _spoken_fragment(text: str) -> str:
     text = normalize_level_speech(text)
 
+    def calendar_date(match):
+        year = match.groupdict().get('year')
+        month, day = int(match['month']), int(match['day'])
+        try:
+            date(int(year) if year else 2000, month, day)
+        except ValueError:
+            return match[0]
+        prefix = match.groupdict().get('prefix', '')
+        return (prefix + (''.join(_DIGITS[int(d)] for d in year) + '年' if year else '')
+                + chinese_number(str(month)) + '月' + chinese_number(str(day)) + '日')
+
     def age(match):
         current, maximum = int(match['current']), int(match['maximum'])
         if not 0 <= current <= maximum or maximum == 0:
@@ -98,6 +120,11 @@ def _spoken_fragment(text: str) -> str:
     text = _COOLDOWN.sub(cooldown, text)
     text = _RESOURCE.sub(lambda m: _FIELD_NAMES[m['field']] + m['current'] + '，满值' + m['maximum'], text)
     text = _FIELD.sub(lambda m: _FIELD_NAMES[m['field']] + ('是' if m['assignment'] else ''), text)
+    text = _FULL_DATE.sub(calendar_date, text)
+    text = _NAMED_DATE.sub(calendar_date, text)
+    text = _FRACTION.sub(lambda m: (
+        chinese_number(m['maximum']) + '分之' + chinese_number(m['current'])
+        if Decimal(m['maximum']) != 0 else chinese_number(m['current']) + '除以零'), text)
     return _NUMBER.sub(lambda m: chinese_number(m[0]), text)
 
 
