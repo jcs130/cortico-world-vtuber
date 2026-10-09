@@ -160,6 +160,7 @@ function configGetters(initial: EngineConfigSnapshot): Partial<VtuberWorldOption
   if ('musicVolume' in initial) out.musicVolume = () => snap.musicVolume ?? VTUBER_DEFAULTS.musicVolume;
   if ('musicGenerationUrl' in initial) out.musicGenerationUrl = () => snap.musicGenerationUrl ?? VTUBER_DEFAULTS.musicGenerationUrl;
   if ('streamEnabled' in initial) out.streamEnabled = () => snap.streamEnabled === true;
+  if ('incrementalSpeech' in initial) out.incrementalSpeech = () => snap.incrementalSpeech === true;
   if ('speechCapSec' in initial) out.speechCapSec = () => snap.speechCapSec as number;
   if ('maxActRoundsPerTurn' in initial) out.maxActRoundsPerTurn = () => snap.maxActRoundsPerTurn as number;
   if ('silenceRemindSec' in initial) out.silenceRemindSec = () => snap.silenceRemindSec as number;

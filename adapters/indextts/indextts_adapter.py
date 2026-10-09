@@ -232,7 +232,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b'\r\n')
         self.wfile.flush()
 
-    def _stream(self, payload, speed, clean, max_chars=40, *, request_started=None):
+    def _stream(self, payload, speed, clean, max_chars=40, *, request_started=None, segment_text=True):
         global _upstream_stream_path, _last_stream
         started = time.monotonic()
         request_started = started if request_started is None else request_started
@@ -247,7 +247,7 @@ class Handler(BaseHTTPRequestHandler):
             _stream_lock.acquire()
             acquired = True
             adapter_queue_ms = round((time.monotonic() - started) * 1000)
-            segments = pronunciation_segments(payload['input'], max_chars)
+            segments = pronunciation_segments(payload['input'], max_chars) if segment_text else [payload['input']]
             self.log_message('stream clauses: %s', json.dumps(segments, ensure_ascii=False))
             def open_stream(segment):
                 request = urllib.request.Request(
@@ -460,7 +460,8 @@ class Handler(BaseHTTPRequestHandler):
                 payload['max_text_tokens_per_segment'] = int(tokens)
                 payload['num_beams'] = 1
                 max_chars = int(bounded_number(prefs.get('stream_segment_chars'), 40, 16, 120))
-                self._stream(payload, speed, clean, max_chars, request_started=request_started)
+                self._stream(payload, speed, clean, max_chars, request_started=request_started,
+                             segment_text=body.get('segment_text', True) is not False)
                 return
 
             try:

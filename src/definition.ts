@@ -40,6 +40,7 @@ export interface VtuberConfigSection {
   musicGenerationUrl: string;
   alignEnabled: boolean;
   streamEnabled: boolean;
+  incrementalSpeech: boolean;
   speechCapSec: number;
   maxActRoundsPerTurn: number;
   silenceRemindSec: number;
@@ -104,6 +105,7 @@ export const VTUBER: WorldDefinition<VtuberConfigSection> = {
       musicGenerationUrl: () => cfg.musicGenerationUrl ?? VTUBER_DEFAULTS.musicGenerationUrl,
       alignEnabled: () => cfg.alignEnabled,
       streamEnabled: () => cfg.streamEnabled,
+      incrementalSpeech: () => cfg.incrementalSpeech,
       speechCapSec: () => cfg.speechCapSec,
       maxActRoundsPerTurn: () => cfg.maxActRoundsPerTurn,
       silenceRemindSec: () => cfg.silenceRemindSec,

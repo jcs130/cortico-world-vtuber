@@ -815,6 +815,7 @@ export class VtuberWorldProxy implements World {
     if (o.musicGenerationUrl) s.musicGenerationUrl = o.musicGenerationUrl() ?? d.musicGenerationUrl;
     if (o.alignEnabled) s.alignEnabled = o.alignEnabled() ?? d.alignEnabled;
     if (o.streamEnabled) s.streamEnabled = o.streamEnabled() ?? d.streamEnabled;
+    if (o.incrementalSpeech) s.incrementalSpeech = o.incrementalSpeech() ?? d.incrementalSpeech;
     if (o.speechCapSec) s.speechCapSec = o.speechCapSec() ?? d.speechCapSec;
     if (o.maxActRoundsPerTurn) s.maxActRoundsPerTurn = o.maxActRoundsPerTurn() ?? d.maxActRoundsPerTurn;
     if (o.silenceRemindSec) s.silenceRemindSec = o.silenceRemindSec() ?? d.silenceRemindSec;

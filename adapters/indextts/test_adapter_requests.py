@@ -86,6 +86,32 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(payload['voice'], 'fixture-default')
         self.assertEqual(self.adapter.retempo.call_args.args[1], 2)
 
+    def test_stream_can_keep_complete_text_without_disabling_audio_streaming(self):
+        self.handler.path = '/v1/audio/speech/stream'
+        self.handler._stream = Mock()
+        self.post({'input': '这边有苦力怕，我先看看另一条路。', 'segment_text': False})
+        self.assertEqual(self.handler._stream.call_args.kwargs['segment_text'], False)
+        self.assertEqual(self.handler._stream.call_args.args[2], '这边有苦力怕，我先看看另一条路。')
+
+    def test_unsplit_stream_sends_one_complete_native_request_and_delivers_pcm(self):
+        text = '这边有苦力怕，我先看看另一条路。' * 4
+        pcm = b'\x01\x02' * 160
+        self.adapter.urllib.request.urlopen.side_effect = lambda *args, **kwargs: io.BytesIO(
+            self.adapter.wav_stream_header(16000) + pcm)
+        def chunks(source, rate, speed, ffmpeg):
+            yield from iter(lambda: source.read(64), b'')
+        self.adapter.tempo_chunks = chunks
+        self.adapter.pronunciation_segments = Mock(side_effect=AssertionError('Unexpected text segmentation'))
+        self.handler.send_response = Mock()
+        self.handler.send_header = Mock()
+        self.handler.end_headers = Mock()
+        self.handler.wfile = io.BytesIO()
+        self.handler._stream({'input': text, 'voice': 'fixture'}, 1, text, segment_text=False)
+        self.assertEqual(self.adapter.urllib.request.urlopen.call_count, 1)
+        self.assertEqual(json.loads(self.adapter.urllib.request.urlopen.call_args.args[0].data)['input'], text)
+        self.assertEqual(self.adapter._last_stream['speech_segments'], 1)
+        self.assertIn(pcm[:64], self.handler.wfile.getvalue())
+
     def test_low_confidence_omits_both_gateway_emotion_fields(self):
         self.adapter.classify_mood_decision.return_value = ("happy", 0.49)
         payload, speed = self.request("我先去河边看看。")

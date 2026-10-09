@@ -180,6 +180,7 @@ function makeStreamPerformer(opts: {
   alignBad?: { text: string; lastGoodEndMs: number | null };
   /** 块间只让出事件循环、不等定时器:合成远快于播放,预取的片在前一片还播着时就收完流 */
   fastStream?: boolean;
+  incrementalSpeech?: () => boolean;
   /** 每块音频的毫秒数(缺省 20)。测几十秒长的片时调大,免得挂在定时器上跑几十秒。 */
   chunkMs?: number;
   /** 当前声线的实测语速;缺席即冷启动(编排器回落常数) */
@@ -328,6 +329,7 @@ function makeStreamPerformer(opts: {
       alignPcm: opts.alignPcm,
     },
     streamEnabled: () => true,
+    incrementalSpeech: opts.incrementalSpeech,
     alignEnabled: () => opts.align,
     speechRate: opts.speechRate,
     audio,
@@ -347,6 +349,24 @@ describe('Performer', () => {
   afterEach(() => {
     for (const fn of cleanup) fn();
     cleanup = [];
+  });
+
+  it('whole text remains one synthesis request while audio starts before the stream completes', async () => {
+    const p = makeStreamPerformer({ align: false, unitMs: 500, incrementalSpeech: () => false });
+    cleanup.push(() => p.performer.stop());
+    const first = '这边有苦力怕，我需要先确认旁边的路线是否安全。';
+    const tail = '确认之后再继续走。';
+    const round = p.performer.beginRound();
+    round.feed(first);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(p.synthCalls).toEqual([]);
+    round.feed(tail);
+    round.end();
+    await waitFor(() => p.played.length === 1);
+    expect(p.synthCalls).toEqual([first + tail]);
+    expect(p.played[0].text).toBe(first + tail);
+    expect(p.traces.some(trace => trace.event === 'stream-received')).toBe(false);
+    await waitFor(() => p.performer.status().queuedBeats === 0 && !p.performer.status().playing, 30_000);
   });
 
   it('关闭流式后等待整拍正文，长句只合成播放一次；下一轮可热切回分句预合成', async () => {

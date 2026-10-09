@@ -370,7 +370,7 @@ export class TtsClient {
   async synthStream(
     text: string,
     sink: TtsStreamSink,
-    opts: { override?: TtsSynthProfile; signal?: AbortSignal; maxDurationMs?: number } = {},
+    opts: { override?: TtsSynthProfile; signal?: AbortSignal; maxDurationMs?: number; segmentText?: boolean } = {},
   ): Promise<TtsPiece> {
     const p = opts.override ?? this.profile?.() ?? {};
     const body: Record<string, unknown> = {
@@ -378,6 +378,7 @@ export class TtsClient {
       input: text,
       voice: 'default',
       response_format: 'wav',
+      segment_text: opts.segmentText ?? true,
     };
     if (p.seed !== undefined) body.seed = p.seed;
     if (p.cfgValue !== undefined) body.cfg_value = p.cfgValue;

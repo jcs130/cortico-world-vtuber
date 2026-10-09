@@ -31,6 +31,7 @@ export interface EngineConfigSnapshot {
   musicGenerationUrl?: string;
   alignEnabled?: boolean;
   streamEnabled?: boolean;
+  incrementalSpeech?: boolean;
   speechCapSec?: number;
   maxActRoundsPerTurn?: number;
   silenceRemindSec?: number;

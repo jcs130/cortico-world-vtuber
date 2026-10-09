@@ -178,6 +178,22 @@ describe('TtsClient.synthStream', () => {
     return new Response(body, { status: 200 });
   }
 
+  it('keeps complete spoken text in a streaming request when text segmentation is disabled', async () => {
+    const text = '这里有苦力怕，我先看清楚再走。';
+    let body: Record<string, unknown> = {};
+    const pcm = new Uint8Array(3200);
+    const client = new TtsClient({ url: 'http://fake', fetchImpl: (async (_url, init) => {
+      body = JSON.parse(String(init?.body));
+      return streamResponse(16000, [pcm]);
+    }) as typeof fetch });
+    const received: Uint8Array[] = [];
+    const piece = await client.synthStream(text, { pcm: chunk => received.push(chunk) }, { segmentText: false });
+    expect(body.input).toBe(text);
+    expect(body.segment_text).toBe(false);
+    expect(Buffer.concat(received)).toEqual(Buffer.from(pcm));
+    expect(piece.durationMs).toBe(100);
+  });
+
   it('边收边给 PCM 分块,收流后重组完整 wav 与时长', async () => {
     const sr = 16000;
     // 两块共 3200 样本 = 200ms;第二块与第一块之间制造奇数字节切口

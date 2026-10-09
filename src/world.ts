@@ -186,6 +186,7 @@ export const VTUBER_DEFAULTS = {
    * /v1/audio/speech/stream(health 报 streaming:true);不可用自动回落整段。
    */
   streamEnabled: true,
+  incrementalSpeech: true,
   /**
    * 语音积压上限(秒)。剩余时长超过该值时拒绝新的 vtuber_act;
    * 心跳演出状态行报告队列是否为空。
@@ -594,8 +595,13 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
         title: '流式输出',
         'x-hot': true,
         description:
-          '开启时按完整分句预合成并流式播放，需要 TTS 服务支持流式端点；不可用时自动回落。' +
-          '关闭时每拍收齐正文后整段合成，停用额外的标点切片。热改从下一轮台词生效。',
+          '边接收音频边播放，需要 TTS 服务支持流式端点；不可用时自动回落整段合成。热改影响之后的语音。',
+      },
+      'worlds.vtuber.incrementalSpeech': {
+        type: 'boolean',
+        title: '标点预切片',
+        'x-hot': true,
+        description: '开启时按完整分句提前合成；关闭时每拍收齐正文再合成，仍可流式播放音频。热改从下一轮台词生效。',
       },
       'worlds.vtuber.speechCapSec': {
         type: 'integer',
@@ -846,6 +852,7 @@ export interface VtuberWorldOptions {
   alignEnabled?: () => boolean;
   /** 流式输出开关;每片求值。真流式还要 server 能力在场(health 的 streaming 标志) */
   streamEnabled?: () => boolean;
+  incrementalSpeech?: () => boolean;
   /** 语音积压上限(秒);每次 vtuber_act 求值(x-hot) */
   speechCapSec?: () => number;
   /** 同轮演出封顶(次);每次 vtuber_act 求值(x-hot) */
@@ -1440,6 +1447,7 @@ export class VtuberWorld implements World {
   private readonly alignEnabled?: () => boolean;
   private alignOk: boolean | null = null;
   private readonly streamEnabledOpt?: () => boolean;
+  private readonly incrementalSpeechOpt?: () => boolean;
   private readonly speechCapSecOpt?: () => number;
   private readonly maxActRoundsPerTurnOpt?: () => number;
   private readonly silenceRemindSecOpt?: () => number;
@@ -1586,6 +1594,7 @@ export class VtuberWorld implements World {
     this.aligner = new AlignerClient({ url: ttsUrl });
     this.alignEnabled = opts.alignEnabled;
     this.streamEnabledOpt = opts.streamEnabled;
+    this.incrementalSpeechOpt = opts.incrementalSpeech;
     this.speechCapSecOpt = opts.speechCapSec;
     this.maxActRoundsPerTurnOpt = opts.maxActRoundsPerTurn;
     this.silenceRemindSecOpt = opts.silenceRemindSec;
@@ -1981,7 +1990,7 @@ export class VtuberWorld implements World {
           deliveredPcmBytes += chunk.length;
           sink.pcm(chunk);
         },
-      }, { signal, maxDurationMs });
+      }, { signal, maxDurationMs, segmentText: this.incrementalSpeechOpt?.() ?? this.streamEnabledOpt?.() ?? VTUBER_DEFAULTS.incrementalSpeech });
       this.ttsOk = true;
     } catch (err) {
       if (signal.aborted) throw err;
@@ -2907,7 +2916,7 @@ export class VtuberWorld implements World {
       },
       streamEnabled: () =>
         (this.streamEnabledOpt?.() ?? VTUBER_DEFAULTS.streamEnabled) && this.streamCapable(),
-      incrementalSpeech: () => this.streamEnabledOpt?.() ?? VTUBER_DEFAULTS.streamEnabled,
+      incrementalSpeech: () => this.incrementalSpeechOpt?.() ?? this.streamEnabledOpt?.() ?? VTUBER_DEFAULTS.incrementalSpeech,
       alignEnabled: () => this.alignOn(),
       speechRate: () => this.speechRateHint(),
       yieldWindowMs: () => {
