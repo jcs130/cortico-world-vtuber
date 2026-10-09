@@ -1535,8 +1535,9 @@ export class VtuberWorld implements World {
   private readonly diagDir: string | null;
   private lastDumpPath: string | null = null;
   private diagTimer: ReturnType<typeof setInterval> | null = null;
-  /** 静默提醒计时;见底时武装,新台词后的到点检查落空 */
+  /** 静默提醒从启动或音频见底时计时；排队期间不投递。 */
   private silenceTimer: ReturnType<typeof setTimeout> | null = null;
+  private audioIdleStartedAtMs: number | null = null;
 
   /** 杂谈/游戏模式的弹幕攒批(听弹幕模式逐条即时,不进这里) */
 
@@ -2934,6 +2935,7 @@ export class VtuberWorld implements World {
       onSubtitleCut: () => this.emitSubtitleCut('外部播放被截断'),
     });
     this.performer.start();
+    this.armSilenceRemind();
     // 失真滚动摘要:每窗口一行,计数全零那一窗不发。
     this.warnTally.clear();
     this.tallyTimer = setInterval(() => this.flushWarnSummary(), WARN_SUMMARY_MS);
@@ -3017,6 +3019,7 @@ export class VtuberWorld implements World {
     this.flushWarnSummary();
     if (this.silenceTimer) clearTimeout(this.silenceTimer);
     this.silenceTimer = null;
+    this.audioIdleStartedAtMs = null;
     if (this.diagDir) this.writeDiag('latest.json'); // 收尾也留一份,便于事后回看
     this.host = null;
     this.performer?.stop();
@@ -3060,7 +3063,14 @@ export class VtuberWorld implements World {
 
   /** 演出状态一行(在播/排队);代理侧把它作为投递成文事件随批送出(proxy.armStatus) */
   statusLine(): string | null {
-    return this.performer?.statusLine() ?? null;
+    const performer = this.performer;
+    if (!performer) return null;
+    const status = performer.status();
+    const idle = !status.playing && status.queuedBeats === 0 && performer.audioBacklogMs() === 0;
+    // 非空读数撤销上一段空闲；下降沿确认后才提供新的起点。
+    if (!idle) this.audioIdleStartedAtMs = null;
+    return performer.statusLine() + (idle && this.audioIdleStartedAtMs !== null
+      ? `；本地音频队列空闲起点 ${new Date(this.audioIdleStartedAtMs).toISOString()}` : '');
   }
 
   /**
@@ -3414,6 +3424,7 @@ export class VtuberWorld implements World {
   private armSilenceRemind(): void {
     this.cancelSilenceRemind();
     if (!this.host) return;
+    this.audioIdleStartedAtMs = Date.now();
     this.silenceTier = 0;
     this.scheduleSilenceTier(this.silenceTierPlanMs()[0]);
   }

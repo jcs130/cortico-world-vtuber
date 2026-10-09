@@ -1076,7 +1076,7 @@ describe('VtuberWorld', () => {
     await act.handler({ script: '就这一句,说完就安静。' }, { role: 'main', log: host.log, callId: 'q1' });
     const opened = roundsOpened();
     // 停止一切输入后,队列必须单调收敛到安静,不能自我续期
-    await waitFor(() => mod.statusLine()?.includes('安静') ?? false);
+    await waitFor(() => mod.statusLine()?.includes('空闲起点') ?? false);
     const settled = mod.statusLine();
     await new Promise((r) => setTimeout(r, 300));
     expect(mod.statusLine()).toBe(settled);
@@ -1807,6 +1807,26 @@ describe('VtuberWorld 播报队列', () => {
     await mod.stop();
     await new Promise<void>((r) => tts.close(() => r()));
     rmSync(serverDir, { recursive: true, force: true });
+  });
+
+  it('启动后尚未提交台词也记录空闲起点并提醒，不自动合成台词', async () => {
+    const initial = mod.statusLine();
+    expect(initial).toMatch(/本地音频队列空闲起点 \S+/);
+    await waitFor(() => host.notes.some(note => note.startsWith('[演出]')), 3000);
+    expect(mod.statusLine()).toBe(initial);
+    expect(host.logs.filter(line => line.event === 'round-open')).toHaveLength(0);
+  });
+
+  it('语音排队时撤下空闲起点，真实见底后更新并保持稳定', async () => {
+    const initial = mod.statusLine();
+    const act = mod.tools().find(tool => tool.name === 'vtuber_act')!;
+    await act.handler({ script: '检查一个结果。' }, { role: 'main', log: host.log, callId: 'idle-clock' });
+    expect(mod.statusLine()).not.toContain('空闲起点');
+    await waitFor(() => mod.statusLine()?.includes('空闲起点') ?? false, 10_000);
+    const drained = mod.statusLine();
+    expect(drained).not.toBe(initial);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(mod.statusLine()).toBe(drained);
   });
 
   it('回执报这段多长、前面排着多久、全部说完还要多久', async () => {
