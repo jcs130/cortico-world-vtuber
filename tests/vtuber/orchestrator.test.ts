@@ -95,6 +95,7 @@ function makePerformer(
     broadcastFloorMs?: () => number;
     onDrained?: () => void;
     skipText?: string;
+    streamEnabled?: () => boolean;
   } = {},
 ) {
   const mixer = new CueRecorder();
@@ -143,6 +144,7 @@ function makePerformer(
         return piece;
       },
     },
+    streamEnabled: opts.streamEnabled,
     audio,
     mixer: mixer as unknown as Mixer,
     backend: { sendFrame: () => {}, fx: (clipId) => fx.push(clipId), fxDurationMs: () => 0, stop: () => {} },
@@ -345,6 +347,31 @@ describe('Performer', () => {
   afterEach(() => {
     for (const fn of cleanup) fn();
     cleanup = [];
+  });
+
+  it('关闭流式后等待整拍正文，长句只合成播放一次；下一轮可热切回分句预合成', async () => {
+    let enabled = false;
+    const p = makePerformer({ streamEnabled: () => enabled });
+    cleanup.push(() => p.performer.stop());
+    const first = '先检查周围有没有苦力怕，再确认这条山路能够通过，';
+    const last = '找到落脚点以后继续爬山。';
+    const round = p.performer.beginRound();
+    round.feed(first + last);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(p.synthCalls).toEqual([]);
+    round.end();
+    await waitFor(() => p.played.length === 1 && !p.performer.status().playing);
+    expect(p.synthCalls).toEqual([first + last]);
+    expect(p.played).toEqual([first + last]);
+
+    enabled = true;
+    const streaming = p.performer.beginRound();
+    streaming.feed(first + last);
+    await waitFor(() => p.synthCalls.length === 2);
+    expect(p.synthCalls[1]).toBe(first);
+    streaming.end();
+    await waitFor(() => p.played.length === 3 && !p.performer.status().playing);
+    expect(p.synthCalls.slice(1)).toEqual([first, last]);
   });
 
   it.each(['whole', 'stream'] as const)('%s continues the queue after a server skip without playing or retrying the skipped text', async (mode) => {

@@ -240,8 +240,10 @@ export interface PerformerDeps {
    * OBS 延迟与延迟源的近期事件算出来;编排器每拍现问,不缓存。
    */
   broadcastFloorMs?: () => number;
-  /** 流式输出开关(热;还需 tts.synthStream 在场才真流式) */
+  /** 流式传输开关(热;还需 tts.synthStream 在场才真流式)。 */
   streamEnabled?: () => boolean;
+  /** 正文预切片开关；未提供时跟随 streamEnabled。传输能力回落不应改变用户选择。 */
+  incrementalSpeech?: () => boolean;
   /** 礼让收束找停顿的窗口(ms;控制台热调);缺省 500 */
   yieldWindowMs?: () => number;
   /** 礼让收束的回落淡出时长(ms;控制台热调);音素感知切断走不了时才用,缺省 150 */
@@ -734,7 +736,7 @@ export class Performer {
         });
         this.gate.pulse();
       },
-    }, this.d.pack());
+    }, this.d.pack(), this.d.incrementalSpeech?.() ?? this.d.streamEnabled?.() ?? true);
     return {
       feed: (text) => parser.feed(text),
       end: () => parser.end(),

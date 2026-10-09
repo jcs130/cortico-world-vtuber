@@ -45,6 +45,12 @@ The VTuber script parser also emits complete clauses after 24 spoken characters
 instead of waiting for 40 and a sentence end. Emotion metadata does not count
 toward that minimum, and short openings remain together.
 
+For a whole-utterance comparison, turn off `worlds.vtuber.streamEnabled` in
+the host's web configuration. The script parser then waits for a complete beat
+without punctuation-based splitting, and the adapter uses `/tts_raw` once for
+that beat instead of the clause-segmented streaming path. Explicit performance
+beat boundaries remain; subtitles retain their original text.
+
 `X-TTS-Request-First-Audio-Ms` includes text preparation and upstream waiting.
 `X-TTS-Preparation-Ms` measures preparation alone; the existing
 `X-TTS-First-Audio-Ms` measures upstream waiting and tempo conversion.

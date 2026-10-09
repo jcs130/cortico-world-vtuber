@@ -594,8 +594,8 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
         title: '流式输出',
         'x-hot': true,
         description:
-          'TTS 边合成边播,首声延迟从整段合成的 3 秒级降到 1 秒内。需要 TTS server 支持流式端点;' +
-          '不支持或临时不可用时自动回落为整段合成,不用手动关。',
+          '开启时按完整分句预合成并流式播放，需要 TTS 服务支持流式端点；不可用时自动回落。' +
+          '关闭时每拍收齐正文后整段合成，停用额外的标点切片。热改从下一轮台词生效。',
       },
       'worlds.vtuber.speechCapSec': {
         type: 'integer',
@@ -2907,6 +2907,7 @@ export class VtuberWorld implements World {
       },
       streamEnabled: () =>
         (this.streamEnabledOpt?.() ?? VTUBER_DEFAULTS.streamEnabled) && this.streamCapable(),
+      incrementalSpeech: () => this.streamEnabledOpt?.() ?? VTUBER_DEFAULTS.streamEnabled,
       alignEnabled: () => this.alignOn(),
       speechRate: () => this.speechRateHint(),
       yieldWindowMs: () => {

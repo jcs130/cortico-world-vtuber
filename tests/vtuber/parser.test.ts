@@ -103,6 +103,22 @@ describe('ScriptParser', () => {
     expect(parseAll(script).speech.map(item => item.piece.text)).toEqual([script]);
   });
 
+  it('关闭增量语音时整拍收齐再输出，标点和行内动作不拆句，显式拍边界仍生效', () => {
+    const speech: Array<{ beatIndex: number; piece: SpeechPiece }> = [];
+    const parser = new ScriptParser({ onBeat: () => {}, onSpeech: (beatIndex, piece) => speech.push({ beatIndex, piece }),
+      onEnd: () => {} }, pack, false);
+    const first = `${LONG_BODY}，先看清那只苦力怕。<点头>然后继续走。`;
+    for (const char of first) parser.feed(char);
+    expect(speech).toEqual([]);
+    parser.feed('【微笑】第二拍也说完整。');
+    expect(speech).toHaveLength(1);
+    expect(speech[0]).toMatchObject({ beatIndex: 0, piece: { text: `${LONG_BODY}，先看清那只苦力怕。 然后继续走。` } });
+    expect(speech[0].piece.anchors).toHaveLength(1);
+    parser.end();
+    expect(speech.map(item => item.piece.text)).toEqual([`${LONG_BODY}，先看清那只苦力怕。 然后继续走。`, '第二拍也说完整。']);
+    expect(speech.map(item => item.beatIndex)).toEqual([0, 1]);
+  });
+
   it('连续省略号与闭引号留在前片,任意 fragment 产出一致', () => {
     const script = `${LONG_BODY}……」后半句。`;
     const whole = parseAll(script);

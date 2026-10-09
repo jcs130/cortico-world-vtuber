@@ -148,6 +148,8 @@ export class ScriptParser {
   constructor(
     private readonly sink: ParserSink,
     private readonly pack: PerformancePack,
+    /** 关闭时收齐每拍正文再合成；显式演出标签仍保留拍边界。 */
+    private readonly incrementalSpeech = true,
   ) {}
 
   feed(text: string): void {
@@ -287,7 +289,7 @@ export class ScriptParser {
       }
     }
     this.appendClean(ch);
-    if (SENTENCE_END.test(ch)) {
+    if (this.incrementalSpeech && SENTENCE_END.test(ch)) {
       // Emotion metadata supplies no playback runway and must not make a tiny
       // spoken prefix eligible for an independent synthesis request.
       const spoken = this.speechBuf.replace(/[（(][^()（）\n]{1,32}[)）]/gu,

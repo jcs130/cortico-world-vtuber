@@ -305,6 +305,7 @@ describe('VtuberWorld', () => {
   /** 假 VoxCPM2 这一轮要回的音频;null=默认那段 100ms 话音 */
   let ttsWav: Uint8Array | null;
   let savedProfiles: TtsProfile[];
+  let streamEnabled: boolean;
 
   beforeEach(async () => {
     host = new FakeHost();
@@ -317,6 +318,7 @@ describe('VtuberWorld', () => {
     ttsBodies = [];
     ttsWav = null;
     savedProfiles = [];
+    streamEnabled = true;
     tts = createServer((req, res) => {
       // 这个夹具只实现整段合成;流式能力探测按 404 回落
       if (req.url === '/v1/audio/speech/stream') { res.writeHead(404); res.end(); return; }
@@ -343,6 +345,7 @@ describe('VtuberWorld', () => {
       // 不可达端口:VTS 缺席时演出仍走
       vtsWsUrl: 'ws://127.0.0.1:1',
       ttsUrl: `http://127.0.0.1:${ttsPort}`,
+      streamEnabled: () => streamEnabled,
       ttsVoicesDir: () => join(serverDir, 'voices'),
       musicDir: () => existsSync(join(serverDir, 'catalog.json')) ? serverDir : '',
       onTtsProfile: (p) => savedProfiles.push(p),
@@ -444,6 +447,20 @@ describe('VtuberWorld', () => {
     }
     tap.onDelta({ type: 'tool_call.end', index: 0 });
     await waitFor(() => ttsBodies.some((body) => body.input === '后续。'));
+  });
+
+  it('关闭流式时 outputTap 收齐正文再整段送入 TTS，不在标点预切片', async () => {
+    streamEnabled = false;
+    const tap = legacyTap(mod.outputTap());
+    const text = '这条山路上可能会遇到苦力怕，我们先检查落脚点，再继续爬山。';
+    const args = JSON.stringify({ script: text });
+    tap.onDelta({ type: 'tool_call.begin', index: 0, id: 'whole-speech', name: 'vtuber_act' });
+    for (const ch of args) tap.onDelta({ type: 'tool_call.delta', index: 0, argsFragment: ch });
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    expect(ttsBodies).toEqual([]);
+    tap.onDelta({ type: 'tool_call.end', index: 0 });
+    await waitFor(() => ttsBodies.some(body => body.input === text));
+    expect(ttsBodies.filter(body => typeof body.input === 'string').map(body => body.input)).toEqual([text]);
   });
 
   it('JSON 字符串数组候选跨 fragment 全程扣流，结束后只播解包台本并修订历史', async () => {
