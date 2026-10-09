@@ -4,6 +4,7 @@ import {
   DeviceAudioSink,
   mirrorRetarget,
   pickPlaybackHit,
+  playbackConfigOptions,
   rotatePreferFirst,
   samePlaybackTarget,
   secondaryPickQuery,
@@ -14,6 +15,23 @@ import type { CutPlan } from '../../src/interrupt-fade.ts';
 import { pcm16ToWav, type TtsPiece, Envelope } from '../../src/tts.ts';
 
 const SR = 16000;
+
+describe('playbackConfigOptions: console language fallback', () => {
+  it.each([
+    ['zh', '系统默认', '不出声'],
+    ['zh-Hant', '系统默认', '不出声'],
+    ['en', 'System default', 'Silent'],
+    ['ja', 'System default', 'Silent'],
+  ])('%s keeps playback target values while translating labels', (language, systemDefault, silent) => {
+    expect(playbackConfigOptions('playback-primary', language).slice(0, 2)).toEqual([
+      { value: '', label: systemDefault },
+      { value: 'none', label: silent },
+    ]);
+    expect(playbackConfigOptions('playback-secondary', language)[0]).toEqual({
+      value: 'default', label: systemDefault,
+    });
+  });
+});
 
 /** durationMs 的静音 PCM16LE 字节 */
 function silencePcm(durationMs: number): Uint8Array {

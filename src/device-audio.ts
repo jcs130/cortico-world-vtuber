@@ -158,11 +158,11 @@ export function listPlaybackDevices(log?: Logger): PlaybackDevice[] {
  */
 export function playbackConfigOptions(
   kind: string,
-  language: 'zh' | 'en' = 'zh',
+  language: string = 'zh',
   log?: Logger,
 ): Array<{ value: string; label: string }> {
   if (kind !== 'playback-primary' && kind !== 'playback-secondary') return [];
-  const en = language === 'en';
+  const en = language !== 'zh' && language !== 'zh-Hant';
   const systemDefault = en ? 'System default' : '系统默认';
   const heads = kind === 'playback-primary'
     ? [{ value: '', label: systemDefault }, { value: 'none', label: en ? 'Silent' : '不出声' }]
