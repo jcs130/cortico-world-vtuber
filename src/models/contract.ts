@@ -70,8 +70,9 @@ export interface ModelProfile {
 /**
  * 默认档案:没有匹配到任何模型时使用。
  *
- * 换算取 Live2D 标准接线的通行值:嘴角/眉毛/眼睑三类的映射中性在输入半程
- * (in[0,1] → out[-1,1] 或 [0,2]),这是 Cubism 模板的默认接法。眼球横轴取反:
+ * 嘴角/眉毛沿用输入半程的接线。眼睑以标准 0=闭眼、1=正常睁眼换算;
+ * 眼睑输出 [0,2]、非标准标定等模型应在自己的档案中声明中性位。
+ * 不把半程输入误当成所有模型的正常睁眼值。眼球横轴取反:
  * VTS 摄像头追踪的 `EyeRightX` 是镜像空间的量,模型作者通常反向映射回 `ParamEyeBallX`。
  * 没有任何 FX:未识别的模型不能拿别家的表情文件名去开。
  */
@@ -84,8 +85,8 @@ export const DEFAULT_PROFILE: ModelProfile = {
     MouthSmile: { neutral: 0.5, scale: 0.5, clamp: [0, 1] },
     BrowLeftY: { neutral: 0.5, scale: 0.5, clamp: [0, 1] },
     BrowRightY: { neutral: 0.5, scale: 0.5, clamp: [0, 1] },
-    EyeOpenLeft: { neutral: 0.5, scale: 0.5, clamp: [0, 1] },
-    EyeOpenRight: { neutral: 0.5, scale: 0.5, clamp: [0, 1] },
+    EyeOpenLeft: { neutral: 1, scale: 1, clamp: [0, 1] },
+    EyeOpenRight: { neutral: 1, scale: 1, clamp: [0, 1] },
     EyeLeftX: { invert: true },
     EyeRightX: { invert: true },
   },

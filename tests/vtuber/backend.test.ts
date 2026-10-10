@@ -72,6 +72,25 @@ function makeFakeVts(opts: { hang?: boolean; rejectMode?: 'set' | 'add' } = {}) 
 }
 
 describe('VtsBackend', () => {
+  it('未识别模型的标准眼睑:待机正常睁开,单眼闭合后能恢复,不干涉口型', async () => {
+    const { vts, injected } = makeFakeVts();
+    const backend = new VtsBackend(vts);
+    for (const left of [0, -1, 0]) {
+      backend.sendFrame({
+        EyeOpenLeft: { value: left, mode: 'set' },
+        EyeOpenRight: { value: 0, mode: 'set' },
+        MouthOpen: { value: 0.6, mode: 'set' },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    expect(injected.map((frame) => Object.fromEntries(frame.values.map((p) => [p.id, p.value])))).toEqual([
+      { EyeOpenLeft: 1, EyeOpenRight: 1, MouthOpen: 0.6 },
+      { EyeOpenLeft: 0, EyeOpenRight: 1, MouthOpen: 0.6 },
+      { EyeOpenLeft: 1, EyeOpenRight: 1, MouthOpen: 0.6 },
+    ]);
+  });
+
   it('add/set 分包注入', async () => {
     const { vts, injected } = makeFakeVts();
     const backend = new VtsBackend(vts);
