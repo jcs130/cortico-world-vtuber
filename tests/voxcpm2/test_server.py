@@ -14,7 +14,7 @@ import urllib.request
 import wave
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'adapters/voxcpm2'))
-from voxcpm2_server import VoiceServer
+from voxcpm2_server import VoiceEngine, VoiceServer
 
 
 class AudioEngine:
@@ -114,6 +114,29 @@ class ServiceTest(unittest.TestCase):
             self.request(instructions='轻快带笑', voice='another-speaker')
         self.assertEqual(caught.exception.code, 400)
         self.assertEqual(self.engine.texts, [])
+
+    def test_default_delivery_preserves_text_and_allows_request_override_or_bypass(self):
+        self.engine.config.update(enable_style_instructions=True, default_instructions='温柔带笑，自然交谈')
+        for streaming in (False, True):
+            for kwargs, expected, source in (
+                ({}, '温柔带笑，自然交谈', 'default'),
+                ({'instructions': '清晰有力'}, '清晰有力', 'request'),
+                ({'instructions': None}, None, 'request'),
+            ):
+                with self.subTest(streaming=streaming, kwargs=kwargs):
+                    with self.request('这是原始台词。', streaming=streaming, **kwargs) as response:
+                        self.assertGreater(len(response.read()), 44)
+                    self.assertEqual(self.engine.texts[-1], '这是原始台词。')
+                    self.assertEqual(self.engine.instructions[-1], expected)
+                    self.assertEqual(self.engine.last_request['instructions_source'], source)
+                    self.assertEqual(self.engine.last_request['mode'], 'reference' if expected else 'ref_continuation')
+
+    def test_invalid_or_disabled_default_delivery_fails_before_model_load(self):
+        for invalid in ('', 'a' * 65, '(温柔)', '轻声\n台词', ['轻声']):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                VoiceEngine({'default_instructions': invalid, 'enable_style_instructions': True})
+        with self.assertRaisesRegex(ValueError, 'not enabled'):
+            VoiceEngine({'default_instructions': '温柔带笑'})
 
     def test_normalization_and_complete_wav(self):
         with self.request('[happy@0.6]快看<苦力怕|KU3 LI4 PA4>（保持距离）。') as response:

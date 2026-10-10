@@ -27,9 +27,9 @@ Deploy the adapter's shared `indextts` text modules alongside this server. Its
 
 Set `enable_style_instructions: true` only after comparing audio on the intended
 reference voice. This adds a cached reference-only prompt using the **same**
-configured WAV and the same model weights. Requests without `instructions` retain
-Hi-Fi `ref_continuation`; requests with a concise `instructions` string use the
-official controllable `reference` mode and prepend that description inside the
+configured WAV and the same model weights. With no configured default, requests
+without `instructions` retain Hi-Fi `ref_continuation`; a concise description uses the
+official controllable `reference` mode and prepends that description inside the
 decoder only. Do not insert descriptions into the spoken `input` or the reference
 transcript. Both response routes validate the voice/hash and use this same policy.
 
@@ -51,6 +51,15 @@ check transcription, tone and latency, then validate real playback before
 advertising the capability as enabled. Startup also warms the controlled path on
 the existing owner thread. `/health`, streaming `X-TTS-Prompt-Mode` and synthesis
 records distinguish the two modes; records include instruction length/hash.
+
+The optional `default_instructions` service setting applies a delivery description
+when a request omits `instructions`. It requires `enable_style_instructions: true`
+and the same 64-character/plain-text limits. Per-request descriptions override
+the default; an explicit JSON `"instructions": null` selects Hi-Fi continuation.
+The default never changes spoken input, reference WAV or reference transcript.
+Startup validates and warms the configured description. `/health` reports
+`default_instructions` and the effective default `prompt_mode`; request records
+identify `instructions_source` as `default`, `request` or `none`.
 
 Create an isolated Python environment with a PyTorch build compatible with the
 GPU, then install `requirements.txt`. Model weights, references and deployment
@@ -136,8 +145,8 @@ punctuation splitter. Oversized unpunctuated clauses are rejected, and reaching
 the audio generation limit fails the request. Shared spoken-text normalization
 retains field values and reads numeric/level notation aloud. IndexTTS phonetic
 annotations become readable text; pronunciation is then handled by VoxCPM2.
-The service makes no mood-classification LLM call. Speed must be 1; delivery
-pace comes from the reference recording.
+The service makes no mood-classification LLM call. Speed must be 1; the model
+controls delivery pace from the reference recording or delivery description.
 
 If generation is slower than playback, set the VTuber extension's
 `streamEnabled` to `false` to buffer complete speech pieces. This stops playback

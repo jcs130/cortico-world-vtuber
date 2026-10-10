@@ -29,9 +29,22 @@ from speech_segments import punctuation_segments
 from spoken_text import normalize_spoken_text
 from inference_worker import InferenceWorker
 
-VERSION = '1.2.1'
+VERSION = '1.2.2'
 MAX_BODY = 2 * 1024 * 1024
 CUE_RULES = [(re.compile(r'(?:开心|温柔|惊讶|害怕|生气|难过|平静|严肃|得意|委屈|happy|gentle|calm|serious)', re.I), 'style')]
+
+
+def prepare_instructions(value, enabled: bool) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not 1 <= len(value.strip()) <= 64:
+        raise ValueError('Instructions must contain 1 to 64 characters')
+    value = value.strip()
+    if re.search(r'[()（）\r\n<>\[\]【】]', value):
+        raise ValueError('Instructions must be a plain description without brackets or newlines')
+    if not enabled:
+        raise ValueError('Style instructions are not enabled on this service')
+    return value
 
 
 def prepare_text(text: str, aliases: dict[str, str] | None = None) -> str:
@@ -64,6 +77,8 @@ def pcm_bytes(audio) -> bytes:
 class VoiceEngine:
     def __init__(self, config: dict):
         self.config = config
+        self.default_instructions = prepare_instructions(
+            config.get('default_instructions'), bool(config.get('enable_style_instructions', False)))
         self.voice = config['voice']
         self.reference_sha256 = hashlib.sha256(Path(config['reference_file']).read_bytes()).hexdigest()
         if self.reference_sha256 != config['reference_sha256']:
@@ -121,7 +136,8 @@ class VoiceEngine:
             finally:
                 warmup.close()
         if self.style_cache is not None:
-            warmup = self._generate('这次发现很有趣。', int(config.get('seed', 42)), '轻快带笑，自然交谈')
+            warmup = self._generate('这次发现很有趣。', int(config.get('seed', 42)),
+                                    self.default_instructions or '轻快带笑，自然交谈')
             try:
                 if not sum(len(chunk) for chunk in warmup):
                     raise ValueError('Empty controlled-cloning warmup audio')
@@ -164,7 +180,9 @@ class VoiceEngine:
         return {'status': 'ok', 'backend': 'voxcpm2-official-hifi', 'version': VERSION,
                 'streaming': True, 'streaming_granularity': 'latent-patches',
                 'voice': self.voice, 'voice_policy': 'configured-reference-only',
-                'reference_sha256': self.reference_sha256, 'prompt_mode': 'ref_continuation',
+                'reference_sha256': self.reference_sha256,
+                'prompt_mode': 'reference' if self.default_instructions else 'ref_continuation',
+                'default_instructions': self.default_instructions,
                 'reference_features_cached': True,
                 'style_instructions_supported': self.style_cache is not None,
                 'style_prompt_mode': 'reference' if self.style_cache is not None else None,
@@ -238,15 +256,9 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('Request reference differs from the configured voice')
             if body.get('prompt_text') and body['prompt_text'] != engine.config['reference_text']:
                 raise ValueError('Request transcript differs from the configured reference')
-            instructions = body.get('instructions')
-            if instructions is not None:
-                if not isinstance(instructions, str) or not 1 <= len(instructions.strip()) <= 64:
-                    raise ValueError('Instructions must contain 1 to 64 characters')
-                instructions = instructions.strip()
-                if re.search(r'[()（）\r\n<>\[\]【】]', instructions):
-                    raise ValueError('Instructions must be a plain description without brackets or newlines')
-                if not engine.config.get('enable_style_instructions', False):
-                    raise ValueError('Style instructions are not enabled on this service')
+            instructions = prepare_instructions(
+                body.get('instructions', engine.config.get('default_instructions')),
+                bool(engine.config.get('enable_style_instructions', False)))
             seed = int(body.get('seed', engine.config.get('seed', 42)))
             if not 0 <= seed < 2 ** 31:
                 raise ValueError('Invalid seed')
@@ -274,6 +286,7 @@ class Handler(BaseHTTPRequestHandler):
                   'spoken_text_sha256': hashlib.sha256(clean.encode()).hexdigest(),
                   'reference_sha256': engine.reference_sha256,
                   'mode': 'reference' if instructions else 'ref_continuation',
+                  'instructions_source': 'request' if 'instructions' in body else 'default' if instructions else 'none',
                   'instructions_chars': len(instructions or ''),
                   'instructions_sha256': hashlib.sha256(instructions.encode()).hexdigest() if instructions else None}
         try:
