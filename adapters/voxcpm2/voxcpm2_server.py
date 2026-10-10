@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 import wave
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
@@ -26,8 +27,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'indextts'))
 from corti_speech_style import strip_stage_directions
 from speech_segments import punctuation_segments
 from spoken_text import normalize_spoken_text
+from inference_worker import InferenceWorker
 
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 MAX_BODY = 2 * 1024 * 1024
 CUE_RULES = [(re.compile(r'(?:开心|温柔|惊讶|害怕|生气|难过|平静|严肃|得意|委屈|happy|gentle|calm|serious)', re.I), 'style')]
 
@@ -52,9 +54,6 @@ def pcm_bytes(audio) -> bytes:
 
 class VoiceEngine:
     def __init__(self, config: dict):
-        import torch
-        from voxcpm import VoxCPM
-
         self.config = config
         self.voice = config['voice']
         self.reference_sha256 = hashlib.sha256(Path(config['reference_file']).read_bytes()).hexdigest()
@@ -65,6 +64,15 @@ class VoiceEngine:
         self.completed = 0
         self.failed = 0
         self.cancelled = 0
+        self.optimization = 'eager'
+        self.cuda_stream = None
+        self.worker = InferenceWorker(self._load_model, self._generate)
+
+    def _load_model(self):
+        import torch
+        from voxcpm import VoxCPM
+
+        config = self.config
         self.torch = torch
         torch.set_num_threads(int(config.get('threads', 4)))
         device = config.get('device', 'cuda')
@@ -72,37 +80,56 @@ class VoiceEngine:
             free, _ = torch.cuda.mem_get_info()
             if free < int(config.get('minimum_free_gpu_mib', 7000)) * 1024 ** 2:
                 raise RuntimeError('Insufficient free GPU memory to load the speech model')
-        self.model = VoxCPM(config['model_dir'], enable_denoiser=False, optimize=False, device=device)
-        self.rate = self.model.tts_model.sample_rate
-        self.prompt_cache = self.model.tts_model.build_prompt_cache(
-            reference_wav_path=config['reference_file'], prompt_wav_path=config['reference_file'],
-            prompt_text=config['reference_text'])
-        if self.prompt_cache['mode'] != 'ref_continuation':
-            raise ValueError('Full reference plus continuation mode is required')
-        warmup = self.generate('晚上好呀。', int(config.get('seed', 42)))
-        try:
-            if not sum(len(chunk) for chunk in warmup):
-                raise ValueError('Empty warmup audio')
-        finally:
-            warmup.close()
+            self.cuda_stream = torch.cuda.Stream(priority=int(config.get('cuda_priority', 0)))
+        optimize = bool(config.get('optimize', False))
+        if optimize:
+            if device != 'cuda':
+                raise ValueError('Compiled inference requires CUDA')
+            import triton  # noqa: F401
+        with self._stream_context():
+            self.model = VoxCPM(config['model_dir'], enable_denoiser=False, optimize=optimize, device=device)
+            self.rate = self.model.tts_model.sample_rate
+            self.prompt_cache = self.model.tts_model.build_prompt_cache(
+                reference_wav_path=config['reference_file'], prompt_wav_path=config['reference_file'],
+                prompt_text=config['reference_text'])
+            if self.prompt_cache['mode'] != 'ref_continuation':
+                raise ValueError('Full reference plus continuation mode is required')
+        if optimize:
+            if not hasattr(self.model.tts_model.base_lm.forward_step, '_torchdynamo_orig_callable'):
+                raise RuntimeError('Requested torch.compile optimization was not enabled')
+            self.optimization = 'torch.compile-reduce-overhead'
+        for text in config.get('warmup_texts', ['晚上好呀。']):
+            warmup = self._generate(text, int(config.get('seed', 42)))
+            try:
+                if not sum(len(chunk) for chunk in warmup):
+                    raise ValueError('Empty warmup audio')
+            finally:
+                warmup.close()
+
+    def _stream_context(self):
+        return self.torch.cuda.stream(self.cuda_stream) if self.cuda_stream is not None else nullcontext()
 
     def generate(self, text: str, seed: int):
-        self.torch.manual_seed(seed)
-        iterator = self.model.tts_model.generate_with_prompt_cache_streaming(
-            target_text=text, prompt_cache=self.prompt_cache, min_len=2,
-            max_len=int(self.config.get('max_steps', 200)),
-            cfg_value=float(self.config.get('cfg_value', 2.0)),
-            inference_timesteps=int(self.config.get('inference_timesteps', 10)),
-            retry_badcase=False)
-        try:
-            count = 0
-            for audio, _, _ in iterator:
-                count += 1
-                yield pcm_bytes(audio.squeeze(0).cpu().numpy())
-            if count >= int(self.config.get('max_steps', 200)):
-                raise RuntimeError('Speech reached the generation limit; use shorter clauses')
-        finally:
-            iterator.close()
+        yield from self.worker.generate(text, seed)
+
+    def _generate(self, text: str, seed: int):
+        with self._stream_context():
+            self.torch.manual_seed(seed)
+            iterator = self.model.tts_model.generate_with_prompt_cache_streaming(
+                target_text=text, prompt_cache=self.prompt_cache, min_len=2,
+                max_len=int(self.config.get('max_steps', 200)),
+                cfg_value=float(self.config.get('cfg_value', 2.0)),
+                inference_timesteps=int(self.config.get('inference_timesteps', 10)),
+                retry_badcase=False)
+            try:
+                count = 0
+                for audio, _, _ in iterator:
+                    count += 1
+                    yield pcm_bytes(audio.squeeze(0).cpu().numpy())
+                if count >= int(self.config.get('max_steps', 200)):
+                    raise RuntimeError('Speech reached the generation limit; use shorter clauses')
+            finally:
+                iterator.close()
 
     def health(self):
         return {'status': 'ok', 'backend': 'voxcpm2-official-hifi', 'version': VERSION,
@@ -112,6 +139,9 @@ class VoiceEngine:
                 'reference_features_cached': True, 'style_instructions_supported': False,
                 'device': self.config.get('device', 'cuda'), 'model_revision': self.config.get('model_revision'),
                 'package': 'voxcpm==2.0.3', 'torch': self.torch.__version__,
+                'optimization': self.optimization, 'inference_worker_alive': self.worker.thread.is_alive(),
+                'cuda_priority': self.config.get('cuda_priority', 0),
+                'stream_prebuffer_ms': self.config.get('stream_prebuffer_ms', 0),
                 'pid': os.getpid(), 'completed': self.completed, 'failed': self.failed,
                 'cancelled': self.cancelled, 'last_request': self.last_request}
 
@@ -213,6 +243,10 @@ class Handler(BaseHTTPRequestHandler):
             record['queue_ms'] = round((time.monotonic() - started) * 1000)
             parts = []
             streaming = self.path.rstrip('/').endswith('/stream')
+            pending = []
+            pending_bytes = 0
+            prebuffer_ms = min(2000, max(0, float(engine.config.get('stream_prebuffer_ms', 0))))
+            prebuffer_bytes = round(prebuffer_ms * engine.rate * 2 / 1000)
             for segment in texts:
                 if self.disconnected():
                     raise ConnectionAbortedError('Client disconnected between segments')
@@ -229,18 +263,18 @@ class Handler(BaseHTTPRequestHandler):
                     pcm_hash.update(pcm)
                     if streaming:
                         if not sent:
-                            self.send_response(200)
-                            self.send_header('Content-Type', 'audio/wav')
-                            self.send_header('Transfer-Encoding', 'chunked')
-                            self.send_header('Connection', 'close')
-                            self.send_header('X-TTS-Backend', 'voxcpm2-official-hifi')
-                            self.send_header('X-TTS-Reference-SHA256', engine.reference_sha256)
-                            self.send_header('X-TTS-Request-Id', request_id)
-                            self.send_header('X-TTS-Request-First-Audio-Ms', str(record['first_pcm_ms']))
-                            self.end_headers()
+                            pending.append(pcm)
+                            pending_bytes += len(pcm)
+                            if pending_bytes < prebuffer_bytes:
+                                continue
+                            record['first_output_ms'] = round((time.monotonic() - started) * 1000)
+                            self.open_stream(engine, record)
                             sent = True
-                            self.chunk(stream_header(engine.rate))
-                        self.chunk(pcm)
+                            for buffered in pending:
+                                self.chunk(buffered)
+                            pending.clear()
+                        else:
+                            self.chunk(pcm)
                     else:
                         parts.append(pcm)
                 iterator.close()
@@ -248,6 +282,13 @@ class Handler(BaseHTTPRequestHandler):
             if not pcm_count:
                 raise ValueError('Model returned no audio')
             if streaming:
+                if not sent:
+                    record['first_output_ms'] = round((time.monotonic() - started) * 1000)
+                    self.open_stream(engine, record)
+                    sent = True
+                    for buffered in pending:
+                        self.chunk(buffered)
+                record['stream_prebuffer_ms'] = prebuffer_ms
                 self.wfile.write(b'0\r\n\r\n')
                 self.wfile.flush()
             else:
@@ -283,6 +324,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(('%X\r\n' % len(data)).encode() + data + b'\r\n')
         self.wfile.flush()
 
+    def open_stream(self, engine, record):
+        self.send_response(200)
+        self.send_header('Content-Type', 'audio/wav')
+        self.send_header('Transfer-Encoding', 'chunked')
+        self.send_header('Connection', 'close')
+        self.send_header('X-TTS-Backend', 'voxcpm2-official-hifi')
+        self.send_header('X-TTS-Reference-SHA256', engine.reference_sha256)
+        self.send_header('X-TTS-Request-Id', record['id'])
+        self.send_header('X-TTS-Request-First-Audio-Ms', str(record['first_output_ms']))
+        self.end_headers()
+        self.chunk(stream_header(engine.rate))
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -296,6 +349,7 @@ def main():
         server.serve_forever()
     finally:
         server.server_close()
+        engine.worker.close()
 
 
 if __name__ == '__main__':

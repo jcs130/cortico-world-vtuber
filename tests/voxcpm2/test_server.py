@@ -101,6 +101,20 @@ class ServiceTest(unittest.TestCase):
             with self.assertRaises(http.client.IncompleteRead):
                 response.read()
 
+    def test_prebuffer_does_not_lose_a_short_stream(self):
+        self.engine.config['stream_prebuffer_ms'] = 480
+        with self.request(streaming=True) as response:
+            data = response.read()
+        self.assertEqual(data[:4], b'RIFF')
+        self.assertEqual(data[44:], b'\x01\x00' * 4800 + b'\x02\x00' * 4800)
+
+    def test_failure_inside_initial_buffer_is_reported_before_playback(self):
+        self.engine.config['stream_prebuffer_ms'] = 480
+        self.engine.fail_at = 'later'
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.request(streaming=True)
+        self.assertEqual(caught.exception.code, 503)
+
     def test_cancellation_closes_decoder_and_releases_queue(self):
         self.engine.gate = threading.Event()
         response = self.request(streaming=True)

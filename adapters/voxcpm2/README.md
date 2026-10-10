@@ -30,6 +30,10 @@ Example configuration:
   "max_steps": 200,
   "segment_chars": 80,
   "threads": 4,
+  "optimize": true,
+  "cuda_priority": -1,
+  "stream_prebuffer_ms": 480,
+  "warmup_texts": ["晚上好呀。", "以千灯之名，唤醒沉睡的星火。群星啊，回应我的呼唤！"],
   "queue_timeout_sec": 25,
   "minimum_free_gpu_mib": 7000
 }
@@ -40,6 +44,19 @@ Run `python voxcpm2_server.py --config /path/to/voice.json`. Set
 `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` prevent model downloads.
 The HTTP listener becomes available after model loading, prompt caching and
 warmup. Use a service supervisor for startup and bounded crash recovery.
+
+`optimize: true` enables the official CUDA `torch.compile` paths (requires the
+Triton version supplied for the installed PyTorch build). Model loading, warmup
+and every generation stay on one dedicated inference thread. HTTP handler
+threads never execute the model. This avoids the CUDA graph thread ownership
+failure documented in the upstream [FAQ](https://voxcpm.readthedocs.io/en/latest/faq.html#cuda-graphs-and-multi-threading).
+Compiled startup is intentionally completed before opening the HTTP listener;
+it can take several minutes the first time. Set `TORCHINDUCTOR_CACHE_DIR` to a
+writable persistent directory. `cuda_priority` selects the CUDA stream priority
+within this process; it does not reserve GPU capacity against other services.
+Warm up representative text lengths before switching a live client to the
+service, and measure both first audio and generation/audio duration under the
+actual shared GPU load. A fast first chunk alone does not prevent starvation.
 
 Connect the VTuber extension with `ttsService.kind: "external"`,
 `ttsService.autoStart: true` and `ttsUrl` set to this service. It remains running
@@ -68,6 +85,15 @@ retains field values and reads numeric/level notation aloud. IndexTTS phonetic
 annotations become readable text; pronunciation is then handled by VoxCPM2.
 The service makes no mood-classification LLM call. Speed must be 1; delivery
 pace comes from the reference recording.
+
+If generation is slower than playback, set the VTuber extension's
+`streamEnabled` to `false` to buffer complete speech pieces. This stops playback
+starvation at the cost of waiting for synthesis before speaking. Restore
+streaming only after measuring sustained throughput faster than real time.
+`stream_prebuffer_ms` optionally accumulates a small amount of actual PCM before
+sending the first audio to cover short scheduling stalls. It is limited to two
+seconds. It cannot compensate for generation that remains slower than playback.
+Health distinguishes model `first_pcm_ms` from socket `first_output_ms`.
 
 Run HTTP and cancellation checks with
 `python -m unittest discover -s tests/voxcpm2 -v` from the extension root.
