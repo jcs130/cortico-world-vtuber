@@ -76,6 +76,23 @@ describe('stream synthesis fallback', () => {
     expect(piece.wav).toEqual(pcm16ToWav([pcm], 24000));
   });
 
+  it.each([400, 401, 429, 502, 503, 504])('does not resubmit failed synthesis through another endpoint after HTTP %i', async (status) => {
+    const paths: string[] = [];
+    const received: Uint8Array[] = [];
+    const fetchImpl = (async (url) => {
+      paths.push(String(url));
+      if (String(url).endsWith('/stream')) return new Response('synthesis failed', { status });
+      return new Response(pcm16ToWav([new Uint8Array([1, 0])], 24000).buffer as ArrayBuffer);
+    }) as typeof fetch;
+    const { world } = fixture(fetchImpl);
+    await expect(world.synthStreamAligned('保持已经配置的声音。', {
+      pcm: chunk => received.push(chunk),
+    }, new AbortController().signal)).rejects.toThrow(`TTS stream ${status}`);
+    expect(paths).toHaveLength(1);
+    expect(received).toHaveLength(0);
+    expect(world.ttsOk).toBe(false);
+  });
+
   it('forwards cancellation to the full synthesis retry', async () => {
     const ac = new AbortController();
     let retrySignal: AbortSignal | null = null;

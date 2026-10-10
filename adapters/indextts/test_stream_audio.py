@@ -99,7 +99,7 @@ class StreamTests(unittest.TestCase):
         self.assertEqual(handler.wfile.getvalue(), b'')
         handler._send.assert_not_called()
 
-    def test_legacy_gateway_fallback_preserves_pronunciation_per_segment(self):
+    def test_legacy_gateway_failure_never_selects_the_raw_voice_fallback(self):
         import urllib.error
         from pronunciation import normalize_pronunciation
         adapter = load_adapter()
@@ -131,16 +131,11 @@ class StreamTests(unittest.TestCase):
             handler._stream({'voice': 'taozi', 'input': annotated, 'max_text_tokens_per_segment': 56}, 1.0, text, 16)
         finally:
             adapter.urllib.request.urlopen = original
-        self.assertEqual(''.join(payload['input'] for payload in requests[1:]), annotated)
-        self.assertEqual([payload['input'] for payload in requests[1:]],
-                         [normalize_pronunciation(segment) for segment in sentence_segments(text, 16)])
-        self.assertGreater(len(requests), 2)
-        self.assertTrue(all(payload['voice'] == 'taozi' for payload in requests))
-        self.assertTrue(all('max_text_tokens_per_segment' not in payload for payload in requests[1:]))
-        handler._send.assert_not_called()
-        self.assertEqual(handler.wfile.getvalue(), b'0\r\n\r\n')
-        handler.send_header.assert_any_call('X-TTS-Upstream-Mode', 'compatibility-text-segments')
-        self.assertEqual(adapter._upstream_stream_path, 'compatibility-text-segments')
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]['voice'], 'taozi')
+        self.assertEqual(handler._send.call_args.args[0], 502)
+        handler.send_response.assert_not_called()
+        self.assertEqual(handler.wfile.getvalue(), b'')
 
     def test_sentence_boundaries_preserve_input_without_midword_splitting(self):
         text = '先收好钓竿，再去岸上看看。魔力有12.5点。这里有伙伴，我去打个招呼。'

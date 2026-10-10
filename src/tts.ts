@@ -283,13 +283,21 @@ export class TtsSkipped extends Error {
   constructor() { super('语音服务已跳过重复文本'); this.name = 'TtsSkipped'; }
 }
 
+/** Preserve the HTTP failure so callers can distinguish capability fallback from a failed job. */
+export class TtsHttpError extends Error {
+  constructor(readonly status: number, detail: string, streaming = false) {
+    super(`TTS${streaming ? ' stream' : ''} ${status}: ${detail.slice(0, 200)}`);
+    this.name = 'TtsHttpError';
+  }
+}
+
 function ttsResponseError(status: number, detail: string, streaming = false): Error {
   if (status === 410) {
     try {
       if (JSON.parse(detail)?.error === 'dedup') return new TtsSkipped();
     } catch { /* 非协议 JSON 保留为实际错误。 */ }
   }
-  return new Error(`TTS${streaming ? ' stream' : ''} ${status}: ${detail.slice(0, 200)}`);
+  return new TtsHttpError(status, detail, streaming);
 }
 
 export class TtsClient {

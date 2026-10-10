@@ -32,7 +32,8 @@ class RequestTests(unittest.TestCase):
         self.adapter.classify_mood_decision = Mock(return_value=("happy", 0.8))
         self.adapter.load_prefs = Mock(return_value={"voice": "taozi", "speed": 1.0})
         self.adapter.retempo = Mock(side_effect=lambda wav, speed: wav)
-        self.adapter.urllib.request.urlopen = Mock(return_value=io.BytesIO(b"RIFFoffline"))
+        self.adapter.urllib.request.urlopen = Mock(side_effect=lambda *args, **kwargs:
+            io.BytesIO(self.adapter.wav_stream_header(22050) + b'\x01\x00' * 12))
         self.handler = object.__new__(self.adapter.Handler)
         self.handler.path = "/v1/audio/speech"
         self.handler.log_message = Mock()
@@ -118,6 +119,29 @@ class RequestTests(unittest.TestCase):
         self.assertNotIn("mood", payload)
         self.assertNotIn("emo_vector", payload)
         self.assertEqual(speed, 1)
+
+    def test_whole_synthesis_buffers_the_same_native_voice_path_as_streaming(self):
+        pcm = b'\x01\x00' * 160
+        self.adapter.urllib.request.urlopen.side_effect = lambda *args, **kwargs: io.BytesIO(
+            self.adapter.wav_stream_header(22050) + pcm)
+        self.post({'input': '保持已经配置的声音。', 'voice': 'taozi', 'emotion_mix': 0})
+        request = self.adapter.urllib.request.urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, self.adapter.INDEXTTS_STREAM)
+        payload = json.loads(request.data)
+        self.assertEqual(payload['voice'], 'taozi')
+        self.assertEqual(payload['num_beams'], 1)
+        self.assertEqual(self.handler._send.call_args.args[0], 200)
+        self.assertEqual(self.handler._send.call_args.args[1][44:], pcm)
+
+    def test_whole_synthesis_never_uses_raw_endpoint_when_native_voice_is_unavailable(self):
+        import urllib.error
+        self.adapter.urllib.request.urlopen.side_effect = urllib.error.HTTPError(
+            self.adapter.INDEXTTS_STREAM, 504, 'timeout', {}, None)
+        self.post({'input': '保持已经配置的声音。'})
+        self.assertEqual(self.handler._send.call_args.args[0], 502)
+        self.adapter.urllib.request.urlopen.assert_called_once()
+        self.assertEqual(self.adapter.urllib.request.urlopen.call_args.args[0].full_url,
+                         self.adapter.INDEXTTS_STREAM)
 
     def test_calm_omits_both_fields_even_with_explicit_tag(self):
         payload, speed = self.request("（平静@0.8）我在河边。")

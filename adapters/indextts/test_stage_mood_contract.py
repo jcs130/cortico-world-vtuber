@@ -14,7 +14,8 @@ class StageMoodRequestTests(unittest.TestCase):
         self.adapter.classify_mood_decision = Mock(return_value=('happy', 0.8))
         self.adapter.load_prefs = Mock(return_value={'voice': 'taozi', 'speed': 1.0})
         self.adapter.retempo = Mock(side_effect=lambda wav, speed: wav)
-        self.upstream = patch('urllib.request.urlopen', return_value=io.BytesIO(b'RIFFoffline'))
+        self.upstream = patch('urllib.request.urlopen', side_effect=lambda *args, **kwargs:
+            io.BytesIO(self.adapter.wav_stream_header(22050) + b'\x01\x00' * 12))
         self.urlopen = self.upstream.start()
         self.addCleanup(self.upstream.stop)
         self.handler = object.__new__(self.adapter.Handler)

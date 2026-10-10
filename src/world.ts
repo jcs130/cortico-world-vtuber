@@ -63,6 +63,7 @@ import {
   samplesToPcm16Wav,
   StreamingEnvelope,
   TtsClient,
+  TtsHttpError,
   TtsSkipped,
   type TtsPiece,
   type TtsStreamSink,
@@ -1977,7 +1978,8 @@ export class VtuberWorld implements World {
   /**
    * 流式合成一片。收流后跑一次全量对齐附 units(<> 锚点与口径都靠它);
    * 音频已经播出去了,质量门在这条路上只记录不重试。
-   * 尚未交付 PCM 的端点失败可回落整段合成。已交付音频的中途异常原样上抛,
+   * 不支持流式的端点可回落整段合成；HTTP 合成失败不向另一端点重复提交。
+   * 已交付音频的中途异常原样上抛,
    * 演出层收束当前播放,避免把同一句从头再播;主动打断(signal)原样上抛。
    */
   private async synthStreamAligned(text: string, sink: TtsStreamSink, signal: AbortSignal, maxDurationMs?: number): Promise<TtsPiece> {
@@ -1995,6 +1997,13 @@ export class VtuberWorld implements World {
     } catch (err) {
       if (signal.aborted) throw err;
       if (err instanceof TtsSkipped) throw err;
+      if (err instanceof TtsHttpError && err.status !== 404 && err.status !== 405) {
+        this.ttsOk = false;
+        this.tracePerf('TTS', `合成服务失败,保留配置音色:${String(err).slice(0, 80)}`, {
+          level: 'warn', event: 'stream-synthesis-rejected', data: { status: err.status },
+        });
+        throw err;
+      }
       if (deliveredPcmBytes > 0) {
         this.ttsOk = false;
         this.tracePerf('TTS', '流式音频中途失败,当前片收束', {

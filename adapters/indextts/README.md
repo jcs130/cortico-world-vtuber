@@ -228,7 +228,7 @@ For detached Windows startup, use the existing deployment supervisor or a
 hidden `Start-Process` helper. A launcher needs the Python source files including
 `speech_segments.py`, and
 `polyphonic_readings.json` in the
-same directory. Inspect `/health` for `version: "26-context-word-prosody"`,
+same directory. Inspect `/health` for `version: "27-configured-voice-only"`,
 `pronunciation.context_ready: true` and the
 expected port before changing CortiV's `worlds.vtuber.ttsUrl` to that instance.
 The adapter's POST endpoint is `/v1/audio/speech`; `ttsUrl` is its base URL.
@@ -244,7 +244,15 @@ does not change an already-running process.
 ## Gateway configuration
 
 `CORTICO_INDEXTTS_URL` selects the IndexTTS gateway base URL (default `http://127.0.0.1:8087`).
-It must expose `/tts_raw` and may expose `/tts_stream`.
+It must expose `/tts_stream` with native IndexTTS audio and reject unavailable or
+unknown voices without substituting another synthesizer. Both streaming and
+whole-response adapter endpoints use this same native path, voice and generation
+settings; whole responses buffer the native PCM into a finite WAV. A gateway
+without this capability returns an error, rather than falling back to `/tts_raw`,
+whose legacy implementation can silently use edge-tts and a different voice.
+`/health` reports `voice_policy: "configured-voice-only"` and
+`whole_synthesis_path: "buffered-native-stream"`. HTTP synthesis failures are not
+resubmitted through a second endpoint by the VTuber client.
 `CORTICO_DECISION_URL` selects the optional emotion classifier endpoint.
 `CORTICO_FFMPEG` selects an ffmpeg executable; otherwise it is resolved from PATH.
 The adapter contains no model weights, reference voices, credentials or preference files.

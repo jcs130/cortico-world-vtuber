@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """IndexTTS HTTP adapter: reference prosody, contextual pronunciation and segment streaming."""
-import json, os, re, subprocess, sys, io, time, difflib, urllib.request, shutil, hashlib, threading
+import json, os, re, subprocess, sys, io, time, difflib, urllib.request, shutil, hashlib, threading, wave
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from corti_speech_style import (
     DEFAULT_CONFIDENCE, DEFAULT_EMOTION_MIX, MAX_EMOTION_MIX,
     bounded_number, emotion_mix_vector, strip_stage_directions,
 )
-from stream_audio import NativeSegmentedPcmSource, SegmentedPcmSource, read_pcm_header, sentence_segments, tempo_chunks, wav_stream_header
+from stream_audio import NativeSegmentedPcmSource, read_pcm_header, tempo_chunks, wav_stream_header
 from pronunciation import initialize_pronunciation, normalize_pronunciation, pronunciation_health, pronunciation_segments
 from spoken_text import normalize_spoken_text
 
@@ -16,7 +16,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 PORT = int(os.environ.get('CORTI_TTS_PORT', '8010'))
 if not 1 <= PORT <= 65535:
     raise ValueError('CORTI_TTS_PORT must be an integer between 1 and 65535')
-ADAPTER_VERSION = '26-context-word-prosody'
+ADAPTER_VERSION = '27-configured-voice-only'
 # The adapter bounds complete phrases. Leave the native model enough token
 # room to retain that context, including pronunciation annotations.
 DEFAULT_STREAM_SEGMENT_TOKENS = 120
@@ -25,7 +25,6 @@ _last_stream = None
 _upstream_stream_path = 'unverified'
 _stream_lock = threading.Lock()
 INDEXTTS_BASE = os.environ.get('CORTICO_INDEXTTS_URL', 'http://127.0.0.1:8087').rstrip('/')
-INDEXTTS = INDEXTTS_BASE + '/tts_raw'
 INDEXTTS_STREAM = INDEXTTS_BASE + '/tts_stream'
 FFMPEG = os.environ.get('CORTICO_FFMPEG') or shutil.which('ffmpeg') or 'ffmpeg'
 DECISION_URL = os.environ.get('CORTICO_DECISION_URL', 'http://127.0.0.1:8090/v1/systemone')
@@ -254,24 +253,11 @@ class Handler(BaseHTTPRequestHandler):
                     INDEXTTS_STREAM, data=json.dumps(dict(payload, input=segment)).encode('utf-8'),
                     headers={'Content-Type': 'application/json'})
                 return urllib.request.urlopen(request, timeout=90)
-            try:
-                response = NativeSegmentedPcmSource(segments, open_stream)
-                stream_path = 'native-clause-segments'
-            except urllib.error.HTTPError as error:
-                if error.code not in (404, 405):
-                    raise
-                error.close()
-                def synthesize(segment):
-                    part = dict(payload, input=segment)
-                    part.pop('max_text_tokens_per_segment', None)
-                    req = urllib.request.Request(
-                        INDEXTTS, data=json.dumps(part).encode('utf-8'),
-                        headers={'Content-Type': 'application/json'})
-                    with urllib.request.urlopen(req, timeout=90) as audio:
-                        return audio.read()
-                response = SegmentedPcmSource(segments, synthesize)
-                stream_path = 'compatibility-text-segments'
-                self.log_message('stream uses legacy segment synthesis: max_chars=%d', max_chars)
+            # The gateway's legacy /tts_raw may silently replace a failed
+            # configured voice with edge-tts. Its native stream rejects that
+            # failure instead, so both adapter endpoints use only this path.
+            response = NativeSegmentedPcmSource(segments, open_stream)
+            stream_path = 'native-clause-segments'
             _upstream_stream_path = stream_path
             queue_ms = getattr(response, 'headers', {}).get('X-TTS-Queue-Ms')
             queue_ms = int(queue_ms) if queue_ms is not None and queue_ms.isdigit() else None
@@ -288,6 +274,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-TTS-Streaming', 'text-segments')
             self.send_header('X-TTS-Upstream-Mode', stream_path)
+            self.send_header('X-TTS-Voice', payload['voice'])
             self.send_header('X-TTS-First-Audio-Ms', str(first_ms))
             self.send_header('X-TTS-Preparation-Ms', str(preparation_ms))
             self.send_header('X-TTS-Request-First-Audio-Ms', str(request_first_ms))
@@ -338,6 +325,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({
                 'status': 'ok', 'streaming': True, 'streaming_granularity': 'text-segments', 'backend': 'indextts-8087',
                 'voice': (prefs.get('voice') or 'taozi'),
+                'voice_policy': 'configured-voice-only',
+                'voice_fallback': False,
+                'whole_synthesis_path': 'buffered-native-stream',
                 'speed': float(prefs.get('speed', 1.0) or 1.0),
                 'mood_engine': 'startlux-decision',
                 'version': ADAPTER_VERSION,
@@ -443,6 +433,9 @@ class Handler(BaseHTTPRequestHandler):
                 **preparation, 'script': text, 'spoken': clean, 'synthesis': resolved, 'readings': reading_trace,
             }, ensure_ascii=False))
             payload = {'input': resolved, 'voice': voice, 'language': 'Chinese'}
+            tokens = bounded_number(prefs.get('stream_segment_tokens'), DEFAULT_STREAM_SEGMENT_TOKENS, 16, 120)
+            payload['max_text_tokens_per_segment'] = int(tokens)
+            payload['num_beams'] = 1
             if vec is not None:
                 payload['mood'] = mood
                 payload['emo_vector'] = vec
@@ -456,9 +449,6 @@ class Handler(BaseHTTPRequestHandler):
 
             if streaming:
                 speed = bounded_number(speed, 1.0, 0.25, 4.0)
-                tokens = bounded_number(prefs.get('stream_segment_tokens'), DEFAULT_STREAM_SEGMENT_TOKENS, 16, 120)
-                payload['max_text_tokens_per_segment'] = int(tokens)
-                payload['num_beams'] = 1
                 max_chars = int(bounded_number(prefs.get('stream_segment_chars'), 40, 16, 120))
                 self._stream(payload, speed, clean, max_chars, request_started=request_started,
                              segment_text=body.get('segment_text', True) is not False)
@@ -466,13 +456,24 @@ class Handler(BaseHTTPRequestHandler):
 
             try:
                 req = urllib.request.Request(
-                    INDEXTTS, data=json.dumps(payload).encode('utf-8'),
+                    INDEXTTS_STREAM, data=json.dumps(payload).encode('utf-8'),
                     headers={'Content-Type': 'application/json'})
-                wav = urllib.request.urlopen(req, timeout=90).read()
+                # Nonstreaming callers buffer the same native audio; they do
+                # not select another synthesizer or voice on timeout.
+                with _stream_lock, urllib.request.urlopen(req, timeout=90) as audio:
+                    rate = read_pcm_header(audio)
+                    pcm = audio.read()
+                    if not pcm or len(pcm) % 2:
+                        raise ValueError('native synthesis requires complete nonempty PCM16 samples')
+                output = io.BytesIO()
+                with wave.open(output, 'wb') as audio:
+                    audio.setparams((1, 2, rate, 0, 'NONE', ''))
+                    audio.writeframes(pcm)
+                wav = output.getvalue()
                 remember(clean)
                 before = len(wav)
                 wav = retempo(wav, speed)
-                self.log_message('synth ok: voice=%s mood=%s src=%s dec=%dms speed=%.2f bytes=%d->%d',
+                self.log_message('synth ok: upstream=buffered-native-stream voice=%s mood=%s src=%s dec=%dms speed=%.2f bytes=%d->%d',
                                 voice, effective_mood or 'reference', mood_source, decision_ms, speed, before, len(wav))
                 self._send(200, wav, 'audio/wav')
             except Exception as e:
@@ -487,7 +488,7 @@ if __name__ == '__main__':
     watch_parent()
     initialize_pronunciation()
     srv = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
-    print(f'[adapter {ADAPTER_VERSION}] Segment streaming + reference prosody on :{PORT} -> {INDEXTTS}')
+    print(f'[adapter {ADAPTER_VERSION}] Configured voice + reference prosody on :{PORT} -> {INDEXTTS_STREAM}')
     print(f'[adapter {ADAPTER_VERSION}] Decision server: {DECISION_URL} (timeout {DECISION_TIMEOUT}s), prefs={PREFS}')
     sys.stdout.flush()
     srv.serve_forever()
