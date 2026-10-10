@@ -4,7 +4,11 @@ The service loads the official VoxCPM2 Python model once and caches a combined
 reference plus continuation prompt. Each request uses the configured reference
 audio and its transcript. The SHA256 in the configuration must match the file.
 Hi-Fi follows reference delivery; parenthesized emotion and speed instructions
-are unsupported. Stage cues are removed before synthesis.
+are unsupported. Stage cues are removed before synthesis. Native square-bracket
+vocal tags such as `[laughing]`, `[sigh]`, `[Uhm]` and `[Shh]` reach the model
+in their original positions, including tag-only utterances. Their audible
+delivery depends on the reference voice and surrounding text; `[laughing]`
+does not select a separate chuckle intensity.
 
 Create an isolated Python environment with a PyTorch build compatible with the
 GPU, then install `requirements.txt`. Model weights, references and deployment

@@ -29,13 +29,13 @@ from speech_segments import punctuation_segments
 from spoken_text import normalize_spoken_text
 from inference_worker import InferenceWorker
 
-VERSION = '1.1.0'
+VERSION = '1.1.1'
 MAX_BODY = 2 * 1024 * 1024
 CUE_RULES = [(re.compile(r'(?:开心|温柔|惊讶|害怕|生气|难过|平静|严肃|得意|委屈|happy|gentle|calm|serious)', re.I), 'style')]
 
 
 def prepare_text(text: str) -> str:
-    clean, _, _, _ = strip_stage_directions(text, CUE_RULES)
+    clean, _, _, _ = strip_stage_directions(text, CUE_RULES, preserve_acoustic_cues=True)
     clean = re.sub(r'<([^<>|\n]+)\|[^<>\n]+>', r'\1', clean)
     return normalize_spoken_text(clean)
 
@@ -137,6 +137,7 @@ class VoiceEngine:
                 'voice': self.voice, 'voice_policy': 'configured-reference-only',
                 'reference_sha256': self.reference_sha256, 'prompt_mode': 'ref_continuation',
                 'reference_features_cached': True, 'style_instructions_supported': False,
+                'native_acoustic_cues': True,
                 'device': self.config.get('device', 'cuda'), 'model_revision': self.config.get('model_revision'),
                 'package': 'voxcpm==2.0.3', 'torch': self.torch.__version__,
                 'optimization': self.optimization, 'inference_worker_alive': self.worker.thread.is_alive(),

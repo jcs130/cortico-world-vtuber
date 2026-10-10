@@ -185,7 +185,7 @@ _ACOUSTIC_CUES = {
 }
 
 
-def strip_stage_directions(text: str, mood_rules) -> tuple[str, list[str], str | None, float | None]:
+def strip_stage_directions(text: str, mood_rules, *, preserve_acoustic_cues: bool = False) -> tuple[str, list[str], str | None, float | None]:
     """Remove complete stage cues, preserving factual parentheses and pronunciations."""
     tags: list[str] = []
     mood = None
@@ -224,6 +224,8 @@ def strip_stage_directions(text: str, mood_rules) -> tuple[str, list[str], str |
 
     def bracket(match: re.Match) -> str:
         tag = next(group for group in match.groups() if group is not None)
+        if preserve_acoustic_cues and match[0].startswith('[') and tag.strip().lower() in _ACOUSTIC_CUES:
+            return '[' + tag.strip() + ']'
         return "" if recognize(tag) else match[0]
 
     def bare(fragment: str) -> str:

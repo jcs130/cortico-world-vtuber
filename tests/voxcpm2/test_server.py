@@ -93,6 +93,19 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, 503)
         self.assertTrue(self.engine.closed.is_set())
 
+    def test_native_vocal_tags_reach_the_model_in_both_response_modes(self):
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                with self.request('(calm)[sigh]第 II 层，<苦力怕|KU3 LI4 PA4>[laughing]。',
+                                  streaming=streaming) as response:
+                    self.assertTrue(response.read().startswith(b'RIFF'))
+                self.assertEqual(self.engine.texts[-1], '[sigh]第二层，苦力怕[laughing]。')
+
+    def test_vocal_tag_only_utterance_produces_audio(self):
+        with self.request('[sigh]', streaming=True) as response:
+            self.assertGreater(len(response.read()), 44)
+        self.assertEqual(self.engine.texts[-1], '[sigh]')
+
     def test_later_failure_aborts_chunked_stream(self):
         self.engine.fail_at = 'later'
         with self.request(streaming=True) as response:

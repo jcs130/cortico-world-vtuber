@@ -88,6 +88,14 @@ class PronunciationTests(unittest.TestCase):
 
 
 class StageDirectionTests(unittest.TestCase):
+    def test_native_mode_preserves_only_square_bracket_vocal_cues(self):
+        clean, tags, mood, strength = strip_stage_directions(
+            '(calm)[sigh]你好[laughing]。（sigh）【叹气】', RULES,
+            preserve_acoustic_cues=True)
+        self.assertEqual(clean, '[sigh]你好[laughing]。')
+        self.assertEqual(tags, ['calm', 'sigh', '叹气'])
+        self.assertEqual((mood, strength), ('calm', None))
+
     def test_acoustic_cues_are_metadata_for_index_not_english_speech(self):
         cues = ('laughing', 'sigh', 'breath', 'Uhm', 'Shh',
                 'Question-ah', 'Question-ei', 'Question-en', 'Question-oh',
