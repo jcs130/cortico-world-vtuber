@@ -1,0 +1,2 @@
+voxcpm==2.0.3
+librosa==0.11.0

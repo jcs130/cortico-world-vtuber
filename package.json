@@ -30,6 +30,7 @@
     "scripts",
     "docs",
     "adapters/indextts",
+    "adapters/voxcpm2",
     "README.md",
     "THIRD_PARTY_NOTICES.md"
   ],

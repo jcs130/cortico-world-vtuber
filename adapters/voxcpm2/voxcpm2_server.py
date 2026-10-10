@@ -1,0 +1,302 @@
+"""Official VoxCPM2 Hi-Fi HTTP service with one configured reference and cached prompt features."""
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import io
+import json
+import math
+import os
+from pathlib import Path
+import re
+import select
+import socket
+import struct
+import sys
+import threading
+import time
+import uuid
+import wave
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'indextts'))
+from corti_speech_style import strip_stage_directions
+from speech_segments import punctuation_segments
+from spoken_text import normalize_spoken_text
+
+VERSION = '1.0.0'
+MAX_BODY = 2 * 1024 * 1024
+CUE_RULES = [(re.compile(r'(?:开心|温柔|惊讶|害怕|生气|难过|平静|严肃|得意|委屈|happy|gentle|calm|serious)', re.I), 'style')]
+
+
+def prepare_text(text: str) -> str:
+    clean, _, _, _ = strip_stage_directions(text, CUE_RULES)
+    clean = re.sub(r'<([^<>|\n]+)\|[^<>\n]+>', r'\1', clean)
+    return normalize_spoken_text(clean)
+
+
+def stream_header(rate: int) -> bytes:
+    return struct.pack('<4sI4s4sIHHIIHH4sI', b'RIFF', 0xFFFFFFFF, b'WAVE', b'fmt ',
+                       16, 1, 1, rate, rate * 2, 2, 16, b'data', 0xFFFFFFFF)
+
+
+def pcm_bytes(audio) -> bytes:
+    samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if not np.isfinite(samples).all():
+        raise ValueError('Model generated nonfinite samples')
+    return (np.clip(samples, -1, 1) * 32767).round().astype('<i2').tobytes()
+
+
+class VoiceEngine:
+    def __init__(self, config: dict):
+        import torch
+        from voxcpm import VoxCPM
+
+        self.config = config
+        self.voice = config['voice']
+        self.reference_sha256 = hashlib.sha256(Path(config['reference_file']).read_bytes()).hexdigest()
+        if self.reference_sha256 != config['reference_sha256']:
+            raise ValueError('Configured reference audio hash mismatch')
+        self.lock = threading.Lock()
+        self.last_request = None
+        self.completed = 0
+        self.failed = 0
+        self.cancelled = 0
+        self.torch = torch
+        torch.set_num_threads(int(config.get('threads', 4)))
+        device = config.get('device', 'cuda')
+        if device == 'cuda':
+            free, _ = torch.cuda.mem_get_info()
+            if free < int(config.get('minimum_free_gpu_mib', 7000)) * 1024 ** 2:
+                raise RuntimeError('Insufficient free GPU memory to load the speech model')
+        self.model = VoxCPM(config['model_dir'], enable_denoiser=False, optimize=False, device=device)
+        self.rate = self.model.tts_model.sample_rate
+        self.prompt_cache = self.model.tts_model.build_prompt_cache(
+            reference_wav_path=config['reference_file'], prompt_wav_path=config['reference_file'],
+            prompt_text=config['reference_text'])
+        if self.prompt_cache['mode'] != 'ref_continuation':
+            raise ValueError('Full reference plus continuation mode is required')
+        warmup = self.generate('晚上好呀。', int(config.get('seed', 42)))
+        try:
+            if not sum(len(chunk) for chunk in warmup):
+                raise ValueError('Empty warmup audio')
+        finally:
+            warmup.close()
+
+    def generate(self, text: str, seed: int):
+        self.torch.manual_seed(seed)
+        iterator = self.model.tts_model.generate_with_prompt_cache_streaming(
+            target_text=text, prompt_cache=self.prompt_cache, min_len=2,
+            max_len=int(self.config.get('max_steps', 200)),
+            cfg_value=float(self.config.get('cfg_value', 2.0)),
+            inference_timesteps=int(self.config.get('inference_timesteps', 10)),
+            retry_badcase=False)
+        try:
+            count = 0
+            for audio, _, _ in iterator:
+                count += 1
+                yield pcm_bytes(audio.squeeze(0).cpu().numpy())
+            if count >= int(self.config.get('max_steps', 200)):
+                raise RuntimeError('Speech reached the generation limit; use shorter clauses')
+        finally:
+            iterator.close()
+
+    def health(self):
+        return {'status': 'ok', 'backend': 'voxcpm2-official-hifi', 'version': VERSION,
+                'streaming': True, 'streaming_granularity': 'latent-patches',
+                'voice': self.voice, 'voice_policy': 'configured-reference-only',
+                'reference_sha256': self.reference_sha256, 'prompt_mode': 'ref_continuation',
+                'reference_features_cached': True, 'style_instructions_supported': False,
+                'device': self.config.get('device', 'cuda'), 'model_revision': self.config.get('model_revision'),
+                'package': 'voxcpm==2.0.3', 'torch': self.torch.__version__,
+                'pid': os.getpid(), 'completed': self.completed, 'failed': self.failed,
+                'cancelled': self.cancelled, 'last_request': self.last_request}
+
+
+class VoiceServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, address, engine):
+        self.engine = engine
+        super().__init__(address, Handler)
+
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def log_message(self, fmt, *args):
+        print(json.dumps({'event': 'http', 'message': fmt % args}, ensure_ascii=False), flush=True)
+
+    def reply(self, status: int, body: bytes, content_type='application/json'):
+        self.send_response(status)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Connection', 'close')
+        self.end_headers()
+        self.close_connection = True
+        self.wfile.write(body)
+
+    def disconnected(self) -> bool:
+        readable, _, _ = select.select([self.connection], [], [], 0)
+        return bool(readable) and not self.connection.recv(1, socket.MSG_PEEK)
+
+    def do_GET(self):
+        if self.path.rstrip('/') in ('/health', '/v1/health'):
+            self.reply(200, json.dumps(self.server.engine.health()).encode())
+        elif self.path.rstrip('/') == '/voices':
+            self.reply(200, json.dumps({'voices': [self.server.engine.voice]}).encode())
+        else:
+            self.reply(404, b'{"error":"not found"}')
+
+    def do_POST(self):
+        if self.path.rstrip('/') not in ('/v1/audio/speech', '/v1/audio/speech/stream'):
+            self.reply(404, b'{"error":"not found"}')
+            return
+        engine = self.server.engine
+        started = time.monotonic()
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= MAX_BODY:
+                raise ValueError('Request body size is invalid')
+            body = json.loads(self.rfile.read(length))
+            text = body.get('input', body.get('text', ''))
+            if not isinstance(text, str) or not text.strip() or len(text) > 1200:
+                raise ValueError('Input must contain 1 to 1200 characters')
+            if body.get('voice', 'default') not in ('', 'default', engine.voice):
+                raise ValueError('Only the configured reference voice is available')
+            if not math.isclose(float(body.get('speed', 1.0)), 1.0):
+                raise ValueError('This Hi-Fi service uses the reference speaking pace; speed must be 1')
+            if body.get('reference_audio'):
+                reference = base64.b64decode(body['reference_audio'], validate=True)
+                if hashlib.sha256(reference).hexdigest() != engine.reference_sha256:
+                    raise ValueError('Request reference differs from the configured voice')
+            if body.get('prompt_text') and body['prompt_text'] != engine.config['reference_text']:
+                raise ValueError('Request transcript differs from the configured reference')
+            seed = int(body.get('seed', engine.config.get('seed', 42)))
+            if not 0 <= seed < 2 ** 31:
+                raise ValueError('Invalid seed')
+            clean = prepare_text(text)
+            limit = int(engine.config.get('segment_chars', 80))
+            texts = [clean] if len(clean) <= limit else punctuation_segments(clean, max_chars=limit)
+            if any(len(segment) > 200 for segment in texts):
+                raise ValueError('An unpunctuated clause exceeds 200 characters')
+        except (ValueError, TypeError, AttributeError) as exc:
+            self.reply(400, json.dumps({'error': str(exc)}).encode())
+            return
+        if not clean.strip():
+            output = io.BytesIO()
+            with wave.open(output, 'wb') as wav:
+                wav.setparams((1, 2, engine.rate, 0, 'NONE', ''))
+                wav.writeframes(bytes(round(engine.rate * 0.05) * 2))
+            self.reply(200, output.getvalue(), 'audio/wav')
+            return
+
+        acquired, sent, iterator = False, False, None
+        request_id = str(uuid.uuid4())
+        pcm_count, pcm_hash, segments = 0, hashlib.sha256(), 0
+        record = {'id': request_id, 'input_sha256': hashlib.sha256(text.encode()).hexdigest(),
+                  'input_chars': len(text), 'spoken_chars': len(clean), 'seed': seed,
+                  'reference_sha256': engine.reference_sha256, 'mode': 'ref_continuation'}
+        try:
+            deadline = started + float(engine.config.get('queue_timeout_sec', 30))
+            while not engine.lock.acquire(timeout=0.1):
+                if self.disconnected():
+                    raise ConnectionAbortedError('Client disconnected while queued')
+                if time.monotonic() > deadline:
+                    raise TimeoutError('Speech queue timeout')
+            acquired = True
+            if self.disconnected():
+                raise ConnectionAbortedError('Client disconnected before synthesis')
+            record['queue_ms'] = round((time.monotonic() - started) * 1000)
+            parts = []
+            streaming = self.path.rstrip('/').endswith('/stream')
+            for segment in texts:
+                if self.disconnected():
+                    raise ConnectionAbortedError('Client disconnected between segments')
+                iterator = engine.generate(segment, seed)
+                segments += 1
+                for pcm in iterator:
+                    if self.disconnected():
+                        raise ConnectionAbortedError('Client disconnected during synthesis')
+                    if not pcm:
+                        continue
+                    if 'first_pcm_ms' not in record:
+                        record['first_pcm_ms'] = round((time.monotonic() - started) * 1000)
+                    pcm_count += len(pcm)
+                    pcm_hash.update(pcm)
+                    if streaming:
+                        if not sent:
+                            self.send_response(200)
+                            self.send_header('Content-Type', 'audio/wav')
+                            self.send_header('Transfer-Encoding', 'chunked')
+                            self.send_header('Connection', 'close')
+                            self.send_header('X-TTS-Backend', 'voxcpm2-official-hifi')
+                            self.send_header('X-TTS-Reference-SHA256', engine.reference_sha256)
+                            self.send_header('X-TTS-Request-Id', request_id)
+                            self.send_header('X-TTS-Request-First-Audio-Ms', str(record['first_pcm_ms']))
+                            self.end_headers()
+                            sent = True
+                            self.chunk(stream_header(engine.rate))
+                        self.chunk(pcm)
+                    else:
+                        parts.append(pcm)
+                iterator.close()
+                iterator = None
+            if not pcm_count:
+                raise ValueError('Model returned no audio')
+            if streaming:
+                self.wfile.write(b'0\r\n\r\n')
+                self.wfile.flush()
+            else:
+                output = io.BytesIO()
+                with wave.open(output, 'wb') as wav:
+                    wav.setparams((1, 2, engine.rate, 0, 'NONE', ''))
+                    wav.writeframes(b''.join(parts))
+                self.reply(200, output.getvalue(), 'audio/wav')
+            engine.completed += 1
+            record['outcome'] = 'completed'
+        except (BrokenPipeError, ConnectionError) as exc:
+            engine.cancelled += 1
+            record.update(outcome='cancelled', error=type(exc).__name__)
+        except Exception as exc:
+            engine.failed += 1
+            record.update(outcome='failed', error=str(exc))
+            if not sent:
+                self.reply(503, json.dumps({'error': str(exc), 'request_id': request_id}).encode())
+            else:
+                self.connection.shutdown(socket.SHUT_RDWR)
+        finally:
+            if iterator is not None:
+                iterator.close()
+            if acquired:
+                engine.lock.release()
+            self.close_connection = True
+            record.update(total_ms=round((time.monotonic() - started) * 1000), segments=segments,
+                          audio_ms=round(pcm_count / 2 / engine.rate * 1000), pcm_sha256=pcm_hash.hexdigest())
+            engine.last_request = record
+            print(json.dumps({'event': 'synthesis', **record}, ensure_ascii=False), flush=True)
+
+    def chunk(self, data: bytes):
+        self.wfile.write(('%X\r\n' % len(data)).encode() + data + b'\r\n')
+        self.wfile.flush()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', required=True)
+    args = parser.parse_args()
+    config = json.loads(Path(args.config).read_text(encoding='utf-8'))
+    engine = VoiceEngine(config)
+    server = VoiceServer((config.get('host', '127.0.0.1'), int(config.get('port', 8014))), engine)
+    print(json.dumps({'event': 'ready', **engine.health()}), flush=True)
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+
+
+if __name__ == '__main__':
+    main()
