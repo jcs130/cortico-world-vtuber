@@ -10,6 +10,19 @@ in their original positions, including tag-only utterances. Their audible
 delivery depends on the reference voice and surrounding text; `[laughing]`
 does not select a separate chuckle intensity.
 
+## Pronunciation aliases
+
+The optional `pronunciation_aliases` configuration maps literal, case-sensitive
+names to their spoken spelling, for example `{"示例名": "Mira"}`. Keys and
+values must be nonempty strings. Longer matches take precedence and replacement
+text is not processed again. Aliases apply to the synthesized input after stage
+cue cleanup; reference audio, reference transcript and client subtitles retain
+their original text. Add full bilingual names as aliases to avoid speaking the
+same name twice. Synthesis records include the final `spoken_text_sha256`.
+
+Deploy the adapter's shared `indextts` text modules alongside this server. Its
+`corti_speech_style.py` must support the `preserve_acoustic_cues` argument.
+
 ## Optional text delivery control
 
 Set `enable_style_instructions: true` only after comparing audio on the intended
@@ -75,6 +88,13 @@ Example configuration:
 Run `python voxcpm2_server.py --config /path/to/voice.json`. Set
 `NUMBA_CACHE_DIR` to a writable directory. With local model files,
 `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` prevent model downloads.
+Deploy the adapter together with `inference_worker.py` and its sibling
+`adapters/indextts/{corti_speech_style,speech_segments,spoken_text}.py` from the
+same checkout, preserving that directory layout. Updating only the server can
+leave an incompatible text helper even while `/health` succeeds. Before warming
+the model, import `prepare_text` in the service environment and check an ordinary
+sentence and a native vocal cue; before switching live speech back, require an
+actual generated WAV as well as the expected voice hash and health response.
 The HTTP listener becomes available after model loading, prompt caching and
 warmup. Use a service supervisor for startup and bounded crash recovery.
 

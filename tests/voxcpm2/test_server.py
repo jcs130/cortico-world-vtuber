@@ -131,6 +131,38 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, 503)
         self.assertTrue(self.engine.closed.is_set())
 
+    def test_pronunciation_aliases_preserve_cues_and_replace_full_names_once(self):
+        self.engine.config['pronunciation_aliases'] = {
+            '示例名': 'Mira', '示例名 Mira': 'Mira', 'Mira': 'AnotherName',
+        }
+        original = '我是示例名 Mira，[laughing]示例名！'
+        spoken = '我是Mira，[laughing]Mira！'
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                with self.request(original, streaming=streaming) as response:
+                    self.assertTrue(response.read().startswith(b'RIFF'))
+                self.assertEqual(self.engine.texts[-1], spoken)
+                self.assertEqual(self.engine.last_request['input_sha256'], hashlib.sha256(original.encode()).hexdigest())
+                self.assertEqual(self.engine.last_request['spoken_text_sha256'], hashlib.sha256(spoken.encode()).hexdigest())
+
+    def test_pronunciation_aliases_are_literal_and_do_not_change_reference_validation(self):
+        self.engine.config['pronunciation_aliases'] = {'A+B': 'Mira'}
+        with self.request('A+B 和 AAAB。', prompt_text='Reference transcript.') as response:
+            response.read()
+        self.assertEqual(self.engine.texts[-1], 'Mira 和 AAAB。')
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.request('A+B。', prompt_text='Changed reference transcript.')
+        self.assertEqual(caught.exception.code, 400)
+
+    def test_invalid_pronunciation_aliases_fail_before_generation(self):
+        for aliases in ('Mira', [], {'': 'Mira'}, {'示例名': ''}, {'示例名': 123}):
+            with self.subTest(aliases=aliases):
+                self.engine.config['pronunciation_aliases'] = aliases
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    self.request('示例名。')
+                self.assertEqual(caught.exception.code, 400)
+        self.assertEqual(self.engine.texts, [])
+
     def test_native_vocal_tags_reach_the_model_in_both_response_modes(self):
         for streaming in (False, True):
             with self.subTest(streaming=streaming):

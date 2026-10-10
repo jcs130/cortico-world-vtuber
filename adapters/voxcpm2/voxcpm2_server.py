@@ -29,14 +29,23 @@ from speech_segments import punctuation_segments
 from spoken_text import normalize_spoken_text
 from inference_worker import InferenceWorker
 
-VERSION = '1.2.0'
+VERSION = '1.2.1'
 MAX_BODY = 2 * 1024 * 1024
 CUE_RULES = [(re.compile(r'(?:开心|温柔|惊讶|害怕|生气|难过|平静|严肃|得意|委屈|happy|gentle|calm|serious)', re.I), 'style')]
 
 
-def prepare_text(text: str) -> str:
+def prepare_text(text: str, aliases: dict[str, str] | None = None) -> str:
+    if aliases is not None and (
+        not isinstance(aliases, dict)
+        or any(not isinstance(key, str) or not key or not isinstance(value, str) or not value
+               for key, value in aliases.items())
+    ):
+        raise ValueError('Pronunciation aliases must map nonempty strings to nonempty strings')
     clean, _, _, _ = strip_stage_directions(text, CUE_RULES, preserve_acoustic_cues=True)
     clean = re.sub(r'<([^<>|\n]+)\|[^<>\n]+>', r'\1', clean)
+    if aliases:
+        pattern = '|'.join(re.escape(key) for key in sorted(aliases, key=len, reverse=True))
+        clean = re.sub(pattern, lambda match: aliases[match.group()], clean)
     return normalize_spoken_text(clean)
 
 
@@ -241,7 +250,7 @@ class Handler(BaseHTTPRequestHandler):
             seed = int(body.get('seed', engine.config.get('seed', 42)))
             if not 0 <= seed < 2 ** 31:
                 raise ValueError('Invalid seed')
-            clean = prepare_text(text)
+            clean = prepare_text(text, engine.config.get('pronunciation_aliases'))
             limit = int(engine.config.get('segment_chars', 80))
             texts = [clean] if len(clean) <= limit else punctuation_segments(clean, max_chars=limit)
             if any(len(segment) > 200 for segment in texts):
@@ -262,6 +271,7 @@ class Handler(BaseHTTPRequestHandler):
         pcm_count, pcm_hash, segments = 0, hashlib.sha256(), 0
         record = {'id': request_id, 'input_sha256': hashlib.sha256(text.encode()).hexdigest(),
                   'input_chars': len(text), 'spoken_chars': len(clean), 'seed': seed,
+                  'spoken_text_sha256': hashlib.sha256(clean.encode()).hexdigest(),
                   'reference_sha256': engine.reference_sha256,
                   'mode': 'reference' if instructions else 'ref_continuation',
                   'instructions_chars': len(instructions or ''),
