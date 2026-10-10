@@ -22,9 +22,10 @@ const FAST_INPUTS = ['MouthOpen'];
 
 interface VtubeJson {
   Name?: string;
-  FileReferences?: { IdleAnimation?: string };
+  FileReferences?: { IdleAnimation?: string; Icon?: string };
   ParameterSettings?: Array<{ Input?: string; OutputLive2D?: string; Smoothing?: number }>;
-  Hotkeys?: Array<{ HotkeyID?: string; Action?: string; File?: string }>;
+  Hotkeys?: Array<{ HotkeyID?: string; Name?: string; Action?: string; File?: string;
+    Triggers?: { ScreenButton?: unknown } }>;
 }
 
 function findFile(dir: string, name: string, depth = 3): string | null {
@@ -80,6 +81,18 @@ export function checkModelFile(profile: ModelProfile, dir: string): ModelFileChe
   if (typeof v.Name === 'string' && v.Name !== profile.vtsModelName) {
     warnings.push(`档案 vtsModelName「${profile.vtsModelName}」≠ .vtube.json 的 Name「${v.Name}」,auto 定档会认不出`);
   }
+
+  // VTS 1.35.10 skips the selector lookup only for -1. An explicit 0 leads
+  // to selectors[ScreenButtonID - 1] and aborts the entire model load.
+  for (const hotkey of v.Hotkeys ?? []) {
+    const button = hotkey.Triggers?.ScreenButton;
+    if (button === undefined) continue;
+    if (!Number.isInteger(button) || (button !== -1 && (Number(button) < 1 || Number(button) > 8))) {
+      warnings.push(`热键「${hotkey.Name ?? hotkey.HotkeyID ?? '?'}」ScreenButton=${String(button)} 无效:未分配用 -1,屏幕按钮用 1–8;可能导致 VTS 加载中断`);
+    }
+  }
+  const icon = v.FileReferences?.Icon;
+  if (icon && !existsSync(join(dir, icon))) warnings.push(`模型图标 ${icon} 在模型目录里找不到`);
 
   const eyelids = wireTargets(profile, EYELID_INPUTS);
   const fast = wireTargets(profile, FAST_INPUTS);

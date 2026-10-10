@@ -149,6 +149,12 @@ atZero = OutputRangeLower − InputRangeLower × gain      // 输入 0 时的输
 "眨单眼"永远闭不上。VTS API 读不到也写不到这一项,只能改 `.vtube.json`(遵守 §2.1 第 3 条)。
 `MouthOpen` 的 `Smoothing` 建议 0(口型跟播)。头部三轴的平滑可以保留,曲线本就是按带平滑的模型手调的。
 
+还应检查所有 `Hotkeys[].Triggers.ScreenButton`。未分配按钮写 **`-1`**,已分配按钮写 **`1` 到 `8`**。
+不能用 `0` 代替未分配:已在 VTS 1.35.10 复现 `HotkeyConfigItem.UpdateScreenButtonUI` 越界,
+导致 MOC 和贴图虽已出现,加载流程却中断,`CurrentModelRequest.modelLoaded` 仍为 `false`。
+文件复检会报告这种配置,不自动改动个人热键。`FileReferences.Icon` 若非空,必须指向模型目录内实际存在的图标。
+验收时读回当前模型名、参数、图标及演出档案匹配结果,不能只凭选择了模型或看到了网格判定完成。
+
 ### 2.7 写档案
 
 `Foo-Cortico/cortico.profile.json`,顶层字段一个不能少(`caveat` 可省;`fx` 与 `wiring` 可以是空对象):

@@ -301,6 +301,29 @@ describe('模型档案 · 模型文件复检', () => {
   const profile = (over: Partial<ModelProfile>): ModelProfile =>
     ({ ...DEFAULT_PROFILE, id: 'VTS-Fixture', vtsModelName: 'FixtureModel', ...over });
 
+  it.each([0, -2, 9, 1.5, '1', null])('VTS 屏幕按钮 %s 会中断加载,复检必须报出', (button) => {
+    const dir = modelDir({ Name: 'FixtureModel',
+      Hotkeys: [{ Name: 'wave', Triggers: { ScreenButton: button } }],
+    });
+    expect(checkModelFile(profile({}), dir).warnings).toEqual([
+      `热键「wave」ScreenButton=${String(button)} 无效:未分配用 -1,屏幕按钮用 1–8;可能导致 VTS 加载中断`,
+    ]);
+  });
+
+  it('未分配 -1、八个屏幕按钮和无按钮旧配置都有效', () => {
+    const dir = modelDir({ Name: 'FixtureModel',
+      Hotkeys: [{}, ...[-1, 1, 2, 3, 4, 5, 6, 7, 8].map(ScreenButton => ({ Triggers: { ScreenButton } }))],
+    });
+    expect(checkModelFile(profile({}), dir).warnings).toEqual([]);
+  });
+
+  it('指定图标必须存在于相对路径;未指定图标兼容旧模型', () => {
+    const missing = modelDir({ Name: 'FixtureModel', FileReferences: { Icon: 'portrait.png' } });
+    expect(checkModelFile(profile({}), missing).warnings).toEqual(['模型图标 portrait.png 在模型目录里找不到']);
+    const present = modelDir({ Name: 'FixtureModel', FileReferences: { Icon: 'portrait.png' } }, { 'portrait.png': {} });
+    expect(checkModelFile(profile({}), present).warnings).toEqual([]);
+  });
+
   it('眼睑输入带 Smoothing 报警;头部 Smoothing 0 不报;Name 对不上报警', () => {
     const dir = modelDir({
       Name: 'FixtureModel',
