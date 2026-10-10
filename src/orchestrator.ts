@@ -195,9 +195,9 @@ export interface PreparedPlaybackOptions {
 /** TTS 后端能力面。 World 按开关与 server 能力决定给哪几样(§合成路径四组合)。 */
 export interface PerformerTts {
   /** 整段合成;开启对齐时 World 内部已挂质量门并附 units */
-  synth(text: string, signal?: AbortSignal): Promise<TtsPiece>;
+  synth(text: string, signal?: AbortSignal, instructions?: string): Promise<TtsPiece>;
   /** 流式合成;server 不支持或开关关闭时缺席。返回的完整片可能带 units(World 收流后对齐)。maxDurationMs=跑飞止损预算,超出即掐流保留已收部分 */
-  synthStream?(text: string, sink: TtsStreamSink, signal: AbortSignal, maxDurationMs?: number): Promise<TtsPiece>;
+  synthStream?(text: string, sink: TtsStreamSink, signal: AbortSignal, maxDurationMs?: number, instructions?: string): Promise<TtsPiece>;
   /** 对一段 PCM16 前缀跑对齐(锚点抢时间用);对齐不可用返回 null */
   alignPcm?(pcm: Uint8Array, sampleRate: number, units: string[]): Promise<AlignedUnit[] | null>;
 }
@@ -346,6 +346,7 @@ interface PerfPiece {
   round: Round;
   beatIndex: number;
   text: string;
+  instructions?: string;
   endsWithEllipsis: boolean;
   anchors: SpeechAnchor[];
   /** 播前立即触发的锚点指令(空文本段坍缩而来) */
@@ -918,7 +919,7 @@ export class Performer {
       for (let i = 0; i < speech.length; i++) {
         const source = speech[i];
         const commands = i === 0 ? [...entry.beat.commands] : [];
-        const tts = source.text ? await this.d.tts.synth(source.text, signal) : null;
+        const tts = source.text ? await this.d.tts.synth(source.text, signal, source.instructions) : null;
         throwIfCancelled(signal);
         const leadMs = this.preparedLeadMs(commands);
         const tailMs = this.preparedTailMs(commands, source, tts, leadMs);
@@ -1435,6 +1436,7 @@ export class Performer {
       round,
       beatIndex,
       text: piece.text,
+      instructions: piece.instructions,
       endsWithEllipsis: piece.endsWithEllipsis,
       anchors: piece.anchors,
       preCommands: [],
@@ -1559,7 +1561,7 @@ export class Performer {
     next.synthAbort = ac;
     const t0 = this.now();
     try {
-      next.tts = await (ac ? this.d.tts.synth(next.text, ac.signal) : this.d.tts.synth(next.text));
+      next.tts = await this.d.tts.synth(next.text, ac?.signal, next.instructions);
       if (ac?.signal.aborted || next.round.dropped) return;
       // 非流式没有流可掐:这一路只把预算与实测记下来,音频照原样播完。
       const hint = this.rateHint();
@@ -1616,7 +1618,7 @@ export class Performer {
       };
       const hint = this.rateHint();
       const b = overrunBudget(seg.text, hint.msPerUnit);
-      const result = await synthStream(seg.text, sink, ac.signal, b.cutMs);
+      const result = await synthStream(seg.text, sink, ac.signal, b.cutMs, piece.instructions);
       seg.result = result;
       seg.synthDone = true;
       const silence = result.silence;

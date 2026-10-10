@@ -50,6 +50,32 @@ describe('decodeWav / extractEnvelope', () => {
 });
 
 describe('TtsClient', () => {
+  it.each(['whole', 'stream'] as const)('%s sends a style description separately from speech and the fixed reference', async (mode) => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const wav = makeWav(new Array(1600).fill(0.3));
+    const client = new TtsClient({ url: 'http://fixture.invalid', profile: () => ({
+      instructions: '轻快带笑，自然交谈', referenceAudioB64: 'QUJD', refText: '固定参考转写', seed: 42,
+    }), fetchImpl: (async (url, init) => {
+      if (String(url).endsWith('/health')) return Response.json({ style_instructions_supported: true });
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(wav.slice().buffer);
+    }) as typeof fetch });
+    const piece = mode === 'whole' ? await client.synth('这一步成功了。')
+      : await client.synthStream('这一步成功了。', { pcm() {} });
+    expect(bodies[0]).toMatchObject({ input: '这一步成功了。', instructions: '轻快带笑，自然交谈',
+      reference_audio: 'QUJD', prompt_text: '固定参考转写', seed: 42 });
+    expect(piece.text).toBe('这一步成功了。');
+  });
+
+  it.each(['whole', 'stream'] as const)('%s rejects an old backend that silently ignores unknown instruction fields', async (mode) => {
+    const paths: string[] = [];
+    const client = new TtsClient({ url: 'http://fixture.invalid', profile: () => ({ instructions: '轻快带笑' }),
+      fetchImpl: (async url => { paths.push(String(url)); return Response.json({ status: 'ok' }); }) as typeof fetch });
+    await expect(mode === 'whole' ? client.synth('台词。') : client.synthStream('台词。', { pcm() {} }))
+      .rejects.toThrow('未启用文字语气控制');
+    expect(paths).toEqual(['http://fixture.invalid/health']);
+  });
+
   it.each(['whole', 'stream'] as const)('%s applies changed speech settings to the next request', async (mode) => {
     const bodies: Array<Record<string, unknown>> = [];
     const wav = makeWav(new Array(1600).fill(0.3));

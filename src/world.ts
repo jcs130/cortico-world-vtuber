@@ -1906,13 +1906,14 @@ export class VtuberWorld implements World {
    * 两次仍含静默时选静默更短者播放并记录。
    * 对齐判废本身不触发重合成：放弃该单元表，字幕和锚点使用估计，并记录降级。
    */
-  private async synthAligned(text: string, signal?: AbortSignal): Promise<TtsPiece> {
+  private async synthAligned(text: string, signal?: AbortSignal, instructions?: string): Promise<TtsPiece> {
     /*
      * 档案与重试 seed 一起取:两条 take 的差别只有 seed,且都取自同一刻的生效档案。
      * 服务端认 seed(同一份档案发两遍拿回同一条 take,真机实测逐字节相同),所以「换采样」必须换它;
      * 换的是请求里那份——生效档案含 seed 参与 speechProfileKey,动它等于每片样本一个新键。
      */
     const profile = this.synthProfileOf(this.ttsProfile);
+    if (instructions) profile.instructions = instructions;
     const retrySeed = this.ttsProfile.seed + 1;
     let piece = await this.ttsClient.synth(text, profile, signal);
     if (signal?.aborted) throw signal.reason;
@@ -1982,7 +1983,7 @@ export class VtuberWorld implements World {
    * 已交付音频的中途异常原样上抛,
    * 演出层收束当前播放,避免把同一句从头再播;主动打断(signal)原样上抛。
    */
-  private async synthStreamAligned(text: string, sink: TtsStreamSink, signal: AbortSignal, maxDurationMs?: number): Promise<TtsPiece> {
+  private async synthStreamAligned(text: string, sink: TtsStreamSink, signal: AbortSignal, maxDurationMs?: number, instructions?: string): Promise<TtsPiece> {
     let piece: TtsPiece;
     let deliveredPcmBytes = 0;
     try {
@@ -1992,7 +1993,8 @@ export class VtuberWorld implements World {
           deliveredPcmBytes += chunk.length;
           sink.pcm(chunk);
         },
-      }, { signal, maxDurationMs, segmentText: this.incrementalSpeechOpt?.() ?? this.streamEnabledOpt?.() ?? VTUBER_DEFAULTS.incrementalSpeech });
+      }, { signal, maxDurationMs, ...(instructions ? { override: { ...this.synthProfileOf(this.ttsProfile), instructions } } : {}),
+        segmentText: this.incrementalSpeechOpt?.() ?? this.streamEnabledOpt?.() ?? VTUBER_DEFAULTS.incrementalSpeech });
       this.ttsOk = true;
     } catch (err) {
       if (signal.aborted) throw err;
@@ -2016,7 +2018,8 @@ export class VtuberWorld implements World {
       }
       this.tracePerf('TTS', `流式失败,回落整段:${String(err).slice(0, 60)}`);
       try {
-        piece = await this.ttsClient.synth(text, undefined, signal);
+        const profile = instructions ? { ...this.synthProfileOf(this.ttsProfile), instructions } : undefined;
+        piece = await this.ttsClient.synth(text, profile, signal);
         this.ttsOk = true;
       } catch (err2) {
         if (!(err2 instanceof TtsSkipped)) this.ttsOk = false;
@@ -2906,10 +2909,10 @@ export class VtuberWorld implements World {
     this.performer = new Performer({
       pack: () => this.pack,
       tts: {
-        synth: async (text, signal) => {
+        synth: async (text, signal, instructions) => {
           const profileKey = this.speechProfileKey();
           try {
-            const piece = await this.synthAligned(text, signal);
+            const piece = await this.synthAligned(text, signal, instructions);
             this.ttsOk = true;
             this.noteSpeechRate(text, piece.durationMs, profileKey);
             return piece;
@@ -2918,9 +2921,9 @@ export class VtuberWorld implements World {
             throw err;
           }
         },
-        synthStream: async (text, sink, signal, maxDurationMs) => {
+        synthStream: async (text, sink, signal, maxDurationMs, instructions) => {
           const profileKey = this.speechProfileKey();
-          const result = await this.synthStreamAligned(text, sink, signal, maxDurationMs);
+          const result = await this.synthStreamAligned(text, sink, signal, maxDurationMs, instructions);
           if (!result.truncated) this.noteSpeechRate(text, result.durationMs, profileKey);
           return result;
         },

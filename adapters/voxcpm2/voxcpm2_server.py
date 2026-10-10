@@ -29,7 +29,7 @@ from speech_segments import punctuation_segments
 from spoken_text import normalize_spoken_text
 from inference_worker import InferenceWorker
 
-VERSION = '1.1.1'
+VERSION = '1.2.0'
 MAX_BODY = 2 * 1024 * 1024
 CUE_RULES = [(re.compile(r'(?:开心|温柔|惊讶|害怕|生气|难过|平静|严肃|得意|委屈|happy|gentle|calm|serious)', re.I), 'style')]
 
@@ -94,6 +94,12 @@ class VoiceEngine:
                 prompt_text=config['reference_text'])
             if self.prompt_cache['mode'] != 'ref_continuation':
                 raise ValueError('Full reference plus continuation mode is required')
+            self.style_cache = None
+            if config.get('enable_style_instructions', False):
+                self.style_cache = self.model.tts_model.build_prompt_cache(
+                    reference_wav_path=config['reference_file'])
+                if self.style_cache['mode'] != 'reference':
+                    raise ValueError('Style instructions require reference-only cloning')
         if optimize:
             if not hasattr(self.model.tts_model.base_lm.forward_step, '_torchdynamo_orig_callable'):
                 raise RuntimeError('Requested torch.compile optimization was not enabled')
@@ -105,18 +111,32 @@ class VoiceEngine:
                     raise ValueError('Empty warmup audio')
             finally:
                 warmup.close()
+        if self.style_cache is not None:
+            warmup = self._generate('这次发现很有趣。', int(config.get('seed', 42)), '轻快带笑，自然交谈')
+            try:
+                if not sum(len(chunk) for chunk in warmup):
+                    raise ValueError('Empty controlled-cloning warmup audio')
+            finally:
+                warmup.close()
 
     def _stream_context(self):
         return self.torch.cuda.stream(self.cuda_stream) if self.cuda_stream is not None else nullcontext()
 
-    def generate(self, text: str, seed: int):
-        yield from self.worker.generate(text, seed)
+    def generate(self, text: str, seed: int, instructions: str | None = None):
+        options = {'instructions': instructions} if instructions else {}
+        yield from self.worker.generate(text, seed, **options)
 
-    def _generate(self, text: str, seed: int):
+    def _generate(self, text: str, seed: int, instructions: str | None = None):
+        cache = self.prompt_cache
+        if instructions:
+            if self.style_cache is None:
+                raise ValueError('Style instructions are not enabled')
+            cache = self.style_cache
+            text = f'({instructions}){text}'
         with self._stream_context():
             self.torch.manual_seed(seed)
             iterator = self.model.tts_model.generate_with_prompt_cache_streaming(
-                target_text=text, prompt_cache=self.prompt_cache, min_len=2,
+                target_text=text, prompt_cache=cache, min_len=2,
                 max_len=int(self.config.get('max_steps', 200)),
                 cfg_value=float(self.config.get('cfg_value', 2.0)),
                 inference_timesteps=int(self.config.get('inference_timesteps', 10)),
@@ -136,7 +156,10 @@ class VoiceEngine:
                 'streaming': True, 'streaming_granularity': 'latent-patches',
                 'voice': self.voice, 'voice_policy': 'configured-reference-only',
                 'reference_sha256': self.reference_sha256, 'prompt_mode': 'ref_continuation',
-                'reference_features_cached': True, 'style_instructions_supported': False,
+                'reference_features_cached': True,
+                'style_instructions_supported': self.style_cache is not None,
+                'style_prompt_mode': 'reference' if self.style_cache is not None else None,
+                'style_instruction_max_chars': 64,
                 'native_acoustic_cues': True,
                 'device': self.config.get('device', 'cuda'), 'model_revision': self.config.get('model_revision'),
                 'package': 'voxcpm==2.0.3', 'torch': self.torch.__version__,
@@ -206,6 +229,15 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('Request reference differs from the configured voice')
             if body.get('prompt_text') and body['prompt_text'] != engine.config['reference_text']:
                 raise ValueError('Request transcript differs from the configured reference')
+            instructions = body.get('instructions')
+            if instructions is not None:
+                if not isinstance(instructions, str) or not 1 <= len(instructions.strip()) <= 64:
+                    raise ValueError('Instructions must contain 1 to 64 characters')
+                instructions = instructions.strip()
+                if re.search(r'[()（）\r\n<>\[\]【】]', instructions):
+                    raise ValueError('Instructions must be a plain description without brackets or newlines')
+                if not engine.config.get('enable_style_instructions', False):
+                    raise ValueError('Style instructions are not enabled on this service')
             seed = int(body.get('seed', engine.config.get('seed', 42)))
             if not 0 <= seed < 2 ** 31:
                 raise ValueError('Invalid seed')
@@ -230,7 +262,10 @@ class Handler(BaseHTTPRequestHandler):
         pcm_count, pcm_hash, segments = 0, hashlib.sha256(), 0
         record = {'id': request_id, 'input_sha256': hashlib.sha256(text.encode()).hexdigest(),
                   'input_chars': len(text), 'spoken_chars': len(clean), 'seed': seed,
-                  'reference_sha256': engine.reference_sha256, 'mode': 'ref_continuation'}
+                  'reference_sha256': engine.reference_sha256,
+                  'mode': 'reference' if instructions else 'ref_continuation',
+                  'instructions_chars': len(instructions or ''),
+                  'instructions_sha256': hashlib.sha256(instructions.encode()).hexdigest() if instructions else None}
         try:
             deadline = started + float(engine.config.get('queue_timeout_sec', 30))
             while not engine.lock.acquire(timeout=0.1):
@@ -251,7 +286,7 @@ class Handler(BaseHTTPRequestHandler):
             for segment in texts:
                 if self.disconnected():
                     raise ConnectionAbortedError('Client disconnected between segments')
-                iterator = engine.generate(segment, seed)
+                iterator = engine.generate(segment, seed, instructions=instructions) if instructions else engine.generate(segment, seed)
                 segments += 1
                 for pcm in iterator:
                     if self.disconnected():
@@ -332,6 +367,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Connection', 'close')
         self.send_header('X-TTS-Backend', 'voxcpm2-official-hifi')
         self.send_header('X-TTS-Reference-SHA256', engine.reference_sha256)
+        self.send_header('X-TTS-Prompt-Mode', record['mode'])
         self.send_header('X-TTS-Request-Id', record['id'])
         self.send_header('X-TTS-Request-First-Audio-Ms', str(record['first_output_ms']))
         self.end_headers()

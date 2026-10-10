@@ -2,12 +2,13 @@
  * TTS 流水线:VoxCPM2(OpenAI 兼容 /v1/audio/speech)客户端 + wav 解析 +
  * 振幅包络提取(lipsync 数据源)。
  *
- * 声线与生成参数(llama-tts-server 的请求体字段):
+ * 声线与生成参数(OpenAI 兼容请求体扩展字段):
  * - reference_audio(base64 wav)+ prompt_text:有转写=续写克隆(Hi-Fi),无转写=纯克隆
  *
- * Hi-Fi 克隆下 VoxCPM2 不接受 "(风格词)正文" 这种括号指令:prompt_text 是参考音频的逐字稿,
- * 文本与音频一一对应,插进去的字没有对应音频,模型只能把它念出来(放在哪个位置都一样)。
- * 括号指令属于只给 reference_audio 的可控克隆模式。这里不做前缀注入,文本原样送出。
+ * Hi-Fi 续写模式不支持文字语气控制；prompt_text 必须保留参考音频的真实逐字稿。
+ * 文字语气通过独立 instructions 字段传递，先核验服务端明确支持；
+ * 适配器使用同一参考音频的 reference 模式，在解码器内部附加描述。
+ * 客户端不向正文或参考逐字稿注入前缀，字幕与对齐始终只使用正文。
  * - seed / cfg_value / inference_timesteps / max_steps / temperature
  */
 
@@ -250,6 +251,8 @@ export function extractEnvelope(wav: PcmAudio): Envelope {
 /** 单次合成携带的声线与生成参数;undefined 字段不进请求体(用 server 默认) */
 export interface TtsSynthProfile {
   speech?: TtsSpeechPreferences;
+  /** 后端明确支持时才传入；独立元数据不拼进 input 或参考音频转写。 */
+  instructions?: string;
   referenceAudioB64?: string;
   /** 参考音频的转写;与 referenceAudioB64 同给才有意义 */
   refText?: string;
@@ -305,6 +308,7 @@ export class TtsClient {
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly profile?: () => TtsSynthProfile;
+  private styleCapability: { at: number; supported: boolean } | null = null;
 
   constructor(opts: TtsClientOptions) {
     this.url = opts.url.replace(/\/$/, '');
@@ -313,15 +317,32 @@ export class TtsClient {
     this.profile = opts.profile;
   }
 
+  /** 旧服务可能忽略未知请求字段；有文字语气时先核对明确的能力回执。 */
+  private async requireStyleCapability(instructions: string | undefined, signal?: AbortSignal): Promise<void> {
+    if (!instructions) return;
+    if (this.styleCapability === null || Date.now() - this.styleCapability.at > 30_000) {
+      const timeout = AbortSignal.timeout(1500);
+      const res = await this.fetchImpl(`${this.url}/health`, {
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      });
+      if (!res.ok) throw new TtsHttpError(res.status, '无法核验文字语气控制能力');
+      const health = await res.json() as { style_instructions_supported?: boolean };
+      this.styleCapability = { at: Date.now(), supported: health.style_instructions_supported === true };
+    }
+    if (!this.styleCapability.supported) throw new TtsHttpError(422, '当前语音服务未启用文字语气控制');
+  }
+
   /** override 给控制台试听用:按面板上的档案合成一次,不动当前生效的那份 */
   async synth(text: string, override?: TtsSynthProfile, signal?: AbortSignal): Promise<TtsPiece> {
     const p = override ?? this.profile?.() ?? {};
+    await this.requireStyleCapability(p.instructions, signal);
     const body: Record<string, unknown> = {
       model: 'voxcpm2',
       input: text,
       voice: 'default',
       response_format: 'wav',
     };
+    if (p.instructions) body.instructions = p.instructions;
     if (p.seed !== undefined) body.seed = p.seed;
     if (p.cfgValue !== undefined) body.cfg_value = p.cfgValue;
     if (p.inferenceTimesteps !== undefined) body.inference_timesteps = p.inferenceTimesteps;
@@ -381,6 +402,7 @@ export class TtsClient {
     opts: { override?: TtsSynthProfile; signal?: AbortSignal; maxDurationMs?: number; segmentText?: boolean } = {},
   ): Promise<TtsPiece> {
     const p = opts.override ?? this.profile?.() ?? {};
+    await this.requireStyleCapability(p.instructions, opts.signal);
     const body: Record<string, unknown> = {
       model: 'voxcpm2',
       input: text,
@@ -388,6 +410,7 @@ export class TtsClient {
       response_format: 'wav',
       segment_text: opts.segmentText ?? true,
     };
+    if (p.instructions) body.instructions = p.instructions;
     if (p.seed !== undefined) body.seed = p.seed;
     if (p.cfgValue !== undefined) body.cfg_value = p.cfgValue;
     if (p.inferenceTimesteps !== undefined) body.inference_timesteps = p.inferenceTimesteps;

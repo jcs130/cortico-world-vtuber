@@ -10,6 +10,35 @@ in their original positions, including tag-only utterances. Their audible
 delivery depends on the reference voice and surrounding text; `[laughing]`
 does not select a separate chuckle intensity.
 
+## Optional text delivery control
+
+Set `enable_style_instructions: true` only after comparing audio on the intended
+reference voice. This adds a cached reference-only prompt using the **same**
+configured WAV and the same model weights. Requests without `instructions` retain
+Hi-Fi `ref_continuation`; requests with a concise `instructions` string use the
+official controllable `reference` mode and prepend that description inside the
+decoder only. Do not insert descriptions into the spoken `input` or the reference
+transcript. Both response routes validate the voice/hash and use this same policy.
+
+The extension script can use `(语气：轻快带笑，自然交谈)` at a complete sentence
+boundary. The parser carries this as separate metadata for subsequent speech in
+that script; it occupies no subtitle or alignment units and resets with the next
+script. A new description changes delivery at that boundary. Use at most 64
+characters without brackets/newlines. The client checks `/health` for explicit
+`style_instructions_supported: true` before sending it; disabled or old backends
+fail visibly rather than silently ignoring descriptions.
+
+Example request: `{"input":"群星啊，回应我的呼唤！","voice":"default",
+"instructions":"清晰有力，带一点戏剧感"}`. Describe delivery, pace and emotion,
+not a different speaker, gender or voice identity. Keep descriptions simple and
+use native vocal cues sparingly. This mode can trade some Hi-Fi fidelity for
+control; a fixed reference hash alone does not prove perceived voice consistency.
+Compare the same sentences with no description and with two contrasting styles,
+check transcription, tone and latency, then validate real playback before
+advertising the capability as enabled. Startup also warms the controlled path on
+the existing owner thread. `/health`, streaming `X-TTS-Prompt-Mode` and synthesis
+records distinguish the two modes; records include instruction length/hash.
+
 Create an isolated Python environment with a PyTorch build compatible with the
 GPU, then install `requirements.txt`. Model weights, references and deployment
 configuration stay outside the extension package. Download the official

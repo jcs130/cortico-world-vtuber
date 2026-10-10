@@ -11,6 +11,21 @@ from inference_worker import InferenceWorker
 
 
 class WorkerTest(unittest.TestCase):
+    def test_style_options_stay_with_their_job_on_the_owner_thread(self):
+        seen = []
+        def render(text, seed, instructions=None):
+            seen.append((text, seed, instructions, threading.get_ident()))
+            yield b'audio'
+        worker = InferenceWorker(lambda: None, render)
+        try:
+            self.assertEqual(list(worker.generate('咒语。', 42, instructions='清晰有力')), [b'audio'])
+            self.assertEqual(list(worker.generate('普通台词。', 42)), [b'audio'])
+            self.assertEqual([r[:3] for r in seen], [('咒语。', 42, '清晰有力'), ('普通台词。', 42, None)])
+            self.assertEqual(seen[0][3], seen[1][3])
+            self.assertNotEqual(seen[0][3], threading.get_ident())
+        finally:
+            worker.close()
+
     def test_initialize_generate_and_close_generator_share_one_owner_thread(self):
         thread_ids = []
         active = 0

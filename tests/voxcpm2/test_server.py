@@ -27,6 +27,7 @@ class AudioEngine:
         self.completed = self.failed = self.cancelled = 0
         self.last_request = None
         self.texts = []
+        self.instructions = []
         self.fail_at = None
         self.gate = None
         self.closed = threading.Event()
@@ -34,8 +35,9 @@ class AudioEngine:
     def health(self):
         return {'status': 'ok', 'cancelled': self.cancelled}
 
-    def generate(self, text, seed):
+    def generate(self, text, seed, instructions=None):
         self.texts.append(text)
+        self.instructions.append(instructions)
         try:
             if self.fail_at == 'first':
                 raise RuntimeError('decoder failed before audio')
@@ -74,6 +76,42 @@ class ServiceTest(unittest.TestCase):
     def test_reference_override_is_rejected_before_generation(self):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.request(reference_audio=base64.b64encode(b'another voice').decode())
+        self.assertEqual(caught.exception.code, 400)
+        self.assertEqual(self.engine.texts, [])
+
+    def test_disabled_style_control_is_rejected_instead_of_ignored_or_spoken(self):
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.request(instructions='轻快带笑')
+        self.assertEqual(caught.exception.code, 400)
+        self.assertEqual(self.engine.texts, [])
+
+    def test_enabled_style_control_uses_same_reference_in_both_response_modes(self):
+        self.engine.config['enable_style_instructions'] = True
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                with self.request('群星啊，回应我的呼唤！', streaming=streaming,
+                                  instructions='清晰有力，带一点戏剧感',
+                                  reference_audio=base64.b64encode(b'reference').decode(),
+                                  prompt_text='Reference transcript.') as response:
+                    if streaming:
+                        self.assertEqual(response.headers['X-TTS-Prompt-Mode'], 'reference')
+                    self.assertGreater(len(response.read()), 44)
+                self.assertEqual(self.engine.texts[-1], '群星啊，回应我的呼唤！')
+                self.assertEqual(self.engine.instructions[-1], '清晰有力，带一点戏剧感')
+                self.assertEqual(self.engine.last_request['mode'], 'reference')
+        with self.request('普通台词。') as response:
+            response.read()
+        self.assertIsNone(self.engine.instructions[-1])
+        self.assertEqual(self.engine.last_request['mode'], 'ref_continuation')
+
+    def test_style_description_does_not_override_voice_and_rejects_invalid_metadata(self):
+        self.engine.config['enable_style_instructions'] = True
+        for invalid in ('', 'a' * 65, '(轻快)换声音', '轻快\n台词', ['轻快']):
+            with self.subTest(invalid=invalid), self.assertRaises(urllib.error.HTTPError) as caught:
+                self.request(instructions=invalid)
+            self.assertEqual(caught.exception.code, 400)
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.request(instructions='轻快带笑', voice='another-speaker')
         self.assertEqual(caught.exception.code, 400)
         self.assertEqual(self.engine.texts, [])
 

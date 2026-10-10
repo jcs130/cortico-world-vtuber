@@ -30,6 +30,8 @@ export interface SpeechAnchor {
 
 export interface SpeechPiece {
   text: string;
+  /** 只传给支持文字风格控制的 TTS，不占用字幕、锚点或对齐单元。 */
+  instructions?: string;
   /** 以省略号收尾(尾停补偿) */
   endsWithEllipsis: boolean;
   /** 片内非阻断锚点,按 charOffset 升序;text 为空时是纯锚点片(不合成) */
@@ -41,6 +43,13 @@ export interface SpeechPiece {
  * 裸括号("3<5"、颜文字),整段按字面输出。【】不设上限,维持旧行为。
  */
 export const INLINE_TAG_MAX = 32;
+const SPEECH_INSTRUCTION_MAX = 64;
+
+/** 仅识别显式语气元数据，普通圆括号中的事实保持原样。 */
+export function speechInstructions(raw: string): string | null {
+  const match = /^[（(]语气[：:]\s*([^()（）\r\n<>\[\]【】]{1,64})[)）]$/u.exec(raw);
+  return match?.[1].trim() || null;
+}
 const MOOD_NAMES = new Set([
   'calm', 'happy', 'angry', 'sad', 'afraid', 'surprised', 'gentle',
   'playful', 'warm', 'serious', '平静', '开心', '生气', '难过',
@@ -137,6 +146,8 @@ export class ScriptParser {
   private moodBuf: string | null = null;
   private moodOpenCh = '(';
   private pendingMood = '';
+  /** 每次台本独立；在完整语句边界更换，沿后续拍和自然分片生效。 */
+  private instructions: string | undefined;
   /** 上一个输出字符是否为换行,用于计算下一指令块的 atLineStart。 */
   private lastWasNewline = true;
   /** 当前 beat 的指令块后是否还没出现过非空白文本 */
@@ -223,7 +234,11 @@ export class ScriptParser {
       if (ch === ')' || ch === '）') {
         const candidate = this.moodOpenCh + this.moodBuf + ch;
         this.moodBuf = null;
-        if (isMoodTag(candidate)) {
+        const instructions = speechInstructions(candidate);
+        if (instructions !== null) {
+          this.flushSpeech();
+          this.instructions = instructions;
+        } else if (isMoodTag(candidate)) {
           for (const c of `(${candidate.slice(1, -1)})`) this.emitText(c);
         } else {
           const inner = candidate.slice(1, -1);
@@ -245,7 +260,7 @@ export class ScriptParser {
         this.spillMood();
         this.moodBuf = '';
         this.moodOpenCh = ch;
-      } else if (ch === '\n' || ch === '【' || this.moodBuf.length >= INLINE_TAG_MAX) {
+      } else if (ch === '\n' || ch === '【' || this.moodBuf.length >= SPEECH_INSTRUCTION_MAX + 4) {
         this.spillMood();
         this.feedChar(ch);
       } else {
@@ -402,6 +417,7 @@ export class ScriptParser {
     this.emitPendingBeat();
     this.sink.onSpeech(this.beatIndex, {
       text: spoken,
+      ...(this.instructions ? { instructions: this.instructions } : {}),
       endsWithEllipsis: /(……|…|\.\.\.)$/.test(spoken),
       anchors,
     });

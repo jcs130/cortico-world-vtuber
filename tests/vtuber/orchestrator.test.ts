@@ -97,6 +97,7 @@ function makePerformer(
     skipText?: string;
     streamEnabled?: () => boolean;
     modelEvents?: string[];
+    styleCalls?: Array<{ text: string; instructions?: string }>;
   } = {},
 ) {
   const mixer = new CueRecorder();
@@ -137,7 +138,8 @@ function makePerformer(
   const performer = new Performer({
     pack: () => pack,
     tts: {
-      synth: async (text) => {
+      synth: async (text, _signal, instructions) => {
+        opts.styleCalls?.push({ text, instructions });
         synthCalls.push(text);
         if (text === opts.skipText) throw new TtsSkipped();
         const piece = fakePiece(text, pieceMs, opts.env);
@@ -194,6 +196,7 @@ function makeStreamPerformer(opts: {
   /** 假声卡给出的开播时刻比 started 兑现时刻晚这么多(真声卡的写入领先量与设备延迟) */
   startLeadMs?: number;
   modelEvents?: string[];
+  styleCalls?: Array<{ text: string; instructions?: string }>;
 }) {
   const mixer = new CueRecorder();
   const fx: string[] = [];
@@ -204,7 +207,8 @@ function makeStreamPerformer(opts: {
   const SR = 16000;
   const unitMs = opts.unitMs ?? 50;
   let phase = 0;
-  const synthStream: NonNullable<PerformerTts['synthStream']> = async (text, sink, signal, maxDurationMs) => {
+  const synthStream: NonNullable<PerformerTts['synthStream']> = async (text, sink, signal, maxDurationMs, instructions) => {
+    opts.styleCalls?.push({ text, instructions });
     synthCalls.push(text);
     if (text === opts.skipText) throw new TtsSkipped();
     const env = new StreamingEnvelope(SR);
@@ -359,6 +363,18 @@ describe('Performer', () => {
   afterEach(() => {
     for (const fn of cleanup) fn();
     cleanup = [];
+  });
+
+  it.each([false, true])('语气描述单独投递给 TTS，观众只收到正文（stream=%s）', async (streaming) => {
+    const styleCalls: Array<{ text: string; instructions?: string }> = [];
+    const f = streaming ? makeStreamPerformer({ align: true, styleCalls, fastStream: true }) : makePerformer({ styleCalls });
+    cleanup.push(() => f.performer.stop());
+    f.performer.perform('(语气：轻快带笑)<微笑>这一步成功了。');
+    await waitFor(() => styleCalls.length > 0);
+    expect(styleCalls).toEqual([{ text: '这一步成功了。', instructions: '轻快带笑' }]);
+    await waitFor(() => f.played.length > 0);
+    const played = f.played[0];
+    expect(typeof played === 'string' ? played : played.text).toBe('这一步成功了。');
   });
 
   it('native face starts with real playback, not synthesis or queue acceptance, and both audio paths release it', async () => {

@@ -10,6 +10,7 @@ import threading
 class Job:
     text: str
     seed: int
+    options: dict = field(default_factory=dict)
     output: queue.Queue = field(default_factory=lambda: queue.Queue(maxsize=8))
     cancelled: threading.Event = field(default_factory=threading.Event)
     done: threading.Event = field(default_factory=threading.Event)
@@ -49,7 +50,7 @@ class InferenceWorker:
             try:
                 if self.closing.is_set() or job.cancelled.is_set():
                     continue
-                iterator = iter(self.render(job.text, job.seed))
+                iterator = iter(self.render(job.text, job.seed, **job.options))
                 for chunk in iterator:
                     while not job.cancelled.is_set() and not self.closing.is_set():
                         try:
@@ -71,10 +72,10 @@ class InferenceWorker:
                 job.done.set()
                 self.current = None
 
-    def generate(self, text, seed):
+    def generate(self, text, seed, **options):
         if self.closing.is_set():
             raise RuntimeError('Inference worker is stopping')
-        job = Job(text, seed)
+        job = Job(text, seed, options)
         self.jobs.put(job)
         try:
             while True:

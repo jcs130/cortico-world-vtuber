@@ -40,6 +40,24 @@ function parseAll(script: string, chunkSize = Number.POSITIVE_INFINITY): Collect
 const LONG_BODY = '一二三四五六七八九十'.repeat(4);
 
 describe('ScriptParser', () => {
+  it('文字语气是独立元数据，不进字幕正文和动作锚点', () => {
+    const r = parseAll('(语气：轻快带笑，略带得意)<抖耳朵>这一步成功了。', 1);
+    expect(r.speech).toHaveLength(1);
+    expect(r.speech[0].piece.instructions).toBe('轻快带笑，略带得意');
+    expect(r.speech[0].piece.text).toBe('这一步成功了。');
+    expect(r.speech[0].piece.anchors[0].charOffset).toBe(0);
+  });
+
+  it('完整语句边界换语气，普通事实括号与新台本不受影响', () => {
+    const r = parseAll('(语气：认真清晰)先确认落点。（语气：轻快自信）准备出发（目标在山上）。');
+    expect(r.speech.map(s => ({ text: s.piece.text, instructions: s.piece.instructions }))).toEqual([
+      { text: '先确认落点。', instructions: '认真清晰' },
+      { text: '准备出发（目标在山上）。', instructions: '轻快自信' },
+    ]);
+    expect(parseAll('普通台词。').speech[0].piece.instructions).toBeUndefined();
+    expect(parseAll('(语气：轻快带笑)').speech).toHaveLength(0);
+  });
+
   it('beat = 指令块 + 其后文本;短句标点不切片,标签边界照常切', () => {
     const r = parseAll('【微笑】大家好。今天天气不错!【点头】嗯嗯。');
     expect(r.beats).toHaveLength(2);
