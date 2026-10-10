@@ -64,6 +64,7 @@ import type {
   SlimEvent,
 } from './engine-ipc.ts';
 import { invalidActScriptShapeReceipt, normalizeExternalActScript } from './act-script.ts';
+import { TTS_SERVICE_DEFAULTS } from './tts-service.ts';
 
 const ENV_PROMPT_FILE = fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url));
 const CHILD_ENTRY = fileURLToPath(new URL('./engine-child.ts', import.meta.url));
@@ -442,7 +443,13 @@ export class VtuberWorldProxy implements World {
     this.stopping = false;
     // 地板扫描只关心启动之后的事件;历史信封不补
     this.lastForwardedCursor = host.store.latestCursor();
-    await this.spawn();
+    try {
+      await this.spawn();
+    } catch (error) {
+      // start 拒绝后宿主不会挂载本实例，必须在这里收回仍在启动的引擎与托管适配器。
+      await this.stop();
+      throw error;
+    }
     this.configTimer = setInterval(() => this.pushConfigIfChanged(), CONFIG_SAMPLE_MS);
     this.configTimer.unref?.();
     this.eventTimer = setInterval(() => this.forwardEvents(), EVENT_FORWARD_MS);
@@ -576,10 +583,20 @@ export class VtuberWorldProxy implements World {
       if (noise) this.host?.log.debug('演出引擎子进程管道已关', { err: msg });
       else this.host?.log.error('演出引擎子进程出错', { err: msg });
     });
-    const ready = (await this.rpc({ kind: 'init', init: this.buildInit() }, 30_000)) as EngineReady;
+    const ready = (await this.rpc({ kind: 'init', init: this.buildInit() }, this.initTimeoutMs())) as EngineReady;
     this.urls = ready;
     this.ready = true;
     this.host?.log.info(`演出引擎子进程已就绪 pid=${child.pid}`, { overlay: ready.overlayUrl });
+  }
+
+  private initTimeoutMs(): number {
+    const service = this.opts.ttsService;
+    if (service?.kind !== 'indextts' || !service.autoStart) return 30_000;
+    const configured = service.startupTimeoutMs;
+    const preparation = typeof configured === 'number' && Number.isFinite(configured) && configured > 0
+      ? configured : TTS_SERVICE_DEFAULTS.startupTimeoutMs;
+    // 初始化会等待托管适配器就绪，随后还要启动演出流与连接 VTS。
+    return Math.max(30_000, preparation + 10_000);
   }
 
   private teardownChild(): void {
