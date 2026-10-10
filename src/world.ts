@@ -39,7 +39,7 @@ import {
   type ProfileResolution,
 } from './models/index.ts';
 import { formatWiringReport, runWiringSelfCheck, type WiringReport } from './models/selfcheck.ts';
-import { JsonScriptStream, stripUnknownTags } from './parser.ts';
+import { INLINE_TAG_MAX, JsonScriptStream, stripUnknownTags } from './parser.ts';
 import {
   BUDGET_MS_PER_UNIT,
   PAUSE_PRIORS,
@@ -3613,10 +3613,10 @@ export class VtuberWorld implements World {
    */
   private contentLeaked(content: string): boolean {
     if (/【[^】]*】/.test(content)) return true;
-    for (const m of content.matchAll(/<([^<>\n]{1,16})>/g)) {
-      if (this.pack.resolveTag(m[1]) !== null) return true;
+    for (const m of content.matchAll(new RegExp(`<([^<>\\n]{1,${INLINE_TAG_MAX}})>`, 'g'))) {
+      if (m[1].split(/[,，、]/).some(word => this.pack.resolveTag(word.trim()) !== null)) return true;
     }
-    for (const m of content.matchAll(/\[([^\][\n]{1,16})\]/g)) {
+    for (const m of content.matchAll(new RegExp(`\\[([^\\][\\n]{1,${INLINE_TAG_MAX}})\\]`, 'g'))) {
       if (resolveVoiceTag(m[1]) !== null || this.pack.resolveTag(m[1]) !== null) return true;
     }
     return false;

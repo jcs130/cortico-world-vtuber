@@ -40,7 +40,7 @@ export interface SpeechPiece {
  * 行内标签(<> 与 [])的缓冲上限。词表词与语气词都远短于此;超过说明是正文里的
  * 裸括号("3<5"、颜文字),整段按字面输出。【】不设上限,维持旧行为。
  */
-const INLINE_TAG_MAX = 32;
+export const INLINE_TAG_MAX = 32;
 const MOOD_NAMES = new Set([
   'calm', 'happy', 'angry', 'sad', 'afraid', 'surprised', 'gentle',
   'playful', 'warm', 'serious', '平静', '开心', '生气', '难过',

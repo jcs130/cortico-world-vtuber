@@ -701,6 +701,29 @@ describe('VtuberWorld', () => {
     expect(host.notes).toHaveLength(0);
   });
 
+  it.each([',', '，', '、'])('组合动作使用 %s 分隔时仍提醒台词未送达', (separator) => {
+    const script = `<看向弹幕${separator}微笑>谢谢提醒。`;
+    const tap = legacyTap(mod.outputTap());
+    tap.onDelta({ type: 'content', text: script });
+    tap.onRoundEnd?.();
+    expect(host.notes).toHaveLength(1);
+    expect(host.notes[0]).toContain(script);
+    expect(host.notes[0]).toContain('vtuber_act');
+    expect(host.events).toHaveLength(0);
+  });
+
+  it('较长的合法动作组合能提醒，普通类型列表和网页标签不提醒', () => {
+    const tap = legacyTap(mod.outputTap());
+    tap.onDelta({ type: 'content', text: '类型 <number, string> 和 <div> 属于内部备注。' });
+    tap.onRoundEnd?.();
+    expect(host.notes).toHaveLength(0);
+    const script = '<看向弹幕,微笑,轻轻摇摆,看向镜头,点头>这里可以说话。';
+    tap.onDelta({ type: 'content', text: script });
+    tap.onRoundEnd?.();
+    expect(host.notes).toHaveLength(1);
+    expect(host.notes[0]).toContain(script);
+  });
+
   it('未经 tap 的调用整段演出,演完后状态行回到安静', async () => {
     const act = mod.tools().find((t) => t.name === 'vtuber_act');
     const result = await act?.handler({ script: '就说一句。' }, { role: 'main', log: host.log });
