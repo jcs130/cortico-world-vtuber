@@ -28,6 +28,7 @@
     "!src/voxcpm2-server",
     "dist",
     "scripts",
+    "docs",
     "adapters/indextts",
     "README.md",
     "THIRD_PARTY_NOTICES.md"

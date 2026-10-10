@@ -1819,6 +1819,122 @@
           ]
         ]
       }
+    },
+    "wave": {
+      "id": "wave",
+      "durationMs": 2400,
+      "speechOnsetMs": 150,
+      "tracks": {
+        "FaceAngleZ": [
+          [
+            0,
+            0
+          ],
+          [
+            250,
+            -5
+          ],
+          [
+            600,
+            0
+          ],
+          [
+            950,
+            -2.5
+          ],
+          [
+            2400,
+            0
+          ]
+        ]
+      }
+    },
+    "shy_hands": {
+      "id": "shy_hands",
+      "durationMs": 2200,
+      "speechOnsetMs": 150,
+      "tracks": {
+        "FaceAngleY": [
+          [
+            0,
+            0
+          ],
+          [
+            250,
+            -4
+          ],
+          [
+            600,
+            0
+          ],
+          [
+            950,
+            -2.0
+          ],
+          [
+            2200,
+            0
+          ]
+        ]
+      }
+    },
+    "little_step": {
+      "id": "little_step",
+      "durationMs": 2200,
+      "speechOnsetMs": 150,
+      "tracks": {
+        "FaceAngleZ": [
+          [
+            0,
+            0
+          ],
+          [
+            250,
+            3
+          ],
+          [
+            600,
+            0
+          ],
+          [
+            950,
+            1.5
+          ],
+          [
+            2200,
+            0
+          ]
+        ]
+      }
+    },
+    "ear_flick": {
+      "id": "ear_flick",
+      "durationMs": 1400,
+      "speechOnsetMs": 150,
+      "tracks": {
+        "FaceAngleZ": [
+          [
+            0,
+            0
+          ],
+          [
+            250,
+            2
+          ],
+          [
+            600,
+            0
+          ],
+          [
+            950,
+            1.0
+          ],
+          [
+            1400,
+            0
+          ]
+        ]
+      }
     }
   },
   "sustain": {
@@ -2108,6 +2224,54 @@
         },
         "FaceAngleZ": {
           "v": 4
+        }
+      }
+    },
+    "shy": {
+      "id": "shy",
+      "hold": {
+        "MouthSmile": {
+          "v": 0.15
+        }
+      }
+    },
+    "thinking": {
+      "id": "thinking",
+      "hold": {
+        "MouthSmile": {
+          "v": -0.1
+        }
+      }
+    },
+    "smug_hold": {
+      "id": "smug_hold",
+      "hold": {
+        "MouthSmile": {
+          "v": 0.3
+        }
+      }
+    },
+    "pout": {
+      "id": "pout",
+      "hold": {
+        "MouthSmile": {
+          "v": -0.35
+        }
+      }
+    },
+    "starry": {
+      "id": "starry",
+      "hold": {
+        "MouthSmile": {
+          "v": 0.35
+        }
+      }
+    },
+    "love": {
+      "id": "love",
+      "hold": {
+        "MouthSmile": {
+          "v": 0.4
         }
       }
     }

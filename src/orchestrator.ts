@@ -231,7 +231,13 @@ export interface PerformerDeps {
   tts: PerformerTts;
   audio: AudioSink;
   mixer: Mixer;
-  backend: { sendFrame(frame: IRFrame): void; fx(clipId: string): void; fxDurationMs(clipId: string): number; stop(): void };
+  backend: {
+    sendFrame(frame: IRFrame): void; fx(clipId: string): void; fxDurationMs(clipId: string): number; stop(): void;
+    emotion?(clipId: string | null): void;
+    gesture?(clipId: string): void;
+    speech?(text: string, startedAt: number): () => void;
+    resetExpressions?(): void;
+  };
   /** 演出包(词表与曲线);每拍现取,控制台重载后立即生效 */
   pack: () => PerformancePack;
   log: Logger;
@@ -584,6 +590,7 @@ export class Performer {
       emit: (cue) => {
         this.trace('状态', `${cue.channel} → ${cue.clipId ?? '中性'} (fade ${Math.round(cue.fadeInMs)}ms)`);
         this.d.mixer.stateCue(cue);
+        if (cue.channel === 'emotion') this.d.backend.emotion?.(cue.clipId);
       },
       neutral: (ch) => (ch === 'gaze' ? DEFAULT_GAZE : null),
       timeouts: deps.stateTimeouts,
@@ -946,9 +953,12 @@ export class Performer {
     let speechActive = false;
     let subtitleVisible = false;
     let actionsStopped = false;
+    let releaseExpression: (() => void) | undefined;
     const stopActions = (): void => {
       if (actionsStopped) return;
       actionsStopped = true;
+      releaseExpression?.();
+      releaseExpression = undefined;
       for (const timer of timers) clearTimeout(timer);
       timers.clear();
       this.d.mixer.dropPendingProsody(this.now());
@@ -980,6 +990,7 @@ export class Performer {
         : await this.awaitOrAbort(opening, signal);
       if (!opened.completed) return this.now();
       const playback = opened.value;
+      if (!signal?.aborted) releaseExpression = this.d.backend.speech?.(piece.text, playback.startedAt);
       this.emitSubtitle(piece.text, piece.tts.units ?? null, piece.tts.durationMs, playback.startedAt, 'open');
       subtitleVisible = true;
       this.d.mixer.speechStart(
@@ -995,6 +1006,8 @@ export class Performer {
         ? { completed: true as const, value: await playback.ended }
         : await this.awaitOrAbort(playback.ended, signal);
       if (!ended.completed) return this.now();
+      releaseExpression?.();
+      releaseExpression = undefined;
       if (!signal?.aborted && piece.tailMs > 0) {
         await this.sleepUntilOrAbort(ended.value + piece.tailMs, signal);
       }
@@ -1918,11 +1931,13 @@ export class Performer {
   private applyCommand(cmd: BeatCommand, ts: number): void {
     if (cmd.kind === 'reset') {
       this.states.resetAll(ts);
+      this.d.backend.resetExpressions?.();
       return;
     }
     const e = cmd.entry;
     switch (e.channel) {
       case 'gesture':
+        this.d.backend.gesture?.(e.clipId);
         this.d.mixer.gestureCue({
           clipId: e.clipId,
           startTs: ts,
@@ -1945,6 +1960,7 @@ export class Performer {
   private async playPiece(piece: PerfPiece): Promise<void> {
     const tts = piece.tts;
     if (!tts) return;
+    let releaseExpression: (() => void) | undefined;
     if (piece.musicCompanion) {
       this.playing = true;
       this.currentPlayback = { piece, startedAt: this.now() };
@@ -1958,6 +1974,8 @@ export class Performer {
         this.prevEnd = await ended;
         return;
       }
+      if (piece.round.dropped || this.stopped) return;
+      releaseExpression = this.d.backend.speech?.(piece.text, startedAt);
       this.emitSubtitle(piece.text, tts.units ?? null, tts.durationMs, startedAt, 'open');
       this.d.mixer.speechStart((ms) => tts.envelope.at(ms), startedAt);
       this.scheduleAccentProsody(tts, startedAt);
@@ -1974,6 +1992,7 @@ export class Performer {
       this.prevEnd = this.now() + tts.durationMs;
       await this.sleepUntil(this.prevEnd);
     } finally {
+      releaseExpression?.();
       this.playing = false;
       this.currentPlayback = null;
       piece.played = true;
@@ -2275,6 +2294,7 @@ export class Performer {
     let accents: { stop(): void } | null = null;
     let anchors: { finish(): void } | null = null;
     let tracker: { stop(): void } | null = null;
+    const releaseExpression = this.d.backend.speech?.(piece.text, startedAt);
     try {
       if (envelope) {
         this.d.mixer.speechStart((ms) => envelope.at(ms), startedAt);
@@ -2289,6 +2309,7 @@ export class Performer {
       const endTs = await session.ended;
       this.prevEnd = endTs;
     } finally {
+      releaseExpression?.();
       this.playing = false;
       this.currentPlayback = null;
       this.d.mixer.speechEnd();

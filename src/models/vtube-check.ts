@@ -24,6 +24,7 @@ interface VtubeJson {
   Name?: string;
   FileReferences?: { IdleAnimation?: string };
   ParameterSettings?: Array<{ Input?: string; OutputLive2D?: string; Smoothing?: number }>;
+  Hotkeys?: Array<{ HotkeyID?: string; Action?: string; File?: string }>;
 }
 
 function findFile(dir: string, name: string, depth = 3): string | null {
@@ -95,9 +96,17 @@ export function checkModelFile(profile: ModelProfile, dir: string): ModelFileChe
 
   const files = new Set<string>();
   for (const e of Object.values(profile.fx)) if (e) files.add(e.file);
+  for (const value of Object.values(profile.emotionMap ?? {})) {
+    for (const f of typeof value === 'string' ? [value] : value ?? []) files.add(f);
+  }
   for (const f of profile.keepExpressions) files.add(f);
   for (const f of files) {
     if (!findFile(dir, f)) warnings.push(`表情文件 ${f} 在模型目录里找不到`);
+  }
+  for (const [clip, id] of Object.entries(profile.motionMap ?? {})) {
+    const key = v.Hotkeys?.find((h) => h.HotkeyID === id);
+    if (!key || key.Action !== 'TriggerAnimation') warnings.push(`motionMap.${clip} 没有对应的 TriggerAnimation 热键 ${id}`);
+    else if (!key.File || !findFile(dir, key.File)) warnings.push(`motionMap.${clip} 的动作文件找不到`);
   }
 
   const idle = v.FileReferences?.IdleAnimation;

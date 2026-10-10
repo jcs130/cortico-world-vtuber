@@ -34,6 +34,14 @@ const parse = (raw: Record<string, unknown>) => parseProfile(raw, 'fixture.json'
 const warningsOf = (raw: Record<string, unknown>) => parseProfile(raw, 'fixture.json', PROFILE_CTX).warnings;
 
 describe('模型档案 · 校验', () => {
+  it('optional expression and native motion mappings preserve old profiles and reject malformed additions', () => {
+    expect(parse(fixtureProfileJson()).emotionMap).toBeUndefined();
+    const p = parse(fixtureProfileJson({ emotionMap: { happy: 'Smile.exp3.json', calm: null }, motionMap: { wave: 'native-id' }, gazeSmoothingMs: 55 }));
+    expect(p.emotionMap?.happy).toBe('Smile.exp3.json');
+    expect(p.motionMap?.wave).toBe('native-id');
+    expect(() => parse(fixtureProfileJson({ emotionMap: { happy: '../Smile.exp3.json' } }))).toThrow(/不含路径/);
+    expect(() => parse(fixtureProfileJson({ gazeSmoothingMs: 5000 }))).toThrow(/0–200/);
+  });
   it('完整档案原样通过,fx 表逐项保留', () => {
     const p = parse(fixtureProfileJson({
       wiring: { EyeOpenLeft: { neutral: 0.5, scale: 0.5, clamp: [0, 1] }, BrowLeftY: { aliasTo: ['Brows'] } },

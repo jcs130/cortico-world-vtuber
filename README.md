@@ -17,6 +17,10 @@ World 内部的分层、演出包格式、台本记号与 Live2D 适配写在 [`
 [`src/vtuber_performance_module_design.md`](src/vtuber_performance_module_design.md) 与
 [`src/models/LIVE2D-ADAPTATION.md`](src/models/LIVE2D-ADAPTATION.md)。
 
+模型专属情绪表情、原生手脚动作和视线平滑见
+[`docs/model-performance.md`](docs/model-performance.md)。情绪跟随实际语音开播，显式演出指令优先；
+不需要摄像头，旧模型档案继续兼容。
+
 ## 与 Cortico 的关系
 
 这是一个**扩展包**,不是 Cortico 的一部分。它按 Cortico 的扩展契约声明自己:

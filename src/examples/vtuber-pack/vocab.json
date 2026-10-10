@@ -265,6 +265,72 @@
       "channel": "fx",
       "clipId": "fx_glasses",
       "lifecycle": "pulse"
+    },
+    {
+      "word": "招手",
+      "channel": "gesture",
+      "clipId": "wave",
+      "lifecycle": "pulse"
+    },
+    {
+      "word": "害羞收手",
+      "channel": "gesture",
+      "clipId": "shy_hands",
+      "lifecycle": "pulse"
+    },
+    {
+      "word": "轻摆腿",
+      "channel": "gesture",
+      "clipId": "little_step",
+      "lifecycle": "pulse"
+    },
+    {
+      "word": "抖耳朵",
+      "channel": "gesture",
+      "clipId": "ear_flick",
+      "lifecycle": "pulse"
+    },
+    {
+      "word": "害羞",
+      "channel": "emotion",
+      "clipId": "shy",
+      "lifecycle": "state"
+    },
+    {
+      "word": "认真思考",
+      "channel": "emotion",
+      "clipId": "thinking",
+      "lifecycle": "state"
+    },
+    {
+      "word": "得意表情",
+      "channel": "emotion",
+      "clipId": "smug_hold",
+      "lifecycle": "state"
+    },
+    {
+      "word": "气鼓鼓",
+      "channel": "emotion",
+      "clipId": "pout",
+      "lifecycle": "state"
+    },
+    {
+      "word": "星星眼",
+      "channel": "emotion",
+      "clipId": "starry",
+      "lifecycle": "state"
+    },
+    {
+      "word": "爱心眼",
+      "channel": "emotion",
+      "clipId": "love",
+      "lifecycle": "state"
+    },
+    {
+      "word": "爱心特效",
+      "channel": "fx",
+      "clipId": "fx_heart",
+      "lifecycle": "pulse"
     }
   ],
   "aliases": {

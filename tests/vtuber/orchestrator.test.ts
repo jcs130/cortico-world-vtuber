@@ -96,6 +96,7 @@ function makePerformer(
     onDrained?: () => void;
     skipText?: string;
     streamEnabled?: () => boolean;
+    modelEvents?: string[];
   } = {},
 ) {
   const mixer = new CueRecorder();
@@ -147,7 +148,12 @@ function makePerformer(
     streamEnabled: opts.streamEnabled,
     audio,
     mixer: mixer as unknown as Mixer,
-    backend: { sendFrame: () => {}, fx: (clipId) => fx.push(clipId), fxDurationMs: () => 0, stop: () => {} },
+    backend: {
+      sendFrame: () => {}, fx: (clipId) => fx.push(clipId), fxDurationMs: () => 0, stop: () => {},
+      emotion: (id) => { opts.modelEvents?.push(`emotion:${id}`); },
+      gesture: (id) => { opts.modelEvents?.push(`gesture:${id}`); },
+      speech: (text) => { opts.modelEvents?.push(`speech:${text}`); return () => { opts.modelEvents?.push('speech:end'); }; },
+    },
     log: nullLogger(),
     onCue: (c) => cues.push(c),
     broadcastFloorMs: opts.broadcastFloorMs,
@@ -187,6 +193,7 @@ function makeStreamPerformer(opts: {
   speechRate?: () => SpeechRateHint;
   /** 假声卡给出的开播时刻比 started 兑现时刻晚这么多(真声卡的写入领先量与设备延迟) */
   startLeadMs?: number;
+  modelEvents?: string[];
 }) {
   const mixer = new CueRecorder();
   const fx: string[] = [];
@@ -334,7 +341,10 @@ function makeStreamPerformer(opts: {
     speechRate: opts.speechRate,
     audio,
     mixer: mixer as unknown as Mixer,
-    backend: { sendFrame: () => {}, fx: (clipId) => fx.push(clipId), fxDurationMs: () => 0, stop: () => {} },
+    backend: {
+      sendFrame: () => {}, fx: (clipId) => fx.push(clipId), fxDurationMs: () => 0, stop: () => {},
+      speech: (text) => { opts.modelEvents?.push(`speech:${text}`); return () => { opts.modelEvents?.push('speech:end'); }; },
+    },
     log: nullLogger(),
     trace: (area, msg, o) => traces.push({ area, msg, level: o?.level, tally: o?.tally, event: o?.event, data: o?.data }),
     onSubtitle: (p) => subtitles.push({ ...p, at: Date.now() }),
@@ -349,6 +359,28 @@ describe('Performer', () => {
   afterEach(() => {
     for (const fn of cleanup) fn();
     cleanup = [];
+  });
+
+  it('native face starts with real playback, not synthesis or queue acceptance, and both audio paths release it', async () => {
+    const events: string[] = [];
+    const p = makePerformer({ pieceMs: 80, broadcastFloorMs: () => Date.now() < 1767225600500 ? 1767225600500 : 0, modelEvents: events });
+    cleanup.push(() => p.performer.stop());
+    p.performer.perform('(happy@0.5)欢迎！');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(p.synthCalls.length).toBe(1); expect(events).toEqual([]);
+    await waitFor(() => events.includes('speech:end'));
+    expect(events).toEqual(['speech:(happy@0.5)欢迎！', 'speech:end']);
+    p.performer.perform('【生气,点头】怎么会这样。');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(events).toContain('emotion:angry'); expect(events).toContain('gesture:nod');
+    p.performer.stop();
+    const streamed: string[] = [];
+    const s = makeStreamPerformer({ align: false, unitMs: 50, modelEvents: streamed });
+    cleanup.push(() => s.performer.stop());
+    s.performer.perform('(happy@0.5)欢迎！');
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(streamed[0]).toBe('speech:(happy@0.5)欢迎！');
+    expect(streamed.at(-1)).toBe('speech:end');
   });
 
   it('whole text remains one synthesis request while audio starts before the stream completes', async () => {

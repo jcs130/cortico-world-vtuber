@@ -2436,6 +2436,7 @@ export class VtuberWorld implements World {
           case 'pulse': {
             if (!this.pack.pulse[clipId]) return `[失败] 动作「${clipId}」不存在`;
             this.mixer.gestureCue({ clipId, startTs: t, intensity: level });
+            this.backend.gesture(clipId);
             this.tracePerf('调参', `试跳动作 ${word(clipId)} ×${level}`);
             return `已触发「${word(clipId)}」(幅度 ${level})${vtsWarn}`;
           }
@@ -2443,6 +2444,7 @@ export class VtuberWorld implements World {
           case 'emotion': {
             if (!this.pack.sustain[clipId]) return `[失败] ${kind === 'pose' ? '姿态' : '表情'}「${clipId}」不存在`;
             this.mixer.stateCue({ channel: kind, clipId, startTs: t, intensity: level, fadeInMs: 400 });
+            if (kind === 'emotion') this.backend.emotion(clipId);
             this.tracePerf('调参', `试挂 ${kind} ${word(clipId)} ×${level}`);
             return `已挂上「${word(clipId)}」(幅度 ${level}),按「回中性」撤掉${vtsWarn}`;
           }
@@ -2465,6 +2467,7 @@ export class VtuberWorld implements World {
       },
       reset: () => {
         const t = Date.now();
+        this.backend.resetExpressions();
         for (const channel of ['pose', 'emotion', 'gaze'] as const) {
           this.mixer.stateCue({ channel, clipId: null, startTs: t, intensity: 1, fadeInMs: 400 });
         }
@@ -3033,6 +3036,7 @@ export class VtuberWorld implements World {
     if (this.diagDir) this.writeDiag('latest.json'); // 收尾也留一份,便于事后回看
     this.host = null;
     this.performer?.stop();
+    await this.backend.flushExpressions();
     this.performer = null;
     this.audio.close();
     this.streamUp = false;

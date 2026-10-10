@@ -50,6 +50,12 @@ export interface ModelProfile {
    * 这个特效(丢弃并提醒一次)。
    */
   fx: Readonly<Record<string, FxEntry | null>>;
+  /** 演出 emotion clip / 语音情绪名 → 原生表情。空项沿用参数演出，不猜别的模型的文件。 */
+  emotionMap?: Readonly<Record<string, string | readonly string[] | null>>;
+  /** gesture clip → 本模型的 TriggerAnimation 热键 ID；只有动作触发时发送一次。 */
+  motionMap?: Readonly<Record<string, string>>;
+  /** 小幅视线噪声的时间常数；快速扫视自动减小滤波。不滤眼睑或口型。缺省关闭。 */
+  gazeSmoothingMs?: number;
   /** 启动复位时要保留的表情文件(装扮类,不是反应残留) */
   keepExpressions: readonly string[];
   /**

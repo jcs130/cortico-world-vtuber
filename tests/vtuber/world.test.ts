@@ -1615,6 +1615,7 @@ describe('VtuberWorld', () => {
       packDir,
     });
     const c = mod2.clipsConsole();
+    const beforeCount = c.state().groups[0].items.length;
     expect(c.state().file).toBe(packDir);
     expect(c.state().groups[0].items.map((i) => i.clipId)).not.toContain('bow');
 
@@ -1626,7 +1627,7 @@ describe('VtuberWorld', () => {
     writeFileSync(clipsFile, JSON.stringify(clips));
 
     const reload = await c.reload();
-    expect(reload).toEqual({ ok: true, message: expect.stringContaining('动作 21'), warnings: [] });
+    expect(reload).toEqual({ ok: true, message: expect.stringContaining(`动作 ${beforeCount + 1}`), warnings: [] });
     expect(c.state().groups[0].items).toContainEqual({ clipId: 'bow', word: '鞠躬', kind: 'pulse', durationMs: 900 });
     expect(mod2.envPromptVars()['vtuber.vocab']).toContain('`鞠躬`');
     expect(c.trigger('pulse', 'bow')).toContain('鞠躬');

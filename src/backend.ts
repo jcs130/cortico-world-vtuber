@@ -13,8 +13,10 @@
  * 换模型 = 换一份档案,L1-L3 一个字不改。
  */
 import type { IRFrame } from './mixer.ts';
-import { DEFAULT_PROFILE, fxFor, toWire, type ModelProfile } from './models/index.ts';
+import { DEFAULT_PROFILE, fxFor, toWire, type ModelProfile } from './models/contract.ts';
 import type { VtsClient } from './vts-client.ts';
+import { ModelExpressions } from './model-expressions.ts';
+import { EyeGazeFilter } from './eye-gaze-filter.ts';
 
 /** 同时在途的帧数上限;超过则进候补位(最新帧胜出) */
 const MAX_IN_FLIGHT = 2;
@@ -45,7 +47,8 @@ export interface VtsBackendOptions {
 export class VtsBackend {
   private inFlight = 0;
   private pendingFrame: IRFrame | null = null;
-  private readonly fxTimers = new Set<ReturnType<typeof setTimeout>>();
+  private readonly expressions: ModelExpressions;
+  private readonly gaze = new EyeGazeFilter();
   private readonly onError?: (err: Error) => void;
   private readonly profile: () => ModelProfile;
   private readonly onInjectStat?: (stat: { sent: boolean; rejected?: readonly string[] }) => void;
@@ -61,6 +64,7 @@ export class VtsBackend {
   /** 最后一帧 IR。重连后照这一帧补发一次,皮套立刻回到冻结前的姿态而不是停在半路。 */
   private lastFrame: IRFrame | null = null;
   private unsubConnected: (() => void) | null = null;
+  private unsubModel: (() => void) | null = null;
   private readonly resyncKnown: () => Promise<void>;
 
   constructor(
@@ -69,6 +73,7 @@ export class VtsBackend {
   ) {
     this.onError = opts.onError;
     this.profile = opts.profile ?? (() => DEFAULT_PROFILE);
+    this.expressions = new ModelExpressions(vts, this.profile, this.onError);
     this.onInjectStat = opts.onInjectStat;
     this.onInjectOk = opts.onInjectOk;
     this.resyncKnown = opts.resyncKnown ?? (async () => {
@@ -83,10 +88,13 @@ export class VtsBackend {
      */
     const onConnected: VtsClient['onConnected'] | undefined = vts.onConnected;
     if (onConnected) this.unsubConnected = onConnected.call(vts, () => this.handleConnected());
+    this.unsubModel = vts.onModelLoaded?.(() => { this.expressions.modelChanged(); this.gaze.reset(); }) ?? null;
   }
 
   /** 连上之后的恢复:归零背压账、重建实机参数名单、补发最后一帧。 */
   private handleConnected(): void {
+    this.expressions.clear(); // Release our stale leases; never replay old speech or one-shot motions.
+    this.gaze.reset();
     this.inFlight = 0;
     this.pendingFrame = null;
     // 名单重建期间不发帧:连接刚回来到名单到手之间照发会撞 453 整条请求被拒
@@ -150,6 +158,7 @@ export class VtsBackend {
 
   /** 非阻塞:在途满两帧时进候补位,候补被覆盖才算丢帧 */
   sendFrame(frame: IRFrame): void {
+    this.expressions.syncProfile();
     // 发没发得出去都留着:重连后补发的就是它
     this.lastFrame = frame;
     if (this.syncingKnown) return;
@@ -169,6 +178,7 @@ export class VtsBackend {
 
   private transmit(frame: IRFrame): void {
     const profile = this.profile();
+    frame = this.gaze.frame(frame, Date.now(), profile.gazeSmoothingMs ?? 0);
     /**
      * 目标输入参数 → 累加桶。模型只给合并输入时(左右眉共用一个 Brows)
      * 多路语义会并到同一个目标上,按均值合。
@@ -242,17 +252,23 @@ export class VtsBackend {
       this.drop(clipId, `${profile.label} 没有这个特效`);
       return;
     }
-    const { file } = entry;
-    void this.vts.setExpression(file, true).catch((err) => {
-      this.onError?.(err instanceof Error ? err : new Error(String(err)));
+    this.expressions.pulse(entry.file, entry.durationMs);
+  }
+
+  emotion(clipId: string | null): void { this.expressions.emotion(clipId); }
+
+  resetExpressions(): void { this.expressions.clear(); }
+
+  flushExpressions(): Promise<void> { return this.expressions.settled(); }
+
+  speech(text: string, startedAt?: number): () => void { return this.expressions.speech(text, startedAt); }
+
+  gesture(clipId: string): void {
+    const profile = this.profile(), id = profile.motionMap?.[clipId];
+    if (!id || !this.vts.connected) return;
+    void this.vts.triggerAnimation(id, profile.vtsModelName).catch((error) => {
+      this.onError?.(error instanceof Error ? error : new Error(String(error)));
     });
-    const timer = setTimeout(() => {
-      this.fxTimers.delete(timer);
-      void this.vts.setExpression(file, false).catch((err) => {
-        this.onError?.(err instanceof Error ? err : new Error(String(err)));
-      });
-    }, entry.durationMs);
-    this.fxTimers.add(timer);
   }
 
   /** FX 在当前档案上的脉冲时长;没有这个特效时 0(编排器据此不为它留拍) */
@@ -279,12 +295,14 @@ export class VtsBackend {
     // 收工时把整场累计写出去:里程碑上报只到十进位,尾数(以及从没上过 10 的组合)靠这条。
     this.reportDropTotals();
     this.dropped.clear();
-    for (const t of this.fxTimers) clearTimeout(t);
-    this.fxTimers.clear();
+    this.expressions.stop();
+    this.gaze.reset();
     this.pendingFrame = null;
     this.lastFrame = null;
     this.unsubConnected?.();
     this.unsubConnected = null;
+    this.unsubModel?.();
+    this.unsubModel = null;
   }
 }
 

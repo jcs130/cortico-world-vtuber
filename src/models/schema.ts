@@ -96,7 +96,7 @@ function fxEntry(v: unknown, path: string): FxEntry | null {
 
 const TOP_KEYS = new Set([
   'id', 'label', 'backend', 'vtsModelName', 'wiring', 'unsupported', 'fx',
-  'keepExpressions', 'idleBlinks', 'caveat',
+  'keepExpressions', 'idleBlinks', 'caveat', 'emotionMap', 'motionMap', 'gazeSmoothingMs',
 ]);
 
 /** 解析并校验一份档案;`source` 只用于错误信息。 */
@@ -140,6 +140,32 @@ export function parseProfile(raw: unknown, source: string, ctx: ProfileContext):
     const keepExpressions = strList(raw.keepExpressions, 'keepExpressions');
     if (typeof raw.idleBlinks !== 'boolean') throw new ProfileError('idleBlinks 必须是 true/false');
     const caveat = raw.caveat === undefined ? undefined : str(raw.caveat, 'caveat');
+    const emotionMap: Record<string, string | string[] | null> = {};
+    const motionMap: Record<string, string> = {};
+    for (const field of ['emotionMap', 'motionMap'] as const) {
+      if (raw[field] === undefined) continue;
+      if (!isRecord(raw[field])) throw new ProfileError(`${field} 必须是对象`);
+      for (const [key, v] of Object.entries(raw[field])) {
+        if (field === 'emotionMap' && v === null) { emotionMap[key] = null; continue; }
+        if (field === 'emotionMap' && Array.isArray(v)) {
+          const files = strList(v, `${field}.${key}`);
+          if (!files.length || files.some((f) => !/^[^/\\]+\.exp3\.json$/u.test(f))) throw new ProfileError(`${field}.${key} 必须是表情文件名数组，不含路径`);
+          emotionMap[key] = [...new Set(files)]; continue;
+        }
+        const value = str(v, `${field}.${key}`, { nonEmpty: true });
+        if (field === 'emotionMap') {
+          if (!/^[^/\\]+\.exp3\.json$/u.test(value)) throw new ProfileError(`${field}.${key} 必须是表情文件名，不含路径`);
+          emotionMap[key] = value;
+        } else {
+          motionMap[key] = value;
+        }
+      }
+    }
+    let gazeSmoothingMs: number | undefined;
+    if (raw.gazeSmoothingMs !== undefined) {
+      gazeSmoothingMs = num(raw.gazeSmoothingMs, 'gazeSmoothingMs');
+      if (gazeSmoothingMs < 0 || gazeSmoothingMs > 200) throw new ProfileError('gazeSmoothingMs 必须在 0–200ms 之间');
+    }
 
     return {
       profile: {
@@ -147,6 +173,9 @@ export function parseProfile(raw: unknown, source: string, ctx: ProfileContext):
         wiring: wired, unsupported, fx, keepExpressions,
         idleBlinks: raw.idleBlinks,
         ...(caveat === undefined ? {} : { caveat }),
+        ...(raw.emotionMap === undefined ? {} : { emotionMap }),
+        ...(raw.motionMap === undefined ? {} : { motionMap }),
+        ...(gazeSmoothingMs === undefined ? {} : { gazeSmoothingMs }),
       },
       warnings,
     };

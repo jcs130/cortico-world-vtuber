@@ -113,6 +113,26 @@ function reply(ws: WebSocket, msg: StubMsg, messageType: string, data: Record<st
 }
 
 describe('VtsClient', () => {
+  it('native motion dispatch checks the loaded model and hotkey type and sends once', async () => {
+    let type = 'TriggerAnimation';
+    const stub = await startStub((ws, msg) => {
+      authOk(ws, msg);
+      if (msg.messageType === 'HotkeysInCurrentModelRequest') reply(ws, msg, 'HotkeysInCurrentModelResponse', {
+        modelLoaded: true, modelName: 'Fixture', availableHotkeys: [{ hotkeyID: 'wave-id', type }],
+      });
+      else if (msg.messageType === 'HotkeyTriggerRequest') reply(ws, msg, 'HotkeyTriggerResponse', { hotkeyID: msg.data?.hotkeyID });
+      else if (msg.messageType === 'EventSubscriptionRequest') reply(ws, msg, 'EventSubscriptionResponse', {});
+    });
+    const vts = new VtsClient({ url: stub.url });
+    try {
+      await vts.triggerAnimation('wave-id', 'Fixture');
+      expect(stub.seen.filter((r) => r.type === 'HotkeyTriggerRequest')).toHaveLength(1);
+      await expect(vts.triggerAnimation('wave-id', 'Another')).rejects.toThrow(/不匹配/);
+      type = 'ChangeVTSModel';
+      await expect(vts.triggerAnimation('wave-id', 'Fixture')).rejects.toThrow(/不是 TriggerAnimation/);
+      expect(stub.seen.filter((r) => r.type === 'HotkeyTriggerRequest')).toHaveLength(1);
+    } finally { await vts.close(); await stub.stop(); }
+  });
   it('APIError 带上 data.message；失败后可以重连成功', async () => {
     const http = createServer();
     const wss = new WebSocketServer({ server: http });

@@ -339,6 +339,20 @@ export class VtsClient {
     });
   }
 
+  /** 原生动作只触发一次，不把每帧注入变成热键队列。档案只映射 TriggerAnimation。 */
+  async triggerAnimation(hotkeyID: string, expectedModelName: string): Promise<void> {
+    await this.connect();
+    const d = await this.request<{
+      modelLoaded?: boolean; modelName?: string;
+      availableHotkeys?: Array<{ hotkeyID?: string; type?: string }>;
+    }>('HotkeysInCurrentModelRequest', {});
+    if (!d.modelLoaded || d.modelName !== expectedModelName) throw new Error('原生动作的模型与当前加载模型不匹配');
+    if (!d.availableHotkeys?.some((key) => key.hotkeyID === hotkeyID && key.type === 'TriggerAnimation')) {
+      throw new Error(`原生动作热键 ${hotkeyID} 不存在或不是 TriggerAnimation`);
+    }
+    await this.request('HotkeyTriggerRequest', { hotkeyID });
+  }
+
   /**
    * 关掉当前模型上所有已激活表情（开局残留的灯泡/光环/汗等）。
    * 返回被关掉的 expression 文件名列表。
