@@ -140,11 +140,20 @@ for a retry. `voice: "default"` selects the configured reference voice.
 - Requests share one model lock. Disconnecting closes the generator and releases
   the lock after the current patch. Cancelled queued requests do not synthesize.
 
-Short utterances retain their complete prosody. Longer text uses the shared
-punctuation splitter. Oversized unpunctuated clauses are rejected, and reaching
+Every request uses the shared punctuation splitter, including paragraphs below
+`segment_chars`. Complete sentences are separate generations; short comma
+clauses remain together up to that soft readable-length target. Oversized unpunctuated clauses are rejected, and reaching
 the audio generation limit fails the request. Shared spoken-text normalization
 retains field values and reads numeric/level notation aloud. IndexTTS phonetic
 annotations become readable text; pronunciation is then handled by VoxCPM2.
+Numeric coordinate triples lose their parentheses before number expansion,
+so the voice model receives spoken values rather than a parenthesized control.
+An em dash becomes a spoken comma. A backend pronunciation fallback uses native
+`{gan1}` for soil-dryness phrases such as `泥土干了` and `耕地全是干的`;
+work and combat uses of `干` retain their original text. These changes apply only
+to synthesized speech; scripts, subtitles and reference transcripts stay intact.
+Health reports sentence segmentation and the active pronunciation fallback;
+synthesis records include segment lengths and the prepared-text fingerprint.
 The service makes no mood-classification LLM call. Speed must be 1; the model
 controls delivery pace from the reference recording or delivery description.
 

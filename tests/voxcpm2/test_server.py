@@ -14,7 +14,7 @@ import urllib.request
 import wave
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'adapters/voxcpm2'))
-from voxcpm2_server import VoiceEngine, VoiceServer
+from voxcpm2_server import VoiceEngine, VoiceServer, prepare_text
 
 
 class AudioEngine:
@@ -146,6 +146,40 @@ class ServiceTest(unittest.TestCase):
         self.assertIn('苦力怕（保持距离）', self.engine.texts[0])
         self.assertNotIn('happy', self.engine.texts[0])
         self.assertNotIn('KU3', self.engine.texts[0])
+
+    def test_coordinate_tuple_is_spoken_without_voice_control_parentheses(self):
+        original = '位置(-540,67,-430)，生长阶段7。'
+        expected = '位置负五百四十，六十七，负四百三十，生长阶段七。'
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                with self.request(original, streaming=streaming) as response:
+                    self.assertGreater(len(response.read()), 44)
+                self.assertEqual(''.join(self.engine.texts), expected)
+                self.engine.texts.clear()
+        self.assertEqual(prepare_text('位置（+12.5，0，-3）'), '位置正十二点五，零，负三')
+
+    def test_soil_dryness_gets_first_tone_without_changing_work_or_combat(self):
+        cases = {
+            '泥土干了，耕地全是干的。': '泥土{gan1}了，耕地全是{gan1}的。',
+            '土壤已经干透了，麦田也干裂了。': '土壤已经{gan1}透了，麦田也{gan1}裂了。',
+            '田地里的活是他干的，继续干活，干掉僵尸。': '田地里的活是他干的，继续干活，干掉僵尸。',
+            '[sigh]泥土干了——先补水。': '[sigh]泥土{gan1}了，先补水。',
+        }
+        for original, expected in cases.items():
+            with self.subTest(original=original):
+                self.assertEqual(prepare_text(original), expected)
+
+    def test_short_paragraph_also_respects_complete_sentence_boundaries(self):
+        original = '麦子开始熟啦！我这就回去收掉。委托还差七格，慢慢凑。'
+        expected = ['麦子开始熟啦！', '我这就回去收掉。', '委托还差七格，慢慢凑。']
+        self.assertLess(len(original), self.engine.config['segment_chars'])
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                with self.request(original, streaming=streaming) as response:
+                    self.assertGreater(len(response.read()), 44)
+                self.assertEqual(self.engine.texts, expected)
+                self.assertEqual(self.engine.last_request['segments'], len(expected))
+                self.engine.texts.clear()
 
     def test_first_audio_failure_returns_error_status(self):
         self.engine.fail_at = 'first'

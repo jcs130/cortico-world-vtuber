@@ -29,9 +29,17 @@ from speech_segments import punctuation_segments
 from spoken_text import normalize_spoken_text
 from inference_worker import InferenceWorker
 
-VERSION = '1.2.2'
+VERSION = '1.2.3'
 MAX_BODY = 2 * 1024 * 1024
 CUE_RULES = [(re.compile(r'(?:开心|温柔|惊讶|害怕|生气|难过|平静|严肃|得意|委屈|happy|gentle|calm|serious)', re.I), 'style')]
+_NUMBER_TOKEN = r'[-+]?\d+(?:\.\d+)?'
+_COORDINATE_TUPLE = re.compile(
+    rf'[（(]\s*({_NUMBER_TOKEN})\s*[,，]\s*({_NUMBER_TOKEN})\s*[,，]\s*({_NUMBER_TOKEN})\s*[）)]')
+# Backend pronunciation fallback for unambiguous soil-dryness phrases.
+_DRY_SOIL = re.compile(
+    r'(?P<context>(?:泥土|土壤|耕地|田地|农田|麦田)'
+    r'(?:(?:已经|还是|仍然|全是|都是|变得|有点|完全|太|很|更|都|也|又|全|是|就|快|晒|吹))*)'
+    r'干(?=了|的|燥|旱|涸|裂|透|巴巴)')
 
 
 def prepare_instructions(value, enabled: bool) -> str | None:
@@ -59,7 +67,9 @@ def prepare_text(text: str, aliases: dict[str, str] | None = None) -> str:
     if aliases:
         pattern = '|'.join(re.escape(key) for key in sorted(aliases, key=len, reverse=True))
         clean = re.sub(pattern, lambda match: aliases[match.group()], clean)
-    return normalize_spoken_text(clean)
+    clean = _COORDINATE_TUPLE.sub(lambda match: '，'.join(match.groups()), clean)
+    clean = normalize_spoken_text(clean).replace('——', '，')
+    return _DRY_SOIL.sub(lambda match: match['context'] + '{gan1}', clean)
 
 
 def stream_header(rate: int) -> bytes:
@@ -188,6 +198,8 @@ class VoiceEngine:
                 'style_prompt_mode': 'reference' if self.style_cache is not None else None,
                 'style_instruction_max_chars': 64,
                 'native_acoustic_cues': True,
+                'sentence_segmentation': True,
+                'pronunciation_fallbacks': ['soil-dryness-gan1'],
                 'device': self.config.get('device', 'cuda'), 'model_revision': self.config.get('model_revision'),
                 'package': 'voxcpm==2.0.3', 'torch': self.torch.__version__,
                 'optimization': self.optimization, 'inference_worker_alive': self.worker.thread.is_alive(),
@@ -264,7 +276,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('Invalid seed')
             clean = prepare_text(text, engine.config.get('pronunciation_aliases'))
             limit = int(engine.config.get('segment_chars', 80))
-            texts = [clean] if len(clean) <= limit else punctuation_segments(clean, max_chars=limit)
+            texts = punctuation_segments(clean, max_chars=limit)
             if any(len(segment) > 200 for segment in texts):
                 raise ValueError('An unpunctuated clause exceeds 200 characters')
         except (ValueError, TypeError, AttributeError) as exc:
@@ -283,6 +295,7 @@ class Handler(BaseHTTPRequestHandler):
         pcm_count, pcm_hash, segments = 0, hashlib.sha256(), 0
         record = {'id': request_id, 'input_sha256': hashlib.sha256(text.encode()).hexdigest(),
                   'input_chars': len(text), 'spoken_chars': len(clean), 'seed': seed,
+                  'segment_chars': limit, 'segment_lengths': [len(segment) for segment in texts],
                   'spoken_text_sha256': hashlib.sha256(clean.encode()).hexdigest(),
                   'reference_sha256': engine.reference_sha256,
                   'mode': 'reference' if instructions else 'ref_continuation',
