@@ -169,10 +169,11 @@ class ServiceTest(unittest.TestCase):
             with self.subTest(original=original):
                 self.assertEqual(prepare_text(original), expected)
 
-    def test_utensil_phrases_get_shi_without_changing_question_words(self):
+    def test_utensil_phrases_use_colloquial_wording_without_changing_question_words(self):
         cases = {
-            '先拿把家伙什再来，把家什收好。': '先拿把家伙{shi5}再来，把家{shi5}收好。',
-            '傢伙什儿和傢什都收好了。': '傢伙{shi5}儿和傢{shi5}都收好了。',
+            '先拿把家伙什再来，把家什收好。': '先拿把家伙事儿再来，把家{shi5}收好。',
+            '傢伙什儿和傢什都收好了。': '家伙事儿和家{shi5}都收好了。',
+            '家伙事儿收好了，家伙什兒也收好了。': '家伙事儿收好了，家伙事儿也收好了。',
             '那家伙什么时候回来？你家什么工具都有。': '那家伙什么时候回来？你家什么工具都有。',
             '那傢伙什麼時候回來？': '那傢伙什麼時候回來？',
             '这是什么？有什么事吗？': '这是什么？有什么事吗？',
@@ -184,7 +185,17 @@ class ServiceTest(unittest.TestCase):
             with self.subTest(streaming=streaming):
                 with self.request('拿上家伙什，那家伙什么时候回来？', streaming=streaming) as response:
                     self.assertGreater(len(response.read()), 44)
-                self.assertEqual(''.join(self.engine.texts), '拿上家伙{shi5}，那家伙什么时候回来？')
+                self.assertEqual(''.join(self.engine.texts), '拿上家伙事儿，那家伙什么时候回来？')
+                self.engine.texts.clear()
+
+    def test_english_player_names_reach_the_bilingual_model_intact(self):
+        original = 'Neko，谢谢你！玩家 neko_42 和 Alex 在河边，魔力12。'
+        expected = 'Neko，谢谢你！玩家 neko_42 和 Alex 在河边，魔力十二。'
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                with self.request(original, streaming=streaming) as response:
+                    self.assertGreater(len(response.read()), 44)
+                self.assertEqual(''.join(self.engine.texts), expected)
                 self.engine.texts.clear()
 
     def test_short_paragraph_also_respects_complete_sentence_boundaries(self):

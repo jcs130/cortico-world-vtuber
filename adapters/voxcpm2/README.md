@@ -150,9 +150,14 @@ Numeric coordinate triples lose their parentheses before number expansion,
 so the voice model receives spoken values rather than a parenthesized control.
 An em dash becomes a spoken comma. A backend pronunciation fallback uses native
 `{gan1}` for soil-dryness phrases such as `泥土干了` and `耕地全是干的`;
-work and combat uses of `干` retain their original text. The utensil expressions
-`家伙什` and `家什` use `{shi5}` for `什`, while question words in phrases such as
-`那家伙什么时候回来` remain unchanged. These changes apply only
+work and combat uses of `干` retain their original text. The utensil expression
+`家伙什` (including an existing `儿` suffix) becomes the colloquial `家伙事儿`;
+the shorter `家什` uses `{shi5}`. Question words in phrases such as
+`那家伙什么时候回来` remain unchanged. English player names such as `Neko`
+and identifiers such as `neko_42` pass through unchanged for native bilingual
+synthesis. Prefer the player's own spelling or an explicitly agreed nickname
+in the client script; do not translate names or insert Chinese soundalikes.
+These changes apply only
 to synthesized speech; scripts, subtitles and reference transcripts stay intact.
 Health reports sentence segmentation and the active pronunciation fallbacks;
 synthesis records include segment lengths and the prepared-text fingerprint.

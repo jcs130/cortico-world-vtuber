@@ -29,7 +29,7 @@ from speech_segments import punctuation_segments
 from spoken_text import normalize_spoken_text
 from inference_worker import InferenceWorker
 
-VERSION = '1.2.4'
+VERSION = '1.2.5'
 MAX_BODY = 2 * 1024 * 1024
 CUE_RULES = [(re.compile(r'(?:开心|温柔|惊讶|害怕|生气|难过|平静|严肃|得意|委屈|happy|gentle|calm|serious)', re.I), 'style')]
 _NUMBER_TOKEN = r'[-+]?\d+(?:\.\d+)?'
@@ -41,7 +41,8 @@ _DRY_SOIL = re.compile(
     r'(?:(?:已经|还是|仍然|全是|都是|变得|有点|完全|太|很|更|都|也|又|全|是|就|快|晒|吹))*)'
     r'干(?=了|的|燥|旱|涸|裂|透|巴巴)')
 # Keep question words in phrases such as "那家伙什么时候回来" unchanged.
-_UTENSILS = re.compile(r'(?P<context>[家傢](?:伙)?)什(?![么麼])')
+_UTENSILS = re.compile(r'[家傢]伙什(?![么麼])(?:儿|兒)?')
+_SHORT_UTENSILS = re.compile(r'[家傢]什(?![么麼])')
 
 
 def prepare_instructions(value, enabled: bool) -> str | None:
@@ -72,7 +73,8 @@ def prepare_text(text: str, aliases: dict[str, str] | None = None) -> str:
     clean = _COORDINATE_TUPLE.sub(lambda match: '，'.join(match.groups()), clean)
     clean = normalize_spoken_text(clean).replace('——', '，')
     clean = _DRY_SOIL.sub(lambda match: match['context'] + '{gan1}', clean)
-    return _UTENSILS.sub(lambda match: match['context'] + '{shi5}', clean)
+    clean = _UTENSILS.sub('家伙事儿', clean)
+    return _SHORT_UTENSILS.sub('家{shi5}', clean)
 
 
 def stream_header(rate: int) -> bytes:
@@ -202,7 +204,7 @@ class VoiceEngine:
                 'style_instruction_max_chars': 64,
                 'native_acoustic_cues': True,
                 'sentence_segmentation': True,
-                'pronunciation_fallbacks': ['soil-dryness-gan1', 'utensils-shi5'],
+                'pronunciation_fallbacks': ['soil-dryness-gan1', 'utensils-colloquial', 'short-utensils-shi5'],
                 'device': self.config.get('device', 'cuda'), 'model_revision': self.config.get('model_revision'),
                 'package': 'voxcpm==2.0.3', 'torch': self.torch.__version__,
                 'optimization': self.optimization, 'inference_worker_alive': self.worker.thread.is_alive(),
