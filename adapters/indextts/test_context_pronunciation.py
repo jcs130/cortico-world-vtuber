@@ -30,6 +30,18 @@ def resolver(converter=contextual, phrases=None):
 
 
 class ContextTests(unittest.TestCase):
+    def test_configurable_neutral_hint_preserves_different_meanings_in_one_utterance(self):
+        text = '火烧着，木炭烧着了。'
+        readings = list(text)
+        positions = [i for i, char in enumerate(text) if char == '着']
+        readings[positions[0]], readings[positions[1]] = 'ZHE5', 'ZHAO2'
+        options = dict(phrases={}, alternatives=lambda char: ['zhe5', 'zhao2', 'zhuo2', 'zhao1']
+                       if char == '着' else [char])
+        ordinary = ContextPronunciation(lambda _: [readings], **options)
+        configured = ContextPronunciation(lambda _: [readings], context_hint_characters=('着',), **options)
+        self.assertEqual(ordinary.resolve(text), '火烧着，木炭烧<着|ZHAO2>了。')
+        self.assertEqual(configured.resolve(text), '火烧<着|ZHE5>，木炭烧<着|ZHAO2>了。')
+
     def test_neutral_particles_and_ordinary_readings_keep_sentence_text(self):
         alternatives = {'了': ['le5', 'liao3'], '的': ['de5', 'di2', 'di4'],
                         '也': ['ye3', 'yi2'], '包': ['bao1', 'pao2'],

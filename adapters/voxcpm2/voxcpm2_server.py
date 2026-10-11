@@ -28,8 +28,10 @@ from corti_speech_style import strip_stage_directions
 from speech_segments import punctuation_segments
 from spoken_text import normalize_spoken_text
 from inference_worker import InferenceWorker
+from pronunciation_bridge import native_phonemes
+from pronunciation import initialize_pronunciation, normalize_pronunciation, pronunciation_health
 
-VERSION = '1.2.5'
+VERSION = '1.3.0'
 MAX_BODY = 2 * 1024 * 1024
 CUE_RULES = [(re.compile(r'(?:开心|温柔|惊讶|害怕|生气|难过|平静|严肃|得意|委屈|happy|gentle|calm|serious)', re.I), 'style')]
 _NUMBER_TOKEN = r'[-+]?\d+(?:\.\d+)?'
@@ -58,7 +60,7 @@ def prepare_instructions(value, enabled: bool) -> str | None:
     return value
 
 
-def prepare_text(text: str, aliases: dict[str, str] | None = None) -> str:
+def prepare_text(text: str, aliases: dict[str, str] | None = None, *, contextual: bool = False) -> str:
     if aliases is not None and (
         not isinstance(aliases, dict)
         or any(not isinstance(key, str) or not key or not isinstance(value, str) or not value
@@ -66,15 +68,21 @@ def prepare_text(text: str, aliases: dict[str, str] | None = None) -> str:
     ):
         raise ValueError('Pronunciation aliases must map nonempty strings to nonempty strings')
     clean, _, _, _ = strip_stage_directions(text, CUE_RULES, preserve_acoustic_cues=True)
-    clean = re.sub(r'<([^<>|\n]+)\|[^<>\n]+>', r'\1', clean)
     if aliases:
         pattern = '|'.join(re.escape(key) for key in sorted(aliases, key=len, reverse=True))
         clean = re.sub(pattern, lambda match: aliases[match.group()], clean)
     clean = _COORDINATE_TUPLE.sub(lambda match: '，'.join(match.groups()), clean)
+    # Parentheses are model delivery controls. Retain factual clauses as speech.
+    clean = re.sub(r'[（(]\s*|\s*[）)]', '，', clean)
+    clean = re.sub(r'，(?:[ \t]*，)+', '，', clean)
+    clean = re.sub(r'，([。！？；])', r'\1', clean).strip('， \t')
     clean = normalize_spoken_text(clean).replace('——', '，')
     clean = _DRY_SOIL.sub(lambda match: match['context'] + '{gan1}', clean)
     clean = _UTENSILS.sub('家伙事儿', clean)
-    return _SHORT_UTENSILS.sub('家{shi5}', clean)
+    clean = _SHORT_UTENSILS.sub('家{shi5}', clean)
+    if contextual:
+        clean = normalize_pronunciation(clean)
+    return native_phonemes(clean)
 
 
 def stream_header(rate: int) -> bytes:
@@ -98,6 +106,17 @@ class VoiceEngine:
         self.reference_sha256 = hashlib.sha256(Path(config['reference_file']).read_bytes()).hexdigest()
         if self.reference_sha256 != config['reference_sha256']:
             raise ValueError('Configured reference audio hash mismatch')
+        self.contextual_pronunciation = bool(config.get('pronunciation_model_dir'))
+        if self.contextual_pronunciation:
+            if not config.get('pronunciation_tokenizer_dir'):
+                raise ValueError('A local pronunciation tokenizer is required')
+            for file, expected in config.get('pronunciation_asset_sha256', {}).items():
+                if hashlib.sha256(Path(file).read_bytes()).hexdigest() != expected:
+                    raise ValueError('Pronunciation resource hash mismatch')
+            initialize_pronunciation(config['pronunciation_model_dir'], config['pronunciation_tokenizer_dir'],
+                                     context_hint_characters=('得', '还', '没', '着'), enable_selector=False)
+            if not pronunciation_health()['context_ready']:
+                raise RuntimeError('Configured local pronunciation model is unavailable')
         self.lock = threading.Lock()
         self.last_request = None
         self.completed = 0
@@ -205,6 +224,8 @@ class VoiceEngine:
                 'native_acoustic_cues': True,
                 'sentence_segmentation': True,
                 'pronunciation_fallbacks': ['soil-dryness-gan1', 'utensils-colloquial', 'short-utensils-shi5'],
+                'pronunciation': pronunciation_health() if self.contextual_pronunciation else {'context_ready': False, 'policy': 'native-model'},
+                'explicit_pinyin_supported': True,
                 'device': self.config.get('device', 'cuda'), 'model_revision': self.config.get('model_revision'),
                 'package': 'voxcpm==2.0.3', 'torch': self.torch.__version__,
                 'optimization': self.optimization, 'inference_worker_alive': self.worker.thread.is_alive(),
@@ -279,7 +300,10 @@ class Handler(BaseHTTPRequestHandler):
             seed = int(body.get('seed', engine.config.get('seed', 42)))
             if not 0 <= seed < 2 ** 31:
                 raise ValueError('Invalid seed')
-            clean = prepare_text(text, engine.config.get('pronunciation_aliases'))
+            preparation_started = time.monotonic()
+            clean = prepare_text(text, engine.config.get('pronunciation_aliases'),
+                                 contextual=bool(engine.config.get('pronunciation_model_dir')))
+            pronunciation_ms = round((time.monotonic() - preparation_started) * 1000, 2)
             limit = int(engine.config.get('segment_chars', 80))
             texts = punctuation_segments(clean, max_chars=limit)
             if any(len(segment) > 200 for segment in texts):
@@ -303,6 +327,8 @@ class Handler(BaseHTTPRequestHandler):
                   'segment_chars': limit, 'segment_lengths': [len(segment) for segment in texts],
                   'spoken_text_sha256': hashlib.sha256(clean.encode()).hexdigest(),
                   'reference_sha256': engine.reference_sha256,
+                  'pronunciation_ms': pronunciation_ms,
+                  'phoneme_count': len(re.findall(r'\{[^{}]+\}', clean)),
                   'mode': 'reference' if instructions else 'ref_continuation',
                   'instructions_source': 'request' if 'instructions' in body else 'default' if instructions else 'none',
                   'instructions_chars': len(instructions or ''),

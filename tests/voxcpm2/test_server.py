@@ -15,6 +15,7 @@ import wave
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'adapters/voxcpm2'))
 from voxcpm2_server import VoiceEngine, VoiceServer, prepare_text
+from unittest.mock import patch
 
 
 class AudioEngine:
@@ -143,7 +144,7 @@ class ServiceTest(unittest.TestCase):
             with wave.open(io.BytesIO(response.read()), 'rb') as wav:
                 self.assertEqual((wav.getnchannels(), wav.getsampwidth(), wav.getframerate()), (1, 2, self.engine.rate))
                 self.assertEqual(wav.getnframes(), 9600)
-        self.assertIn('苦力怕（保持距离）', self.engine.texts[0])
+        self.assertIn('{ku3}{li4}{pa4}，保持距离。', self.engine.texts[0])
         self.assertNotIn('happy', self.engine.texts[0])
         self.assertNotIn('KU3', self.engine.texts[0])
 
@@ -157,6 +158,22 @@ class ServiceTest(unittest.TestCase):
                 self.assertEqual(''.join(self.engine.texts), expected)
                 self.engine.texts.clear()
         self.assertEqual(prepare_text('位置（+12.5，0，-3）'), '位置正十二点五，零，负三')
+
+    def test_factual_parentheses_cannot_become_delivery_controls_in_either_route(self):
+        cases = {
+            '只有 (-540) 那格是草方块。': '只有 ，负五百四十， 那格是草方块。',
+            '往东（+12.5）格，那里（草方块）可以铺轨。': '往东，正十二点五，格，那里，草方块，可以铺轨。',
+            '道具（工具（镐子））带上。': '道具，工具，镐子，带上。',
+            '(calm)[sigh]那里（草方块）。': '[sigh]那里，草方块。',
+        }
+        for streaming in (False, True):
+            for original, expected in cases.items():
+                with self.subTest(streaming=streaming, original=original):
+                    with self.request(original, streaming=streaming) as response:
+                        self.assertGreater(len(response.read()), 44)
+                    self.assertEqual(''.join(self.engine.texts), expected)
+                    self.assertNotRegex(''.join(self.engine.texts), r'[()（）]')
+                    self.engine.texts.clear()
 
     def test_soil_dryness_gets_first_tone_without_changing_work_or_combat(self):
         cases = {
@@ -197,6 +214,28 @@ class ServiceTest(unittest.TestCase):
                     self.assertGreater(len(response.read()), 44)
                 self.assertEqual(''.join(self.engine.texts), expected)
                 self.engine.texts.clear()
+
+    def test_explicit_pinyin_controls_only_its_word_and_keeps_invalid_metadata_unspoken(self):
+        self.assertEqual(prepare_text('火还<烧着|SHAO1 ZHE5>，木炭终于<烧着|shao1 zhao2>了。'),
+                         '火还{shao1}{zhe5}，木炭终于{shao1}{zhao2}了。')
+        self.assertEqual(prepare_text('Neko 和 <示例|invalid>、<工具|GONG1>。'),
+                         'Neko 和 示例、工具。')
+
+    def test_contextual_readings_reach_both_synthesis_routes_without_changing_input_hash(self):
+        original='炉子还烧着，木炭终于烧着了。'
+        resolved='炉子还烧<着|ZHE5>，木炭终于<烧着|SHAO1 ZHAO2>了。'
+        self.engine.config['pronunciation_model_dir']='already-loaded-resource'
+        with patch('voxcpm2_server.normalize_pronunciation',return_value=resolved) as resolve:
+            for streaming in (False,True):
+                with self.subTest(streaming=streaming):
+                    with self.request(original,streaming=streaming) as response:
+                        self.assertGreater(len(response.read()),44)
+                    self.assertEqual(''.join(self.engine.texts),'炉子还烧{zhe5}，木炭终于{shao1}{zhao2}了。')
+                    self.assertEqual(self.engine.last_request['input_sha256'],hashlib.sha256(original.encode()).hexdigest())
+                    self.assertEqual(self.engine.last_request['phoneme_count'],3)
+                    self.assertGreaterEqual(self.engine.last_request['pronunciation_ms'],0)
+                    self.engine.texts.clear()
+        self.assertEqual(resolve.call_count,2)
 
     def test_short_paragraph_also_respects_complete_sentence_boundaries(self):
         original = '麦子开始熟啦！我这就回去收掉。委托还差七格，慢慢凑。'
@@ -255,7 +294,7 @@ class ServiceTest(unittest.TestCase):
                 with self.request('(calm)[sigh]第 II 层，<苦力怕|KU3 LI4 PA4>[laughing]。',
                                   streaming=streaming) as response:
                     self.assertTrue(response.read().startswith(b'RIFF'))
-                self.assertEqual(self.engine.texts[-1], '[sigh]第二层，苦力怕[laughing]。')
+                self.assertEqual(self.engine.texts[-1], '[sigh]第二层，{ku3}{li4}{pa4}[laughing]。')
 
     def test_vocal_tag_only_utterance_produces_audio(self):
         with self.request('[sigh]', streaming=True) as response:

@@ -98,7 +98,9 @@ Run `python voxcpm2_server.py --config /path/to/voice.json`. Set
 `NUMBA_CACHE_DIR` to a writable directory. With local model files,
 `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` prevent model downloads.
 Deploy the adapter together with `inference_worker.py` and its sibling
-`adapters/indextts/{corti_speech_style,speech_segments,spoken_text}.py` from the
+`pronunciation_bridge.py` and its sibling
+`adapters/indextts/{corti_speech_style,speech_segments,spoken_text,pronunciation}.py`
+and `polyphonic_readings.json` from the
 same checkout, preserving that directory layout. Updating only the server can
 leave an incompatible text helper even while `/health` succeeds. Before warming
 the model, import `prepare_text` in the service environment and check an ordinary
@@ -144,10 +146,12 @@ Every request uses the shared punctuation splitter, including paragraphs below
 `segment_chars`. Complete sentences are separate generations; short comma
 clauses remain together up to that soft readable-length target. Oversized unpunctuated clauses are rejected, and reaching
 the audio generation limit fails the request. Shared spoken-text normalization
-retains field values and reads numeric/level notation aloud. IndexTTS phonetic
-annotations become readable text; pronunciation is then handled by VoxCPM2.
-Numeric coordinate triples lose their parentheses before number expansion,
-so the voice model receives spoken values rather than a parenthesized control.
+retains field values and reads numeric/level notation aloud. Valid Chinese
+`<字词|PIN1 YIN1>` annotations become native `{pin1}{yin1}` controls; the
+syllable count must match the Chinese word. Invalid annotations retain the word.
+Parentheses around factual text, including a single coordinate, become spoken
+commas. Factual text cannot be mistaken for a parenthesized delivery control.
+Delivery instructions use the separate validated `instructions` field.
 An em dash becomes a spoken comma. A backend pronunciation fallback uses native
 `{gan1}` for soil-dryness phrases such as `泥土干了` and `耕地全是干的`;
 work and combat uses of `干` retain their original text. The utensil expression
@@ -163,6 +167,21 @@ Health reports sentence segmentation and the active pronunciation fallbacks;
 synthesis records include segment lengths and the prepared-text fingerprint.
 The service makes no mood-classification LLM call. Speed must be 1; the model
 controls delivery pace from the reference recording or delivery description.
+
+## Contextual pronunciation
+
+Install `requirements-pronunciation.txt` and prepare the g2pW ONNX model and its
+Chinese BERT tokenizer locally. Configure `pronunciation_model_dir` and
+`pronunciation_tokenizer_dir`; optional `pronunciation_asset_sha256` maps resource
+paths to expected hashes. A configured model must initialize before the speech
+listener opens. Requests never download resources.
+
+The resolver reads the complete utterance on CPU and emits sparse hints for
+polyphonic words and the grammatical characters `得、还、没、着`. It keeps caller
+hints, English names and identifiers intact. Model and dictionary conflicts
+remain ordinary Chinese rather than forcing a disputed reading. There is no
+per-utterance LLM request. `/health` reports readiness and the disabled external
+selector; synthesis records include preparation time and phoneme count.
 
 If generation is slower than playback, set the VTuber extension's
 `streamEnabled` to `false` to buffer complete speech pieces. This stops playback

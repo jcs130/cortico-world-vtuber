@@ -143,7 +143,8 @@ class ReadingSelector:
 class ContextPronunciation:
     """Resolve a bounded set of modern homographs in the complete utterance."""
 
-    def __init__(self, converter, phrases=None, alternatives=None, selector=None, words=None):
+    def __init__(self, converter, phrases=None, alternatives=None, selector=None, words=None,
+                 context_hint_characters=None):
         if phrases is None or alternatives is None:
             from pypinyin import pinyin, Style
             from pypinyin.phrases_dict import phrases_dict
@@ -155,6 +156,8 @@ class ContextPronunciation:
         self.converter = converter
         self.selector = selector
         self.words = words
+        self.context_hint_characters = frozenset(
+            _CONTEXT_HINT_CHARACTERS if context_hint_characters is None else context_hint_characters)
         self.lock = threading.Lock()
         self.failures = 0
         self.last_ms = 0.0
@@ -222,7 +225,7 @@ class ContextPronunciation:
                 # review budget on known acoustic ambiguities and proposed
                 # non-default hints before ordinary readings.
                 targets = sorted(unresolved, key=lambda i: (
-                    plain[i] not in _CONTEXT_HINT_CHARACTERS,
+                    plain[i] not in self.context_hint_characters,
                     model.get(i, dictionary.get(i)) == self.ordinary_reading(plain[i]), i))
                 selected = self.selector(plain, targets)
                 review = {i: reading for i, reading in selected.items()
@@ -240,7 +243,7 @@ class ContextPronunciation:
                       'context-model' if i in model else 'dictionary')
             # Taiwanese variants or malformed model output cannot introduce a new reading.
             if reading in self.candidates(plain[i]):
-                contextual_hint = plain[i] in _CONTEXT_HINT_CHARACTERS and source != 'dictionary'
+                contextual_hint = plain[i] in self.context_hint_characters and source != 'dictionary'
                 if contextual_hint or (not reading.endswith('5') and reading != self.ordinary_reading(plain[i])):
                     edits[positions[i]] = f'<{plain[i]}|{reading}>'
             if trace is not None:
@@ -277,7 +280,8 @@ _resolver: ContextPronunciation | None = None
 _initialization_error: str | None = None
 
 
-def initialize_pronunciation(model_dir: str | None = None, tokenizer_dir: str | None = None) -> None:
+def initialize_pronunciation(model_dir: str | None = None, tokenizer_dir: str | None = None, *,
+                             context_hint_characters=None, enable_selector: bool = True) -> None:
     """Load prepared local resources once; speech requests never download a model."""
     global _resolver, _initialization_error
     model_dir = model_dir or os.environ.get('CORTICO_G2PW_MODEL_DIR')
@@ -295,11 +299,12 @@ def initialize_pronunciation(model_dir: str | None = None, tokenizer_dir: str | 
                                   enable_non_tradional_chinese=True, turnoff_tqdm=True)
         # Upstream treats zero as unset; Windows must not spawn DataLoader workers per utterance.
         converter.num_workers = 0
-        selector_url = os.environ.get('CORTICO_PRONUNCIATION_DECISION_URL')
+        selector_url = os.environ.get('CORTICO_PRONUNCIATION_DECISION_URL') if enable_selector else None
         word_tokenizer = Tokenizer()
         word_tokenizer.initialize()
         _resolver = ContextPronunciation(converter, selector=ReadingSelector(selector_url) if selector_url else None,
-                                        words=lambda text: word_tokenizer.tokenize(text, HMM=False))
+                                        words=lambda text: word_tokenizer.tokenize(text, HMM=False),
+                                        context_hint_characters=context_hint_characters)
         _initialization_error = None
     except Exception as error:
         _resolver = None
@@ -310,7 +315,7 @@ def pronunciation_health() -> dict:
     selector = _resolver.selector if _resolver else None
     return {'policy': 'context-pinyin' if _resolver else 'phrase-pinyin-fallback',
             'annotation_policy': 'context-words-sparse' if _resolver and _resolver.words else 'context-homographs-sparse',
-            'context_hint_characters': sorted(_CONTEXT_HINT_CHARACTERS),
+            'context_hint_characters': sorted(_resolver.context_hint_characters if _resolver else _CONTEXT_HINT_CHARACTERS),
             'dictionary_policy': 'context-reviewed',
             'term_policy': 'reviewed-whole-word', 'term_count': len(_TERM_READINGS),
             'context_ready': _resolver is not None, 'initialization_error': _initialization_error,
