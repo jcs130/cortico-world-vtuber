@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WorldHost } from 'cortico/core/types.ts';
 import type { EngineNote } from '../../src/engine-ipc.ts';
 import { VtuberWorldProxy } from '../../src/proxy.ts';
+import { WAITING_MEDIA_DEFAULTS } from '../../src/waiting-media.ts';
 
 interface ProxyState {
   ready: boolean;
@@ -29,6 +30,21 @@ function fixture() {
 afterEach(() => vi.useRealTimers());
 
 describe('演出请求的完整缓存读数', () => {
+  it('forwards model lifecycle changes without RPC and samples independent hot media configuration', () => {
+    const { proxy, sent } = fixture();
+    const phase = { state: 'model' as const, running: [], round: 2, enteredAt: new Date().toISOString() };
+    proxy.onRunPhase(phase); proxy.onRunPhase({ ...phase, state: 'tools', running: ['inspect'] });
+    expect(sent).toEqual([
+      { t: 'cast', cast: { kind: 'run-phase', phase } },
+      { t: 'cast', cast: { kind: 'run-phase', phase: { ...phase, state: 'tools', running: ['inspect'] } } },
+    ]);
+    const cfg = { ...WAITING_MEDIA_DEFAULTS, lines: 'A greeting', musicIds: 'example-song' };
+    const configured = new VtuberWorldProxy({ waitingMedia: () => cfg });
+    const read = () => (configured as unknown as { sampleConfig(): { waitingMedia: typeof cfg } }).sampleConfig();
+    const old = read(); cfg.lines = 'A different greeting';
+    expect(read().waitingMedia.lines).toBe(cfg.lines);
+    expect(old.waitingMedia.lines).toBe('A greeting');
+  });
   it('无读数或引擎未就绪时不替代状态事件', () => {
     const { proxy, state, observe } = fixture();
     expect(proxy.requestFacts()).toBeNull();

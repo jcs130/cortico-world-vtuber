@@ -24,6 +24,7 @@ import type {
   WorldPanelDecl,
   OutputTap,
   ToolDef,
+  RunPhase,
 } from 'cortico/core/types.ts';
 import { nowIso } from 'cortico/core/util.ts';
 import { FFMPEG_EXE, findFfmpeg, formatLabel, sniffAudioFormat, transcodeToWav } from './audio-convert.ts';
@@ -52,6 +53,7 @@ import { PerfDiagnostics, type TraceOptions } from './diagnostics.ts';
 import { PerformStream } from './perform-stream.ts';
 import { MusicLibrary, musicVolume, type MusicPlayback, type MusicPlayOptions, type MusicQueueState, type MusicState } from './music.ts';
 import { MusicGenerationClient, type MusicGenerationJob, type MusicGenerationRequest } from './music-generation.ts';
+import { WaitingMedia, WAITING_MEDIA_DEFAULTS, type WaitingMediaConfig, type WaitingMediaAsset } from './waiting-media.ts';
 import { describeSilence, silenceData } from './silence-scan.ts';
 import { DEFAULT_TIMEOUT_RANGE_MS, type StateChannel } from './states.ts';
 import { computeSubtitleCues } from './subtitle-cues.ts';
@@ -176,6 +178,7 @@ export const VTUBER_DEFAULTS = {
   musicDir: '',
   musicVolume: 0.65,
   musicGenerationUrl: '',
+  waitingMedia: structuredClone(WAITING_MEDIA_DEFAULTS),
   /**
    * 逐字对齐:每片过 Qwen3-ForcedAligner 拿逐单元时间点,<> 锚点按标注时刻
    * 触发,同时兼当 TTS 质量门。需要 TTS server 带 --aligner-lm/--aligner-audio
@@ -578,6 +581,40 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
         type: 'string', title: '原创歌曲生成服务', 'x-hot': true,
         description: '提供后台生成、内容审核和音频验证的 HTTP(S) 服务地址。留空停用；服务模型和凭据由部署管理。',
       },
+      'worlds.vtuber.waitingMedia.enabled': {
+        type: 'boolean', title: '长思考等待媒体回退', 'x-hot': true,
+        description: '主模型持续等待且演出流有人接收、声音空闲时，由快模型选择预备媒体。正常演出开始即让出；默认关闭。',
+      },
+      'worlds.vtuber.waitingMedia.endpoint': {
+        type: 'string', title: '等待媒体快模型接口', 'x-hot': true,
+        description: '支持 typed-decision 的 HTTP(S) 接口。只接收等待时长和候选媒体；超时或不确定时保持安静。',
+      },
+      'worlds.vtuber.waitingMedia.timeoutMs': {
+        type: 'integer', title: '媒体选择时限', minimum: 1, maximum: 250, 'x-hot': true, 'x-suffix': 'ms',
+      },
+      'worlds.vtuber.waitingMedia.minConfidence': {
+        type: 'number', title: '媒体选择最低置信度', minimum: 0, maximum: 1, 'x-hot': true,
+      },
+      'worlds.vtuber.waitingMedia.afterMs': {
+        type: 'integer', title: '模型等待与静音门槛', minimum: 5000, 'x-hot': true, 'x-suffix': 'ms',
+      },
+      'worlds.vtuber.waitingMedia.intervalMs': {
+        type: 'integer', title: '媒体选择重试间隔', minimum: 5000, 'x-hot': true, 'x-suffix': 'ms',
+      },
+      'worlds.vtuber.waitingMedia.cooldownMs': {
+        type: 'integer', title: '等待媒体播放间隔', minimum: 10000, 'x-hot': true, 'x-suffix': 'ms',
+      },
+      'worlds.vtuber.waitingMedia.maxPerRequest': {
+        type: 'integer', title: '每次主模型等待最多播放', minimum: 1, maximum: 4, 'x-hot': true,
+      },
+      'worlds.vtuber.waitingMedia.musicIds': {
+        type: 'string', title: '等待期间可用歌曲', 'x-hot': true,
+        description: '每行一个现有曲库 trackId，最多三首；只准备时长不超过两分钟的已审核音频。留空不自动播歌。',
+      },
+      'worlds.vtuber.waitingMedia.lines': {
+        type: 'string', title: '等待期间预制台词', 'x-hot': true,
+        description: '每行一句，最多六句，每句八十字以内且不超过八秒；提前以当前统一音色合成。只写自然陪伴台词，不声称任务进展。音色变更后重新准备。',
+      },
       'worlds.vtuber.audioMirrorSystem': {
         type: 'boolean',
         title: '副输出',
@@ -849,6 +886,7 @@ export interface VtuberWorldOptions {
   musicDir?: () => string;
   musicVolume?: () => number;
   musicGenerationUrl?: () => string;
+  waitingMedia?: () => WaitingMediaConfig;
   /** 逐字对齐开关;每次合成时求值以支持控制台热调 */
   alignEnabled?: () => boolean;
   /** 流式输出开关;每片求值。真流式还要 server 能力在场(health 的 streaming 标志) */
@@ -1472,6 +1510,8 @@ export class VtuberWorld implements World {
   private readonly musicVolumeOpt?: () => number;
   private readonly musicGeneration: MusicGenerationClient;
   private musicRequestEpoch = 0;
+  private readonly waitingMedia: WaitingMedia;
+  private readonly waitingMusicReports = new Map<string, (status: MusicPlayback['status']) => void>();
   /** 演出包:词表与曲线。人格资产,由 bot 目录提供 */
   private pack: PerformancePack;
   private readonly packDir: string;
@@ -1551,6 +1591,16 @@ export class VtuberWorld implements World {
   /** 杂谈/游戏模式的弹幕攒批(听弹幕模式逐条即时,不进这里) */
 
   constructor(opts: VtuberWorldOptions = {}) {
+    this.waitingMedia = new WaitingMedia({
+      config: () => ({ ...WAITING_MEDIA_DEFAULTS, ...opts.waitingMedia?.() }),
+      assetKey: () => JSON.stringify([this.speechProfileKey(), this.ttsSpeechOpt?.(), this.ttsServer.state().kind,
+        this.ttsServer.state().health?.voice, opts.musicDir?.(), this.mutedTexts()]),
+      prepare: (cfg, signal) => this.prepareWaitingMedia(cfg, signal),
+      availability: () => ({ live: this.live, idle: !!this.performer && !this.performer.status().playing
+        && this.performer.status().queuedBeats === 0 && this.performer.audioBacklogMs() === 0,
+        quietSinceMs: this.audioIdleStartedAtMs }),
+      report: data => this.reportWaitingMedia(data),
+    });
     this.ttsSpeechOpt = opts.ttsSpeech;
     this.musicLibrary = new MusicLibrary(() => opts.musicDir?.() ?? VTUBER_DEFAULTS.musicDir);
     this.musicVolumeOpt = opts.musicVolume;
@@ -2248,6 +2298,7 @@ export class VtuberWorld implements World {
         catch (error) { return { tracks: [], ...queue(), volume: musicVolume(this.musicVolumeOpt?.()), generation: this.musicGeneration.state(), error: error instanceof Error ? error.message : '歌曲目录不可读' }; }
       },
       play: async (trackId, options = {}) => {
+        this.waitingMedia.yield();
         const epoch = this.musicRequestEpoch;
         try {
           if (!this.performer) throw new Error('演出引擎未启动');
@@ -2298,21 +2349,81 @@ export class VtuberWorld implements World {
   }
 
   private onMusic(playback: MusicPlayback): void {
+    const waiting = this.waitingMusicReports.has(playback.playbackId);
+    this.waitingMusicReports.get(playback.playbackId)?.(playback.status);
+    if (['ended', 'stopped', 'failed'].includes(playback.status)) this.waitingMusicReports.delete(playback.playbackId);
     this.stream.emit('music', { kind: 'music', music: playback });
     const label = { queued: '已排入', playing: '正在播放', ended: '已播放结束', stopped: '已停止', failed: '播放失败' }[playback.status];
     void this.host?.pushEvent({
       ts: nowIso(this.timezone), source: this.id, type: 'vtuber.music', origin: 'external', senderKey: 'vtuber.music',
       text: `[歌曲状态] 「${playback.title}」${label}${playback.error ? `：${playback.error}` : ''}。`,
       meta: { music: { ...playback } },
-    }, { trigger: playback.status === 'ended' || playback.status === 'failed' ? 'flush' : 'piggyback' })
+    }, { trigger: !waiting && (playback.status === 'ended' || playback.status === 'failed') ? 'flush' : 'piggyback' })
       .catch(() => this.log.warn('歌曲状态事件投递失败', { trackId: playback.trackId }));
   }
+
+  private async prepareWaitingMedia(cfg: WaitingMediaConfig, signal: AbortSignal): Promise<WaitingMediaAsset[]> {
+    const assets: WaitingMediaAsset[] = [];
+    for (const trackId of [...new Set(cfg.musicIds.split(/\r?\n/u).map(id => id.trim()).filter(Boolean))].slice(0, 3)) {
+      signal.throwIfAborted();
+      try {
+        const prepared = await this.musicLibrary.prepare(trackId);
+        signal.throwIfAborted();
+        if (prepared.audio.durationMs > 120_000) continue;
+        assets.push({ id: `music_${trackId}`, kind: 'music', title: prepared.track.title.slice(0, 80),
+          durationMs: prepared.audio.durationMs, play: report => {
+            if (!this.performer) throw new Error('演出引擎未启动');
+            this.cancelSilenceRemind();
+            const playback = this.performer.enqueueMusic(prepared, () => musicVolume(this.musicVolumeOpt?.()));
+            this.waitingMusicReports.set(playback.playbackId, report);
+            report('queued');
+            return () => { this.performer?.stopMusic(150, playback.playbackId); };
+          } });
+      } catch (error) {
+        if (signal.aborted) throw error;
+        this.reportWaitingMedia({ status: 'asset-failed', kind: 'music', id: trackId, error: String(error) });
+      }
+    }
+    for (const line of [...new Set(cfg.lines.split(/\r?\n/u).map(text => text.trim()).filter(Boolean))].slice(0, 6)) {
+      signal.throwIfAborted();
+      const text = line.trim();
+      if (!text || text.length > 80 || /[\u0000-\u001f<>【】]/u.test(text) || this.mutedTexts().some(word => text.includes(word))) continue;
+      try {
+        const audio = await this.ttsClient.synth(text, undefined, signal);
+        signal.throwIfAborted();
+        if (audio.durationMs > 8000) continue;
+        assets.push({ id: `speech_${createHash('sha256').update(text).digest('hex').slice(0, 12)}`,
+          kind: 'speech', title: text, durationMs: audio.durationMs, play: report => {
+            if (!this.performer) throw new Error('演出引擎未启动');
+            this.cancelSilenceRemind();
+            return this.performer.enqueuePreparedSpeech(audio, report);
+          } });
+      } catch (error) {
+        if (signal.aborted) throw error;
+        this.reportWaitingMedia({ status: 'asset-failed', kind: 'speech', error: String(error) });
+      }
+    }
+    return assets;
+  }
+
+  private reportWaitingMedia(data: Record<string, unknown>): void {
+    this.log.emit('info', '等待媒体', { event: 'waiting-media', data });
+    if (!['queued', 'playing', 'ended', 'stopped', 'failed'].includes(String(data.status))) return;
+    void this.host?.pushEvent({ ts: nowIso(this.timezone), source: this.id, type: 'vtuber.waiting',
+      origin: 'external', senderKey: 'vtuber',
+      text: `[等待媒体回退] ${JSON.stringify(data)}。只表示音频播放状态，主模型请求与游戏任务保持原状。`,
+      meta: { waitingMedia: data },
+    }, { trigger: 'piggyback' }).catch(() => this.log.warn('等待媒体状态投递失败'));
+  }
+
+  onRunPhase(phase: RunPhase): void { this.waitingMedia.onPhase(phase); }
 
   performConsole(): VtuberPerformConsole {
     return {
       presets: () => PERFORM_PRESETS.map((p) => ({ ...p })),
       perform: (script) => {
         if (!this.performer) return '[失败] World 未启动';
+        this.waitingMedia.yield();
         const text = script.trim();
         if (!text) return '[失败] 台本为空';
         this.tracePerf('测试', `控制台演出测试:「${text.slice(0, 30)}…」`);
@@ -3009,9 +3120,11 @@ export class VtuberWorld implements World {
         err: err instanceof Error ? err.message : String(err),
       });
     }
+    this.waitingMedia.start();
   }
 
   async stop(): Promise<void> {
+    this.waitingMedia.stop();
     this.musicGeneration.stop();
     // 停机前等待整个演出队列，包括正在播放与尚未播放的片段。
     if (this.performer) {
@@ -3154,6 +3267,9 @@ export class VtuberWorld implements World {
 
 
   private onTapEvent(event: StreamEvent): void {
+    if (event.type === 'response.output_item.added' && event.item?.type === 'function_call'
+      && (event.item.name === 'vtuber_act' || event.item.name === 'vtuber_music' || event.item.name === 'vtuber_interrupt'))
+      this.waitingMedia.yield();
     if (event.type === 'response.created') { this.finishTapRound(true); return; }
     if (event.type === 'response.output_text.delta') {
       this.roundContent += event.delta;
@@ -3667,6 +3783,7 @@ export class VtuberWorld implements World {
 
 
   private async handleAct(script: string, callId: string | null, signal?: AbortSignal, round: number | null = null): Promise<string> {
+    this.waitingMedia.yield();
     let cleanupNote = '';
     const receipt = (text: string): string => text + cleanupNote;
     if (!this.performer) return receipt('[vtuber_act 失败] World 未启动');

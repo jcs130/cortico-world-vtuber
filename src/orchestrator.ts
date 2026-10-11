@@ -362,6 +362,7 @@ interface PerfPiece {
   segs: StreamSeg[] | null;
   music?: { playback: import('./music.ts').MusicPlayback; volume: () => number };
   musicCompanion?: boolean;
+  preparedSpeech?: { report: (status: 'queued' | 'playing' | 'ended' | 'stopped' | 'failed') => void; terminal: boolean };
 }
 
 interface PerfBeat {
@@ -765,17 +766,38 @@ export class Performer {
   private lastMusic: import('./music.ts').MusicPlayback | null = null;
 
   /** Console TTS auditions also use queue ownership, so song-only stop cannot cut an audition. */
-  enqueuePreparedSpeech(audio: TtsPiece): void {
+  enqueuePreparedSpeech(audio: TtsPiece,
+    report: (status: 'queued' | 'playing' | 'ended' | 'stopped' | 'failed') => void = () => {}): () => void {
     if (this.stopped) throw new Error('演出引擎未启动');
     const round: Round = { id: ++this.roundSeq, callId: null, beats: [], ended: true, dropped: false };
     const piece: PerfPiece = {
       round, beatIndex: 0, text: audio.text, endsWithEllipsis: false, anchors: [], preCommands: [],
-      tts: audio, synthing: false, failed: false, played: false, segs: null,
+      tts: audio, synthing: false, failed: false, played: false, segs: null, preparedSpeech: { report, terminal: false },
     };
     round.beats.push({ round, beat: { index: 0, commands: [], atLineStart: false, aloneOnLine: false }, pieces: [piece], open: false, cuesFired: false });
     this.rounds.push(round);
+    report('queued');
     this.gate.pulse();
     void this.pump();
+    return () => {
+      if (round.dropped || piece.played) return;
+      round.dropped = true;
+      this.reportPreparedSpeech(piece, 'stopped');
+      if (this.currentPlayback?.piece === piece) {
+        this.clearAnchorTimers();
+        this.d.mixer.dropPendingProsody(this.now());
+        this.d.audio.stop(150);
+        this.d.onSubtitleCut?.();
+      }
+      this.gate.pulse();
+    };
+  }
+
+  private reportPreparedSpeech(piece: PerfPiece, status: 'playing' | 'ended' | 'stopped' | 'failed'): void {
+    const prepared = piece.preparedSpeech;
+    if (!prepared || prepared.terminal) return;
+    if (status !== 'playing') prepared.terminal = true;
+    prepared.report(status);
   }
 
   musicState(): import('./music.ts').MusicQueueState {
@@ -848,8 +870,8 @@ export class Performer {
   }
 
   /** Cancel owned intros/songs/outros, preserving unrelated speech and its synthesis. */
-  stopMusic(fadeMs = 150): number {
-    const songs = [...this.musicGroups.values()];
+  stopMusic(fadeMs = 150, playbackId?: string): number {
+    const songs = [...this.musicGroups.values()].filter(p => playbackId === undefined || p.music!.playback.playbackId === playbackId);
     const rounds = new Set(songs.map((p) => p.round));
     const ownsPlayback = this.currentPlayback !== null && rounds.has(this.currentPlayback.piece.round);
     for (const p of songs) {
@@ -1080,6 +1102,7 @@ export class Performer {
     }
     for (const r of live) {
       r.dropped = true;
+      for (const b of r.beats) for (const p of b.pieces) this.reportPreparedSpeech(p, 'stopped');
       for (const b of r.beats) for (const p of b.pieces) if (p.music) {
         this.finishMusic(p, 'stopped');
         this.musicGroups.delete(p.music.playback.playbackId);
@@ -1963,7 +1986,7 @@ export class Performer {
     const tts = piece.tts;
     if (!tts) return;
     let releaseExpression: (() => void) | undefined;
-    if (piece.musicCompanion) {
+    if (piece.musicCompanion || piece.preparedSpeech) {
       this.playing = true;
       this.currentPlayback = { piece, startedAt: this.now() };
     }
@@ -1971,12 +1994,13 @@ export class Performer {
       const { startedAt, ended } = await this.d.audio.play(tts);
       this.playing = true;
       this.currentPlayback = { piece, startedAt };
-      if (piece.musicCompanion && (piece.round.dropped || this.stopped)) {
+      if ((piece.musicCompanion || piece.preparedSpeech) && (piece.round.dropped || this.stopped)) {
         this.d.audio.stop(150);
         this.prevEnd = await ended;
         return;
       }
       if (piece.round.dropped || this.stopped) return;
+      this.reportPreparedSpeech(piece, 'playing');
       releaseExpression = this.d.backend.speech?.(piece.text, startedAt);
       this.emitSubtitle(piece.text, tts.units ?? null, tts.durationMs, startedAt, 'open');
       this.d.mixer.speechStart((ms) => tts.envelope.at(ms), startedAt);
@@ -1984,8 +2008,10 @@ export class Performer {
       this.scheduleWholeAnchors(piece, tts, startedAt);
       const endTs = await ended;
       this.prevEnd = endTs;
+      this.reportPreparedSpeech(piece, piece.round.dropped || this.stopped ? 'stopped' : 'ended');
     } catch (err) {
-      if (piece.musicCompanion && (piece.round.dropped || this.stopped)) {
+      this.reportPreparedSpeech(piece, piece.round.dropped || this.stopped ? 'stopped' : 'failed');
+      if (piece.preparedSpeech || (piece.musicCompanion && (piece.round.dropped || this.stopped))) {
         this.prevEnd = this.now();
         return;
       }

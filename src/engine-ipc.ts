@@ -13,7 +13,7 @@ import type { StreamEvent } from 'cortico/protocol/open-responses/index.ts';
  * 的处理顺序因此与进程内一致。
  */
 import type { LogNote } from 'cortico/core/ipc-logger.ts';
-import type { EventEnvelope, LLMUsage, PushOptions } from 'cortico/core/types.ts';
+import type { EventEnvelope, LLMUsage, PushOptions, RunPhase } from 'cortico/core/types.ts';
 import type { WorldConsoleDecl } from 'cortico/core/types.ts';
 import type { OverlayConfig, TtsProfile, VtuberDecaySec } from './world.ts';
 
@@ -29,6 +29,7 @@ export interface EngineConfigSnapshot {
   musicDir?: string;
   musicVolume?: number;
   musicGenerationUrl?: string;
+  waitingMedia?: import('./waiting-media.ts').WaitingMediaConfig;
   alignEnabled?: boolean;
   streamEnabled?: boolean;
   incrementalSpeech?: boolean;
@@ -109,6 +110,7 @@ export interface EngineReady {
 
 /** 主 → 子:单向投递 */
 export type EngineCast =
+  | { kind: 'run-phase'; phase: RunPhase }
   | { kind: 'tap'; event: StreamEvent }
   | { kind: 'tap-round-end' }
   | { kind: 'tap-abort'; reason: string }

@@ -8,6 +8,7 @@ import type { EventEnvelope, WorldHost, PushOptions } from 'cortico/core/types.t
 import { PassThrough } from 'node:stream';
 import { HANDOFF_NOTE, type VtuberWorldOptions } from '../../src/world.ts';
 import { TTS_SPEECH_DEFAULTS } from '../../src/tts-speech.ts';
+import { WAITING_MEDIA_DEFAULTS } from '../../src/waiting-media.ts';
 import { attachStdio, VtuberWorldProxy } from '../../src/proxy.ts';
 import { makeWav, recordingLogger, type LogLine } from './helpers.ts';
 
@@ -222,6 +223,50 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     expect((proxy as unknown as { child: { pid: number } }).child.pid).toBe(enginePid);
     await freshProxy();
   });
+
+  it('a pending model phase independently plays a cached greeting, then yields without new TTS', async () => {
+    const classifier = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        const choices = Object.keys(body.questions.media.criteria);
+        const selected = choices.find(id => id !== 'quiet')!;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ answers: { media: { choice: selected, confidence: .99,
+          probabilities: Object.fromEntries(choices.map(id => [id, id === selected ? .99 : .01])) } } }));
+      });
+    });
+    await new Promise<void>(resolve => classifier.listen(0, '127.0.0.1', resolve));
+    let response: Response | undefined;
+    const line = '让我把这个想清楚呀。';
+    try {
+      await freshProxy({ ttsService: { kind: 'indextts' },
+        ttsSpeech: () => ({ ...TTS_SPEECH_DEFAULTS, enabled: true, voice: 'prepared-voice' }),
+        waitingMedia: () => ({ ...WAITING_MEDIA_DEFAULTS, enabled: true,
+          endpoint: `http://127.0.0.1:${(classifier.address() as { port: number }).port}`,
+          lines: line, afterMs: 200, maxPerRequest: 1, timeoutMs: 250 }),
+      });
+      await waitFor(() => ttsInputs.includes(line));
+      expect(ttsBodies.find(body => body.input === line)?.voice).toBe('prepared-voice');
+      const synthCount = ttsInputs.filter(text => text === line).length;
+      const eventStart = host.events.length;
+      response = await fetch(proxy.streamUrl, { headers: { Accept: 'text/event-stream' } });
+      await waitFor(() => proxy.live);
+      proxy.onRunPhase({ state: 'model', round: 1, running: [], enteredAt: new Date().toISOString() });
+      const statuses = () => host.events.slice(eventStart).filter(row => row.e.type === 'vtuber.waiting');
+      const hasStatus = (status: string) => statuses().some(row => (row.e.meta?.waitingMedia as { status?: string })?.status === status);
+      await waitFor(() => hasStatus('playing'));
+      proxy.onRunPhase({ state: 'tools', round: 1, running: [], enteredAt: new Date().toISOString() });
+      await waitFor(() => hasStatus('stopped'));
+      expect(statuses().every(row => row.opts?.trigger === 'piggyback')).toBe(true);
+      expect(ttsInputs.filter(text => text === line)).toHaveLength(synthCount);
+    } finally {
+      await response?.body?.cancel();
+      await freshProxy();
+      await new Promise<void>(resolve => classifier.close(() => resolve()));
+    }
+  }, 20_000);
 
   it('vtuber_act 直连:回执从子进程原样返回,空 script 沉默', async () => {
     const act = proxy.tools().find((t) => t.name === 'vtuber_act');

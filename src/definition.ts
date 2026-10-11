@@ -38,6 +38,7 @@ export interface VtuberConfigSection {
   musicDir: string;
   musicVolume: number;
   musicGenerationUrl: string;
+  waitingMedia: import('./waiting-media.ts').WaitingMediaConfig;
   alignEnabled: boolean;
   streamEnabled: boolean;
   incrementalSpeech: boolean;
@@ -103,6 +104,7 @@ export const VTUBER: WorldDefinition<VtuberConfigSection> = {
       musicDir: () => cfg.musicDir ?? VTUBER_DEFAULTS.musicDir,
       musicVolume: () => cfg.musicVolume ?? VTUBER_DEFAULTS.musicVolume,
       musicGenerationUrl: () => cfg.musicGenerationUrl ?? VTUBER_DEFAULTS.musicGenerationUrl,
+      waitingMedia: () => ({ ...VTUBER_DEFAULTS.waitingMedia, ...cfg.waitingMedia }),
       alignEnabled: () => cfg.alignEnabled,
       streamEnabled: () => cfg.streamEnabled,
       incrementalSpeech: () => cfg.incrementalSpeech,

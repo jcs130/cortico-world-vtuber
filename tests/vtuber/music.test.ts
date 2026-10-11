@@ -147,6 +147,39 @@ function performerFixture(options: { failMusic?: boolean; delayedStart?: boolean
 }
 
 describe('music shares the ordinary performer queue', () => {
+  it('cancels a waiting-owned song without removing an independently queued song or speech', async () => {
+    const f = performerFixture();
+    const owned = f.enqueue(song('waiting', 30_000));
+    f.enqueue(song('requested', 1000)); f.speech('retained');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(f.performer.stopMusic(150, owned.playbackId)).toBe(1);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(f.played).toEqual(['music', 'music', 'retained']);
+    expect(f.events.filter(e => e.status === 'ended').map(e => e.trackId)).toEqual(['requested']);
+    expect(f.events.filter(e => e.status === 'stopped').map(e => e.trackId)).toEqual(['waiting']);
+  });
+
+  it('prepared speech has actual playback receipts and cancellation ownership during device startup', async () => {
+    const f = performerFixture({ delayedSpeechStart: true });
+    const receipts: string[] = [];
+    const cancel = f.performer.enqueuePreparedSpeech(piece('waiting', 3000), status => receipts.push(status));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(receipts).toEqual(['queued']);
+    f.enqueue(song('retained', 1000)); cancel(); f.releaseStart();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(receipts).toEqual(['queued', 'stopped']);
+    expect(f.events.filter(e => e.status === 'ended').map(e => e.trackId)).toEqual(['retained']);
+    const stops = f.stops.length; cancel(); expect(f.stops).toHaveLength(stops);
+  });
+
+  it('prepared speech reports playing and ended without synthesizing the stored clip again', async () => {
+    const f = performerFixture(); const receipts: string[] = [];
+    f.performer.enqueuePreparedSpeech(piece('waiting', 200), status => receipts.push(status));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(receipts).toEqual(['queued', 'playing', 'ended']);
+    expect(f.played).toEqual(['waiting']); expect(f.synth).not.toHaveBeenCalled();
+  });
+
   it('reports remaining audio across current and queued playback without clock-sized status churn', async () => {
     const f = performerFixture();
     expect(f.performer.statusLine()).toBe('[演出状态] 安静');

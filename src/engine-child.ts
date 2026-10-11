@@ -159,6 +159,7 @@ function configGetters(initial: EngineConfigSnapshot): Partial<VtuberWorldOption
   if ('musicDir' in initial) out.musicDir = () => snap.musicDir ?? VTUBER_DEFAULTS.musicDir;
   if ('musicVolume' in initial) out.musicVolume = () => snap.musicVolume ?? VTUBER_DEFAULTS.musicVolume;
   if ('musicGenerationUrl' in initial) out.musicGenerationUrl = () => snap.musicGenerationUrl ?? VTUBER_DEFAULTS.musicGenerationUrl;
+  if ('waitingMedia' in initial) out.waitingMedia = () => snap.waitingMedia ?? VTUBER_DEFAULTS.waitingMedia;
   if ('streamEnabled' in initial) out.streamEnabled = () => snap.streamEnabled === true;
   if ('incrementalSpeech' in initial) out.incrementalSpeech = () => snap.incrementalSpeech === true;
   if ('speechCapSec' in initial) out.speechCapSec = () => snap.speechCapSec as number;
@@ -317,6 +318,9 @@ process.on('message', (msg: MainToChild) => {
   if (shuttingDown) return;
   const cast = msg.cast;
   switch (cast.kind) {
+    case 'run-phase':
+      mod?.onRunPhase(cast.phase);
+      return;
     case 'tap':
       tap?.onEvent(cast.event);
       return;

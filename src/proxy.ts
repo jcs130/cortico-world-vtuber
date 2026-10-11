@@ -26,6 +26,7 @@ import type {
   OutputTap,
   ToolDef,
   ToolOutcome,
+  RunPhase,
 } from 'cortico/core/types.ts';
 import { nowIso } from 'cortico/core/util.ts';
 import { emitLogNote } from 'cortico/core/ipc-logger.ts';
@@ -369,6 +370,8 @@ export class VtuberWorldProxy implements World {
   statusLine(): string | null {
     return this.ready ? this.statusCache : null;
   }
+
+  onRunPhase(phase: RunPhase): void { this.cast({ kind: 'run-phase', phase }); }
 
   /** 完整演出状态取自本连接已收到的通知；读取不更新观察时刻。 */
   requestFacts(): WorldRequestFacts | null {
@@ -830,6 +833,7 @@ export class VtuberWorldProxy implements World {
     if (o.musicDir) s.musicDir = o.musicDir() ?? d.musicDir;
     if (o.musicVolume) s.musicVolume = o.musicVolume() ?? d.musicVolume;
     if (o.musicGenerationUrl) s.musicGenerationUrl = o.musicGenerationUrl() ?? d.musicGenerationUrl;
+    if (o.waitingMedia) s.waitingMedia = structuredClone(o.waitingMedia() ?? d.waitingMedia);
     if (o.alignEnabled) s.alignEnabled = o.alignEnabled() ?? d.alignEnabled;
     if (o.streamEnabled) s.streamEnabled = o.streamEnabled() ?? d.streamEnabled;
     if (o.incrementalSpeech) s.incrementalSpeech = o.incrementalSpeech() ?? d.incrementalSpeech;
