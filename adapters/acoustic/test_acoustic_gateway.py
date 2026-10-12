@@ -150,6 +150,22 @@ class AcousticTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('X-TTS-Acoustic-Assets', response.headers)
         self.assertEqual(self.gateway.completed, 0)
 
+    async def test_disabled_catalog_rejects_cues_without_native_fallback(self):
+        self.gateway.enabled = False
+        for stream in (True, False):
+            response, raw = await self.post('before[laughing]after', stream=stream)
+            self.assertEqual(response.status, 409)
+            self.assertEqual(json.loads(raw)['code'], 'acoustic_catalog_disabled')
+        self.assertEqual(self.seen, [])
+        self.assertEqual(self.gateway.completed, 0)
+        health = await (await self.client.get(self.url + '/health')).json()
+        self.assertFalse(health['acoustic_assets']['enabled'])
+        self.assertEqual(health['acoustic_assets']['fallback_reason'], 'catalog-disabled')
+        response, raw = await self.post('before', instructions='smiling')
+        self.assertEqual(response.status, 200)
+        self.assertEqual(self.seen[0]['input'], 'before')
+        self.assertEqual(self.seen[0]['instructions'], 'smiling')
+
     async def test_reference_change_falls_back_to_native_with_visible_reason(self):
         self.healthy_ref = sha256(b'changed')
         response, raw = await self.post('[laughing]')

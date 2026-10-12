@@ -26,7 +26,7 @@ VoxCPM2 的拼音、括号控制与分句要求依据其
 | --- | --- |
 | [VoxCPM2 官方 cookbook](https://voxcpm.readthedocs.io/en/latest/cookbook.html) | 推荐的通用笑声标签是 `[laughing]`；少量使用标签，简化描述，实际听感逐样验证 |
 | [VoxCPM2 官方使用说明](https://voxcpm.readthedocs.io/en/latest/usage_guide.html) | 区分可控克隆与 Hi-Fi 续写；Hi-Fi 模式忽略控制描述，极短输入也存在稳定性限制 |
-| [NVVSpeech Track 2 官方基线](https://github.com/NVVSpeech-Challenge/NVVSpeech-Challenge-Track2-Baseline) | 以 VoxCPM2 为基座专门微调非语言发声的模型；其标签与权重配套，不直接作为原版服务能力 |
+| [NVVSpeech Track 2 官方基线](https://github.com/NVVSpeech-Challenge/NVVSpeech-Challenge-Track2-Baseline)、[公开权重](https://huggingface.co/NVVSpeech-Challenge/NVVSpeech-Challenge-Track2-Baseline)与[参考克隆推理脚本](https://github.com/NVVSpeech-Challenge/NVVSpeech-Challenge-Track2-Baseline/blob/main/scripts/test_voxcpm_ft_infer.py) | 以 VoxCPM2 为基座全量微调的 16 类非语言发声模型，可下载权重直接推理并传参考音频；中文标签与该权重配套。整句表达、音色与实时性需要实际核验，不能当成原版服务已有能力 |
 | [非语言发声偏好优化研究](https://arxiv.org/abs/2609.11260) | 分别评估发声是否发生、表达效果、自然度、质量及与台词的衔接；参考离线多候选筛选的方法，不在实时口播中增加多轮生成 |
 | [CosyVoice 官方推理示例](https://github.com/QwenAudio/CosyVoice/blob/main/example.py)与[分词器控制标记](https://github.com/QwenAudio/CosyVoice/blob/main/cosyvoice/tokenizer/tokenizer.py) | 离线生成笑声候选；模型内部使用 `[laughter]`，演出入口仍使用现有 `[laughing]`，由缓存适配器播放筛选后的音频 |
 | [Seed-VC 原始项目](https://github.com/Plachtaa/seed-vc) | 离线将发声候选按同一 E3 参考转换；声音转换结果仍需核对笑法、本人音色与前后衔接 |
@@ -35,3 +35,5 @@ VoxCPM2 的拼音、括号控制与分句要求依据其
 本方法在当前对话内组织台词，无额外逐句润色调用。声音合成继续使用现役演出 World 的服务与固定参考音频；文字表达、人设一致性、声音听感和真实现场执行分别验证。
 
 缓存发声的运行契约由扩展内 `adapters/acoustic/README.md` 说明。素材、来源记录与听感反馈保存在部署中；普通实时口播不加载离线制作模型。
+
+当前两段缓存轻笑均未通过萌悦听感验收，已停用；CosyVoice 与 Seed-VC 保留为候选制作方法，不作为已认可的线上发声方案。

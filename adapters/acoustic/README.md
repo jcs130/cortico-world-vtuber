@@ -25,6 +25,7 @@ python adapters/acoustic/acoustic_gateway.py --config /absolute/path/gateway.jso
 {
   "host": "127.0.0.1",
   "port": 8017,
+  "enabled": true,
   "upstream_url": "http://127.0.0.1:8014",
   "manifest_file": "/absolute/path/catalog/manifest.json",
   "timeout_sec": 60
@@ -34,6 +35,11 @@ python adapters/acoustic/acoustic_gateway.py --config /absolute/path/gateway.jso
 Set `worlds.vtuber.ttsUrl` to the gateway address and restart the VTuber World to
 apply the endpoint. Keep the original backend running. Reverting the address and
 restarting that World removes the gateway from the playback path.
+
+Set `enabled:false` and restart only the gateway to withdraw the catalog. Ordinary
+speech still passes through; catalog cue requests return HTTP 409 with
+`code:acoustic_catalog_disabled` and do not fall back to native synthesis. Health
+reports `enabled:false` and `fallback_reason:catalog-disabled`.
 
 ## Catalog contract
 
