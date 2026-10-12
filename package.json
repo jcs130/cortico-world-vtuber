@@ -31,6 +31,7 @@
     "docs",
     "adapters/indextts",
     "adapters/voxcpm2",
+    "adapters/acoustic",
     "README.md",
     "THIRD_PARTY_NOTICES.md"
   ],
