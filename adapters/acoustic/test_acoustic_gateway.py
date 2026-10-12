@@ -31,6 +31,7 @@ class AcousticTests(unittest.IsolatedAsyncioTestCase):
         self.seen = []
         self.closed = asyncio.Event()
         self.healthy_ref = self.manifest['reference_sha256']
+        self.native_capability = False
         self.runners = []
         upstream = web.Application()
         upstream.router.add_get('/health', self.health)
@@ -59,7 +60,9 @@ class AcousticTests(unittest.IsolatedAsyncioTestCase):
 
     async def health(self, request):
         return web.json_response({'status': 'ok', 'voice': 'test-voice',
-                                  'reference_sha256': self.healthy_ref, 'style_instructions_supported': True})
+                                  'reference_sha256': self.healthy_ref, 'style_instructions_supported': True,
+                                  'native_acoustic_cues':self.native_capability,
+                                  'acoustic_tag_aliases':{'[laughing]':'[笑声]'} if self.native_capability else None})
 
     async def speech(self, request):
         body = await request.json()
@@ -112,6 +115,28 @@ class AcousticTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(b['instructions'] == 'smiling' and b['seed'] == 7 for b in self.seen))
         self.assertEqual(response.headers['X-TTS-Acoustic-Assets'], 'soft-1')
         self.assertEqual(self.gateway.last_request['assets_played'], ['soft-1'])
+
+    async def test_explicit_native_mode_forwards_whole_utterance_without_cached_assets(self):
+        self.gateway.enabled=False
+        self.gateway.native_cues_enabled=True
+        self.native_capability=True
+        response,raw=await self.post('before[laughing]after',instructions='smiling')
+        self.assertEqual(response.status,200)
+        self.assertEqual([body['input'] for body in self.seen],['before[laughing]after'])
+        self.assertEqual(raw[44:],b'\x02\x00'*80)
+        self.assertNotIn('X-TTS-Acoustic-Assets',response.headers)
+        self.assertIsNone(self.gateway.last_request)
+
+    async def test_native_opt_in_requires_matching_reference_and_declared_backend_tags(self):
+        self.gateway.enabled=False
+        self.gateway.native_cues_enabled=True
+        response,_=await self.post('[laughing]')
+        self.assertEqual(response.status,409)
+        self.native_capability=True
+        self.healthy_ref='0'*64
+        response,_=await self.post('[laughing]')
+        self.assertEqual(response.status,409)
+        self.assertEqual(self.seen,[])
 
     async def test_nonstream_returns_valid_finite_wav(self):
         response, raw = await self.post('before[laughing]after', stream=False)

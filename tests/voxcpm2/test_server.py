@@ -15,6 +15,7 @@ import wave
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'adapters/voxcpm2'))
 from voxcpm2_server import VoiceEngine, VoiceServer, prepare_text
+from synthesis_metrics import SynthesisMetrics
 from unittest.mock import patch
 
 
@@ -24,6 +25,7 @@ class AudioEngine:
         self.voice = 'reference-speaker'
         self.reference_sha256 = hashlib.sha256(b'reference').hexdigest()
         self.config = {'reference_text': 'Reference transcript.', 'segment_chars': 80}
+        self.metrics = SynthesisMetrics()
         self.lock = threading.Lock()
         self.completed = self.failed = self.cancelled = 0
         self.last_request = None
@@ -36,7 +38,7 @@ class AudioEngine:
     def health(self):
         return {'status': 'ok', 'cancelled': self.cancelled}
 
-    def generate(self, text, seed, instructions=None):
+    def generate(self, text, seed, instructions=None, *, observe=None, on_start=None, on_finish=None):
         self.texts.append(text)
         self.instructions.append(instructions)
         try:
@@ -300,6 +302,35 @@ class ServiceTest(unittest.TestCase):
         with self.request('[sigh]', streaming=True) as response:
             self.assertGreater(len(response.read()), 44)
         self.assertEqual(self.engine.texts[-1], '[sigh]')
+
+    def test_configured_native_tags_survive_cleanup_and_share_one_generation(self):
+        self.engine.config.update(acoustic_tag_aliases={'[laughing]':'[笑声]', '[sigh]':'[叹气]'},
+                                  sentence_segmentation=False, backend='specialized-speech')
+        original='你还笑我，[LAUGHING]好啦，这次算你赢。[叹气]泥土干了。'
+        expected='你还笑我，[笑声]好啦，这次算你赢。[叹气]泥土{gan1}了。'
+        for streaming in (False,True):
+            with self.request(original,streaming=streaming) as response:
+                self.assertGreater(len(response.read()),44)
+                if streaming:self.assertEqual(response.headers['X-TTS-Backend'],'specialized-speech')
+            self.assertEqual(self.engine.texts,[expected])
+            self.engine.texts.clear()
+
+    def test_configured_native_tags_are_protected_from_contextual_pronunciation(self):
+        def contextual(text):
+            self.assertNotIn('笑声',text)
+            self.assertNotIn('叹气',text)
+            return text.replace('还','<还|HAI2>')
+        with patch('voxcpm2_server.normalize_pronunciation',side_effect=contextual):
+            prepared=prepare_text('[笑声]还在呢。[sigh]',contextual=True,
+                                  acoustic_tag_aliases={'[laughing]':'[笑声]','[sigh]':'[叹气]'})
+        self.assertEqual(prepared,'[笑声]{hai2}在呢。[叹气]')
+
+    def test_invalid_native_tag_configuration_fails_before_generation(self):
+        for aliases in ([],{'laughing':'[笑声]'},{'[laughing]':'笑声'},{'[laughing]':'[笑声]\n正文'}):
+            self.engine.config['acoustic_tag_aliases']=aliases
+            with self.assertRaises(urllib.error.HTTPError) as caught:self.request('[laughing]')
+            self.assertEqual(caught.exception.code,400)
+        self.assertEqual(self.engine.texts,[])
 
     def test_later_failure_aborts_chunked_stream(self):
         self.engine.fail_at = 'later'

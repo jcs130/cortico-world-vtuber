@@ -41,6 +41,15 @@ speech still passes through; catalog cue requests return HTTP 409 with
 `code:acoustic_catalog_disabled` and do not fall back to native synthesis. Health
 reports `enabled:false` and `fallback_reason:catalog-disabled`.
 
+After a native backend has been auditioned, `native_cues_enabled:true` explicitly
+routes catalog cue requests as complete utterances to that backend. Cached
+assets remain disabled when `enabled:false`. Native routing requires a matching
+reference, `native_acoustic_cues:true` and a nonempty `acoustic_tag_aliases` map
+in upstream health; otherwise it returns HTTP 409 with
+`code:native_acoustic_cues_unavailable`. Reference, voice and style validation
+still apply. This explicit opt-in takes precedence over cached composition and
+is reported separately in `/health.acoustic_assets.native_cues_enabled`.
+
 ## Catalog contract
 
 ```json

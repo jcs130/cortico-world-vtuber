@@ -31,7 +31,7 @@ from inference_worker import InferenceWorker
 from pronunciation_bridge import native_phonemes
 from pronunciation import initialize_pronunciation, normalize_pronunciation, pronunciation_health
 
-VERSION = '1.3.0'
+VERSION = '1.4.0'
 MAX_BODY = 2 * 1024 * 1024
 CUE_RULES = [(re.compile(r'(?:开心|温柔|惊讶|害怕|生气|难过|平静|严肃|得意|委屈|happy|gentle|calm|serious)', re.I), 'style')]
 _NUMBER_TOKEN = r'[-+]?\d+(?:\.\d+)?'
@@ -60,14 +60,35 @@ def prepare_instructions(value, enabled: bool) -> str | None:
     return value
 
 
-def prepare_text(text: str, aliases: dict[str, str] | None = None, *, contextual: bool = False) -> str:
+def prepare_text(text: str, aliases: dict[str, str] | None = None, *, contextual: bool = False,
+                 acoustic_tag_aliases: dict[str, str] | None = None) -> str:
     if aliases is not None and (
         not isinstance(aliases, dict)
         or any(not isinstance(key, str) or not key or not isinstance(value, str) or not value
                for key, value in aliases.items())
     ):
         raise ValueError('Pronunciation aliases must map nonempty strings to nonempty strings')
-    clean, _, _, _ = strip_stage_directions(text, CUE_RULES, preserve_acoustic_cues=True)
+    protected = {}
+    if acoustic_tag_aliases is not None:
+        if (not isinstance(acoustic_tag_aliases, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            or not re.fullmatch(r'\[[^\[\]<>\r\n]+\]', key)
+            or not re.fullmatch(r'\[[^\[\]<>\r\n]+\]', value)
+            for key, value in acoustic_tag_aliases.items())):
+            raise ValueError('Acoustic aliases must map complete bracketed tags')
+        mapping = {key.casefold(): value for key, value in acoustic_tag_aliases.items()}
+        mapping.update({value.casefold(): value for value in acoustic_tag_aliases.values()})
+        prefix = '<acoustic-' + uuid.uuid4().hex + '-'
+        def protect(match):
+            tag = mapping.get(match[0].casefold())
+            if tag is None:
+                return match[0]
+            marker = prefix + str(len(protected)) + '>'
+            protected[marker] = tag
+            return marker
+        text = re.sub(r'\[[^\[\]\r\n]+\]', protect, text)
+    clean, _, _, _ = strip_stage_directions(text, CUE_RULES,
+        preserve_acoustic_cues=acoustic_tag_aliases is None)
     if aliases:
         pattern = '|'.join(re.escape(key) for key in sorted(aliases, key=len, reverse=True))
         clean = re.sub(pattern, lambda match: aliases[match.group()], clean)
@@ -82,7 +103,10 @@ def prepare_text(text: str, aliases: dict[str, str] | None = None, *, contextual
     clean = _SHORT_UTENSILS.sub('家{shi5}', clean)
     if contextual:
         clean = normalize_pronunciation(clean)
-    return native_phonemes(clean)
+    clean = native_phonemes(clean)
+    for marker, tag in protected.items():
+        clean = clean.replace(marker, tag)
+    return clean
 
 
 def stream_header(rate: int) -> bytes:
@@ -102,6 +126,7 @@ class VoiceEngine:
         from synthesis_metrics import SynthesisMetrics
         self.metrics = SynthesisMetrics()
         self.config = config
+        prepare_text('', acoustic_tag_aliases=config.get('acoustic_tag_aliases'))
         self.default_instructions = prepare_instructions(
             config.get('default_instructions'), bool(config.get('enable_style_instructions', False)))
         self.voice = config['voice']
@@ -140,6 +165,11 @@ class VoiceEngine:
             free, _ = torch.cuda.mem_get_info()
             if free < int(config.get('minimum_free_gpu_mib', 7000)) * 1024 ** 2:
                 raise RuntimeError('Insufficient free GPU memory to load the speech model')
+            fraction = config.get('gpu_memory_fraction')
+            if fraction is not None:
+                if isinstance(fraction, bool) or not isinstance(fraction, (int, float)) or not 0 < fraction <= 1:
+                    raise ValueError('GPU memory fraction must be greater than zero and at most one')
+                torch.cuda.set_per_process_memory_fraction(fraction)
             self.cuda_stream = torch.cuda.Stream(priority=int(config.get('cuda_priority', 0)))
         optimize = bool(config.get('optimize', False))
         if optimize:
@@ -148,6 +178,12 @@ class VoiceEngine:
             import triton  # noqa: F401
         with self._stream_context():
             self.model = VoxCPM(config['model_dir'], enable_denoiser=False, optimize=optimize, device=device)
+            if config.get('reference_encoder_device', device) == 'cpu' and device == 'cuda':
+                vae = self.model.tts_model.audio_vae
+                vae.encoder.to('cpu')
+                encode = vae.encode
+                vae.encode = lambda audio, sample_rate: encode(audio.to('cpu'), sample_rate)
+                torch.cuda.empty_cache()
             self.rate = self.model.tts_model.sample_rate
             self.prompt_cache = self.model.tts_model.build_prompt_cache(
                 reference_wav_path=config['reference_file'], prompt_wav_path=config['reference_file'],
@@ -213,7 +249,7 @@ class VoiceEngine:
                 iterator.close()
 
     def health(self):
-        return {'status': 'ok', 'backend': 'voxcpm2-official-hifi', 'version': VERSION,
+        return {'status': 'ok', 'backend': self.config.get('backend', 'voxcpm2-official-hifi'), 'version': VERSION,
                 'streaming': True, 'streaming_granularity': 'latent-patches',
                 'voice': self.voice, 'voice_policy': 'configured-reference-only',
                 'reference_sha256': self.reference_sha256,
@@ -224,7 +260,9 @@ class VoiceEngine:
                 'style_prompt_mode': 'reference' if self.style_cache is not None else None,
                 'style_instruction_max_chars': 64,
                 'native_acoustic_cues': True,
-                'sentence_segmentation': True,
+                'acoustic_tag_aliases': self.config.get('acoustic_tag_aliases'),
+                'sentence_segmentation': self.config.get('sentence_segmentation', True),
+                'reference_encoder_device': self.config.get('reference_encoder_device', self.config.get('device', 'cuda')),
                 'pronunciation_fallbacks': ['soil-dryness-gan1', 'utensils-colloquial', 'short-utensils-shi5'],
                 'pronunciation': pronunciation_health() if self.contextual_pronunciation else {'context_ready': False, 'policy': 'native-model'},
                 'explicit_pinyin_supported': True,
@@ -306,10 +344,19 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('Invalid seed')
             preparation_started = time.monotonic()
             clean = prepare_text(text, engine.config.get('pronunciation_aliases'),
-                                 contextual=bool(engine.config.get('pronunciation_model_dir')))
+                                 contextual=bool(engine.config.get('pronunciation_model_dir')),
+                                 acoustic_tag_aliases=engine.config.get('acoustic_tag_aliases'))
             pronunciation_ms = round((time.monotonic() - preparation_started) * 1000, 2)
             limit = int(engine.config.get('segment_chars', 80))
             texts = punctuation_segments(clean, max_chars=limit)
+            if not engine.config.get('sentence_segmentation', True):
+                grouped = []
+                for segment in texts:
+                    if grouped and len(grouped[-1]) + len(segment) <= limit:
+                        grouped[-1] += segment
+                    else:
+                        grouped.append(segment)
+                texts = grouped
             if any(len(segment) > 200 for segment in texts):
                 raise ValueError('An unpunctuated clause exceeds 200 characters')
         except (ValueError, TypeError, AttributeError) as exc:
@@ -444,7 +491,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'audio/wav')
         self.send_header('Transfer-Encoding', 'chunked')
         self.send_header('Connection', 'close')
-        self.send_header('X-TTS-Backend', 'voxcpm2-official-hifi')
+        self.send_header('X-TTS-Backend', engine.config.get('backend', 'voxcpm2-official-hifi'))
         self.send_header('X-TTS-Reference-SHA256', engine.reference_sha256)
         self.send_header('X-TTS-Prompt-Mode', record['mode'])
         self.send_header('X-TTS-Request-Id', record['id'])

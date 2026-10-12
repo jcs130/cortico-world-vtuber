@@ -197,6 +197,9 @@ class Gateway:
         self.enabled = config.get('enabled', True)
         if not isinstance(self.enabled, bool):
             raise ValueError('Acoustic enabled must be a boolean')
+        self.native_cues_enabled = config.get('native_cues_enabled', False)
+        if not isinstance(self.native_cues_enabled, bool):
+            raise ValueError('Native cues enabled must be a boolean')
         self.catalog = Catalog(Path(config['manifest_file']))
         self.upstream = config['upstream_url'].rstrip('/')
         if not re.fullmatch(r'https?://[^/?#]+', self.upstream):
@@ -222,7 +225,8 @@ class Gateway:
         try:
             health = await self.health()
             health['acoustic_assets'] = {
-                'enabled': self.enabled and self.catalog.matches(health), 'gateway_version': '1.1.1',
+                'enabled': self.enabled and self.catalog.matches(health), 'gateway_version': '1.2.0',
+                'native_cues_enabled': self.native_cues_enabled,
                 'gateway_pid': os.getpid(), 'manifest_sha256': self.catalog.digest,
                 'voice': self.catalog.voice, 'reference_sha256': self.catalog.reference_sha256,
                 'cues': {cue: [a['id'] for a in assets] for cue, assets in self.catalog.assets.items()},
@@ -251,6 +255,14 @@ class Gateway:
                     body = json.loads(raw)
                     text = body.get('input', body.get('text', ''))
                     if isinstance(text, str) and self.catalog.pattern.search(text):
+                        if self.native_cues_enabled:
+                            health = await self.health()
+                            if (not self.catalog.matches(health) or not health.get('native_acoustic_cues')
+                                    or not health.get('acoustic_tag_aliases')):
+                                return web.json_response({'error': 'Configured native cue backend is unavailable',
+                                                          'code': 'native_acoustic_cues_unavailable'}, status=409)
+                            self.catalog.validate(body, text, health)
+                            return await self.forward(request, raw)
                         if not self.enabled:
                             return web.json_response({'error': 'Acoustic catalog disabled by operator',
                                                       'code': 'acoustic_catalog_disabled'}, status=409)

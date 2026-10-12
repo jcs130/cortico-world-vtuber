@@ -208,6 +208,38 @@ Health distinguishes model `first_pcm_ms` from socket `first_output_ms`.
 Run HTTP and cancellation checks with
 `python -m unittest discover -s tests/voxcpm2 -v` from the extension root.
 
+## Specialized VoxCPM2 checkpoints
+
+`model_dir` may select an architecture-compatible fine-tuned checkpoint. Set
+`backend` to its deployed identity; health and `X-TTS-Backend` report that value.
+Keep the selected model revision and reference hash in deployment configuration.
+
+The optional `acoustic_tag_aliases` maps complete bracketed source tags to the
+checkpoint's canonical tags, for example `{"[laughing]":"[笑声]"}`. Canonical
+tags are accepted too. Configured tags retain their position through stage
+cleanup and pronunciation processing. They are generated with the surrounding
+dialogue; no cached audio is inserted. With this map configured, the adapter
+preserves only its declared acoustic controls. `/health` exposes the map.
+
+`sentence_segmentation:false` groups adjacent complete sentences up to
+`segment_chars` so a short utterance is generated together. Long input keeps
+the punctuation splitter and generation limits. The default remains per-sentence
+generation. Delivery descriptions still use the separate `instructions` field
+and the reference-only prompt; placing them into continuation text can speak them.
+
+`reference_encoder_device:"cpu"` moves reference encoding off the GPU; decoded
+speech remains on the configured model device. Prompt features are prepared at
+startup. `gpu_memory_fraction` optionally limits this process's PyTorch allocator
+to a fraction in `(0,1]`; it does not reserve memory or limit other processes.
+Select the model's context length in its local config before loading. Measure
+compiled warmup memory and sustained streaming before switching the live route.
+
+The [NVVSpeech Track 2 baseline](https://github.com/NVVSpeech-Challenge/NVVSpeech-Challenge-Track2-Baseline)
+uses a VoxCPM2 full fine-tune with 16 nonverbal controls and 48 kHz output. Its
+English labels map to canonical Chinese tags. Clone and style fidelity require
+listening checks with the intended reference; the architecture alone does not
+establish them.
+
 The upstream [usage guide](https://voxcpm.readthedocs.io/en/latest/usage_guide.html)
 and [mode clarification](https://github.com/OpenBMB/VoxCPM/issues/210) describe
 the Hi-Fi reference and style-control behavior.
