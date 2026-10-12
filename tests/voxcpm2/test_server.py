@@ -14,7 +14,7 @@ import urllib.request
 import wave
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'adapters/voxcpm2'))
-from voxcpm2_server import VoiceEngine, VoiceServer, prepare_text
+from voxcpm2_server import VoiceEngine, VoiceServer, prepare_text, normalize_terminal_wave
 from synthesis_metrics import SynthesisMetrics
 from unittest.mock import patch
 
@@ -160,6 +160,40 @@ class ServiceTest(unittest.TestCase):
                 self.assertEqual(''.join(self.engine.texts), expected)
                 self.engine.texts.clear()
         self.assertEqual(prepare_text('位置（+12.5，0，-3）'), '位置正十二点五，零，负三')
+
+    def test_terminal_wave_has_a_decoder_stop_in_both_routes(self):
+        self.engine.config['sentence_segmentation'] = False
+        original = '红石粉用光啦，我去仓库补一摞回来，再把最后那几格线接上。欢迎铃就差一小步咯～'
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                with self.request(original, streaming=streaming) as response:
+                    self.assertGreater(len(response.read()), 44)
+                self.assertEqual(self.engine.texts, [original[:-1] + '。'])
+                self.assertEqual(self.engine.last_request['input_sha256'], hashlib.sha256(original.encode()).hexdigest())
+                self.engine.texts.clear()
+
+    def test_terminal_wave_keeps_cues_quotes_pronunciation_and_existing_stops(self):
+        cases = {
+            '好呀～～': '好呀。',
+            '好呀~': '好呀。',
+            '好呀〜': '好呀。',
+            '好呀！～': '好呀！',
+            '她说「好呀～」': '她说「好呀。」',
+            '好了～ [笑声]': '好了。 [笑声]',
+            '火还烧{zhe5}～[sigh]': '火还烧{zhe5}。[sigh]',
+            'Hello~': 'Hello。',
+            '一~三': '一~三',
+            '好呀～接下来出发。': '好呀～接下来出发。',
+            'https://example.test/~': 'https://example.test/~',
+            '`literal~`': '`literal~`',
+            '[笑声]': '[笑声]',
+        }
+        for original, expected in cases.items():
+            with self.subTest(original=original):
+                self.assertEqual(normalize_terminal_wave(original), expected)
+                self.assertEqual(normalize_terminal_wave(expected), expected)
+        self.assertEqual(prepare_text('好呀～[laughing]', acoustic_tag_aliases={'[laughing]': '[笑声]'}),
+                         '好呀。[笑声]')
 
     def test_factual_parentheses_cannot_become_delivery_controls_in_either_route(self):
         cases = {

@@ -16,6 +16,16 @@ Run the model-free counter and worker tests with
 The service loads the official VoxCPM2 Python model once and caches a combined
 reference plus continuation prompt. Each request uses the configured reference
 audio and its transcript. The SHA256 in the configuration must match the file.
+The adapter normalizes a trailing expressive `~`, `～` or `〜` to a sentence
+stop in synthesis text, preserving closing quotes, native vocal tags and an
+existing question/exclamation mark. This is a checkpoint fallback: NVVSpeech
+could read the complete text and then babble until the generation limit when
+two reproduced utterances ended in `咯～`. The same inputs ended normally with
+a full stop. Subtitles and reference transcripts are unchanged; internal ranges,
+URLs and code literals are not rewritten. Health reports
+`terminal_wave_policy: "sentence-stop"`. This prevents the reproduced trigger,
+not every possible model hallucination.
+
 Hi-Fi follows reference delivery; parenthesized emotion and speed instructions
 are unsupported. Stage cues are removed before synthesis. Native square-bracket
 vocal tags such as `[laughing]`, `[sigh]`, `[Uhm]` and `[Shh]` reach the model

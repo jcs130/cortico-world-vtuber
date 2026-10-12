@@ -31,7 +31,7 @@ from inference_worker import InferenceWorker
 from pronunciation_bridge import native_phonemes
 from pronunciation import initialize_pronunciation, normalize_pronunciation, pronunciation_health
 
-VERSION = '1.4.0'
+VERSION = '1.4.1'
 MAX_BODY = 2 * 1024 * 1024
 CUE_RULES = [(re.compile(r'(?:开心|温柔|惊讶|害怕|生气|难过|平静|严肃|得意|委屈|happy|gentle|calm|serious)', re.I), 'style')]
 _NUMBER_TOKEN = r'[-+]?\d+(?:\.\d+)?'
@@ -45,6 +45,21 @@ _DRY_SOIL = re.compile(
 # Keep question words in phrases such as "那家伙什么时候回来" unchanged.
 _UTENSILS = re.compile(r'[家傢]伙什(?![么麼])(?:儿|兒)?')
 _SHORT_UTENSILS = re.compile(r'[家傢]什(?![么麼])')
+_WAVE_ENDING = re.compile(
+    r'(?P<stop>[。！？!?….,，;；:：]?)[~～〜]+'
+    r'(?P<tail>[\"\'”’」』）》）\s]*(?:\[[^\[\]<>\r\n]+\][\"\'”’」』）》）\s]*)*)$')
+_LITERAL_SPAN = re.compile(r'`[^`\n]*`|https?://[^\s<>，。！？；]+')
+
+
+def normalize_terminal_wave(text: str) -> str:
+    """Fallback for speech checkpoints that continue babbling after a trailing wave."""
+    match = _WAVE_ENDING.search(text)
+    if match is None or not re.search(r'\w', text[:match.start()]):
+        return text
+    if any(span.start() <= match.start() < span.end() for span in _LITERAL_SPAN.finditer(text)):
+        return text
+    stop = match['stop'] if match['stop'] in ('。', '！', '？', '!', '?', '…', '.') else '。'
+    return text[:match.start()] + stop + match['tail']
 
 
 def prepare_instructions(value, enabled: bool) -> str | None:
@@ -106,7 +121,7 @@ def prepare_text(text: str, aliases: dict[str, str] | None = None, *, contextual
     clean = native_phonemes(clean)
     for marker, tag in protected.items():
         clean = clean.replace(marker, tag)
-    return clean
+    return normalize_terminal_wave(clean)
 
 
 def stream_header(rate: int) -> bytes:
@@ -262,6 +277,7 @@ class VoiceEngine:
                 'native_acoustic_cues': True,
                 'acoustic_tag_aliases': self.config.get('acoustic_tag_aliases'),
                 'sentence_segmentation': self.config.get('sentence_segmentation', True),
+                'terminal_wave_policy': 'sentence-stop',
                 'reference_encoder_device': self.config.get('reference_encoder_device', self.config.get('device', 'cuda')),
                 'pronunciation_fallbacks': ['soil-dryness-gan1', 'utensils-colloquial', 'short-utensils-shi5'],
                 'pronunciation': pronunciation_health() if self.contextual_pronunciation else {'context_ready': False, 'policy': 'native-model'},
