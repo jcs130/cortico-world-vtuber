@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from array import array
 import asyncio
 import base64
 import hashlib
@@ -12,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import struct
+import sys
 import time
 import uuid
 import wave
@@ -36,7 +38,7 @@ def wav_header(rate: int, size: int = 0xFFFFFFFF) -> bytes:
 def check_stream_header(data: bytes, rate: int) -> None:
     expected = wav_header(rate)
     if len(data) != 44 or data[:4] != b'RIFF' or data[8:40] != expected[8:40]:
-        raise ValueError('Upstream must return mono PCM16 with a 44-byte WAV header at the catalog sample rate')
+        raise RuntimeError('Upstream must return mono PCM16 with a 44-byte WAV header at the catalog sample rate')
 
 
 class Catalog:
@@ -132,6 +134,63 @@ class UpstreamFailure(Exception):
         self.status, self.body, self.content_type = status, body, content_type
 
 
+async def trim_join_silence(source, rate, trim_start, trim_end, record, keep_ms=60):
+    """Hold at most 800 ms of quiet PCM to trim only the adjoining boundary."""
+    width = round(rate * .01) * 2
+    maximum = round(rate * .8) * 2
+    keep = round(rate * keep_ms / 1000) * 2
+    carry = b''
+    pending = bytearray()
+    started = False
+    removed = 0
+
+    def quiet(frame):
+        samples = array('h', frame)
+        if sys.byteorder != 'little':
+            samples.byteswap()
+        return sum(s * s for s in samples) / len(samples) <= (32768 * .001) ** 2
+
+    async def frames():
+        nonlocal carry
+        async for chunk in source:
+            data = carry + chunk
+            stop = len(data) // width * width
+            for offset in range(0, stop, width):
+                yield data[offset:offset + width]
+            carry = data[stop:]
+        if carry:
+            yield carry
+
+    try:
+        async for frame in frames():
+            if quiet(frame):
+                pending.extend(frame)
+                if len(pending) > maximum:
+                    excess = len(pending) - maximum
+                    yield bytes(pending[:excess])
+                    del pending[:excess]
+                    started = True
+                continue
+            if pending:
+                if trim_start and not started:
+                    removed += max(0, len(pending) - keep)
+                    pending = pending[-keep:] if keep else bytearray()
+                if pending:
+                    yield bytes(pending)
+                pending.clear()
+            yield frame
+            started = True
+        if pending:
+            if trim_end or (trim_start and not started):
+                removed += max(0, len(pending) - keep)
+                pending = pending[-keep:] if keep else bytearray()
+            if pending:
+                yield bytes(pending)
+    finally:
+        record['join_silence_trimmed_ms'] = round(record.get('join_silence_trimmed_ms', 0) + removed / 2 / rate * 1000, 2)
+        await source.aclose()
+
+
 class Gateway:
     def __init__(self, config: dict):
         self.config = config
@@ -160,7 +219,7 @@ class Gateway:
         try:
             health = await self.health()
             health['acoustic_assets'] = {
-                'enabled': self.catalog.matches(health), 'gateway_version': '1.0.0',
+                'enabled': self.catalog.matches(health), 'gateway_version': '1.1.0',
                 'gateway_pid': os.getpid(), 'manifest_sha256': self.catalog.digest,
                 'voice': self.catalog.voice, 'reference_sha256': self.catalog.reference_sha256,
                 'cues': {cue: [a['id'] for a in assets] for cue, assets in self.catalog.assets.items()},
@@ -222,28 +281,38 @@ class Gateway:
             await response.write_eof()
             return response
 
+    async def speech_pcm(self, part, body, record):
+        subbody = {**body, 'input': part}
+        subbody.pop('text', None)
+        async with self.session.post(self.upstream + '/v1/audio/speech/stream', json=subbody) as upstream:
+            if upstream.status != 200:
+                raise UpstreamFailure(upstream.status, await upstream.read(), upstream.headers.get('Content-Type', 'application/json'))
+            record['upstream_request_ids'].append(upstream.headers.get('X-TTS-Request-Id'))
+            check_stream_header(await upstream.content.readexactly(44), self.catalog.rate)
+            carry = b''
+            async for chunk in upstream.content.iter_any():
+                chunk = carry + chunk
+                carry = chunk[-1:] if len(chunk) % 2 else b''
+                pcm = chunk[:-1] if carry else chunk
+                if pcm:
+                    yield pcm
+            if carry:
+                raise RuntimeError('Upstream returned incomplete PCM16')
+
     async def pcm(self, plan, body, record):
-        for kind, part in plan:
+        for index, (kind, part) in enumerate(plan):
             if kind == 'asset':
                 record['assets_played'].append(part['id'])
                 yield part['pcm']
                 continue
-            subbody = {**body, 'input': part}
-            subbody.pop('text', None)
-            async with self.session.post(self.upstream + '/v1/audio/speech/stream', json=subbody) as upstream:
-                if upstream.status != 200:
-                    raise UpstreamFailure(upstream.status, await upstream.read(), upstream.headers.get('Content-Type', 'application/json'))
-                record['upstream_request_ids'].append(upstream.headers.get('X-TTS-Request-Id'))
-                check_stream_header(await upstream.content.readexactly(44), self.catalog.rate)
-                carry = b''
-                async for chunk in upstream.content.iter_any():
-                    chunk = carry + chunk
-                    carry = chunk[-1:] if len(chunk) % 2 else b''
-                    pcm = chunk[:-1] if carry else chunk
-                    if pcm:
-                        yield pcm
-                if carry:
-                    raise ValueError('Upstream returned incomplete PCM16')
+            stream = trim_join_silence(self.speech_pcm(part, body, record), self.catalog.rate,
+                                      index > 0 and plan[index - 1][0] == 'asset',
+                                      index + 1 < len(plan) and plan[index + 1][0] == 'asset', record)
+            try:
+                async for chunk in stream:
+                    yield chunk
+            finally:
+                await stream.aclose()
 
     async def compose(self, request, body, text):
         started = time.monotonic()

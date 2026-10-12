@@ -71,13 +71,26 @@ class AcousticTests(unittest.IsolatedAsyncioTestCase):
         await response.prepare(request)
         try:
             # Header and samples may cross arbitrary network boundaries.
-            data = wav_header(8000) + (b'\x01\x00' if text == 'before' else b'\x02\x00') * 80
+            tone = b'\x10\x27' * 80
+            if text == 'join-before':
+                samples = tone + bytes(8000)
+            elif text == 'join-after':
+                samples = bytes(7200) + tone
+            elif text == 'inside':
+                samples = tone + bytes(6400) + tone + bytes(3200)
+            elif text == 'longtail':
+                samples = tone + bytes(80000)
+            elif text == 'wait':
+                samples = tone
+            else:
+                samples = (b'\x01\x00' if text == 'before' else b'\x02\x00') * 80
+            data = wav_header(8000) + samples
             await response.write(data[:13])
             await response.write(data[13:47])
             if text == 'wait':
                 for _ in range(100):
                     await asyncio.sleep(.02)
-                    await response.write(b'\x02\x00' * 80)
+                    await response.write(tone)
             else:
                 await response.write(data[47:])
             await response.write_eof()
@@ -106,6 +119,23 @@ class AcousticTests(unittest.IsolatedAsyncioTestCase):
         with wave.open(io.BytesIO(raw)) as wav:
             self.assertEqual(wav.getnframes(), 240)
             self.assertEqual(wav.readframes(240), b'\x01\x00' * 80 + self.pcm + b'\x02\x00' * 80)
+
+    async def test_asset_joins_keep_short_breath_gap_and_remove_segment_silence(self):
+        response, raw = await self.post('join-before[laughing]join-after')
+        tone = b'\x10\x27' * 80
+        self.assertEqual(raw[44:], tone + bytes(960) + self.pcm + bytes(960) + tone)
+        self.assertEqual(self.gateway.last_request['join_silence_trimmed_ms'], 830)
+
+    async def test_pause_inside_speech_is_preserved(self):
+        response, raw = await self.post('inside[laughing]')
+        tone = b'\x10\x27' * 80
+        self.assertEqual(raw[44:], tone + bytes(6400) + tone + bytes(960) + self.pcm)
+        self.assertEqual(self.gateway.last_request['join_silence_trimmed_ms'], 140)
+
+    async def test_long_silence_remains_observable_to_the_client_guard(self):
+        response, raw = await self.post('longtail[laughing]')
+        self.assertEqual(raw[44:], b'\x10\x27' * 80 + bytes(68160) + self.pcm)
+        self.assertEqual(self.gateway.last_request['join_silence_trimmed_ms'], 740)
 
     async def test_pure_cue_uses_memory_without_synthesis(self):
         (self.root / 'cue.wav').unlink()

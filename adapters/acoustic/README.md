@@ -73,6 +73,10 @@ request. The upstream stream must return one 44-byte mono PCM16 WAV header at th
 catalog sample rate. Composition sends one header for the entire response.
 The nonstream response contains finite RIFF/data lengths. Other paths pass through.
 
+At a speech/asset join, quiet leading or trailing PCM is reduced to 60 ms. Pauses
+inside a speech segment are preserved. The quiet buffer holds at most 800 ms;
+longer silence remains observable to the client's existing silence guard.
+
 Closing the client response cancels the active upstream request and skips the
 remaining text and cues. A later upstream failure terminates the stream; it does
 not finish an incomplete composition as successful audio.
