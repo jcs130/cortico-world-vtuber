@@ -28,5 +28,10 @@ VoxCPM2 的拼音、括号控制与分句要求依据其
 | [VoxCPM2 官方使用说明](https://voxcpm.readthedocs.io/en/latest/usage_guide.html) | 区分可控克隆与 Hi-Fi 续写；Hi-Fi 模式忽略控制描述，极短输入也存在稳定性限制 |
 | [NVVSpeech Track 2 官方基线](https://github.com/NVVSpeech-Challenge/NVVSpeech-Challenge-Track2-Baseline) | 以 VoxCPM2 为基座专门微调非语言发声的模型；其标签与权重配套，不直接作为原版服务能力 |
 | [非语言发声偏好优化研究](https://arxiv.org/abs/2609.11260) | 分别评估发声是否发生、表达效果、自然度、质量及与台词的衔接；参考离线多候选筛选的方法，不在实时口播中增加多轮生成 |
+| [CosyVoice 官方推理示例](https://github.com/QwenAudio/CosyVoice/blob/main/example.py)与[分词器控制标记](https://github.com/QwenAudio/CosyVoice/blob/main/cosyvoice/tokenizer/tokenizer.py) | 离线生成笑声候选；模型内部使用 `[laughter]`，演出入口仍使用现有 `[laughing]`，由缓存适配器播放筛选后的音频 |
+| [Seed-VC 原始项目](https://github.com/Plachtaa/seed-vc) | 离线将发声候选按同一 E3 参考转换；声音转换结果仍需核对笑法、本人音色与前后衔接 |
+| [CLAP 官方模型文档](https://huggingface.co/docs/transformers/model_doc/clap) | 辅助区分笑声、说话与换气等声音事件；相似度不代表自然度、本人身份或听众认可 |
 
 本方法在当前对话内组织台词，无额外逐句润色调用。声音合成继续使用现役演出 World 的服务与固定参考音频；文字表达、人设一致性、声音听感和真实现场执行分别验证。
+
+缓存发声的运行契约由扩展内 `adapters/acoustic/README.md` 说明。素材、来源记录与听感反馈保存在部署中；普通实时口播不加载离线制作模型。
