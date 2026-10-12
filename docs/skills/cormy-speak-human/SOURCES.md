@@ -20,4 +20,13 @@ VoxCPM2 的拼音、括号控制与分句要求依据其
 [官方使用说明](https://voxcpm.readthedocs.io/en/latest/usage_guide.html)。
 口播技能负责组织表达，实际读音由语音服务处理；需要分别验证。
 
+笑声与其他非语言发声参考以下一手资料：
+
+| 原始资料 | 使用范围 |
+| --- | --- |
+| [VoxCPM2 官方 cookbook](https://voxcpm.readthedocs.io/en/latest/cookbook.html) | 推荐的通用笑声标签是 `[laughing]`；少量使用标签，简化描述，实际听感逐样验证 |
+| [VoxCPM2 官方使用说明](https://voxcpm.readthedocs.io/en/latest/usage_guide.html) | 区分可控克隆与 Hi-Fi 续写；Hi-Fi 模式忽略控制描述，极短输入也存在稳定性限制 |
+| [NVVSpeech Track 2 官方基线](https://github.com/NVVSpeech-Challenge/NVVSpeech-Challenge-Track2-Baseline) | 以 VoxCPM2 为基座专门微调非语言发声的模型；其标签与权重配套，不直接作为原版服务能力 |
+| [非语言发声偏好优化研究](https://arxiv.org/abs/2609.11260) | 分别评估发声是否发生、表达效果、自然度、质量及与台词的衔接；参考离线多候选筛选的方法，不在实时口播中增加多轮生成 |
+
 本方法在当前对话内组织台词，无额外逐句润色调用。声音合成继续使用现役演出 World 的服务与固定参考音频；文字表达、人设一致性、声音听感和真实现场执行分别验证。
