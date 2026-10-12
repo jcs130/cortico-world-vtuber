@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import queue
 import threading
+import time
 
 
 @dataclass
@@ -15,6 +16,9 @@ class Job:
     cancelled: threading.Event = field(default_factory=threading.Event)
     done: threading.Event = field(default_factory=threading.Event)
     error: Exception | None = None
+    observe: object = None
+    on_start: object = None
+    on_finish: object = None
 
 
 class InferenceWorker:
@@ -50,8 +54,18 @@ class InferenceWorker:
             try:
                 if self.closing.is_set() or job.cancelled.is_set():
                     continue
+                if job.on_start is not None:
+                    job.on_start()
                 iterator = iter(self.render(job.text, job.seed, **job.options))
-                for chunk in iterator:
+                while True:
+                    started = time.monotonic()
+                    try:
+                        chunk = next(iterator)
+                    except StopIteration:
+                        break
+                    finally:
+                        if job.observe is not None:
+                            job.observe(time.monotonic() - started)
                     while not job.cancelled.is_set() and not self.closing.is_set():
                         try:
                             job.output.put(chunk, timeout=0.05)
@@ -69,13 +83,15 @@ class InferenceWorker:
                     except Exception as exc:
                         if job.error is None:
                             job.error = exc
+                if job.on_finish is not None:
+                    job.on_finish()
                 job.done.set()
                 self.current = None
 
-    def generate(self, text, seed, **options):
+    def generate(self, text, seed, *, observe=None, on_start=None, on_finish=None, **options):
         if self.closing.is_set():
             raise RuntimeError('Inference worker is stopping')
-        job = Job(text, seed, options)
+        job = Job(text, seed, options, observe=observe, on_start=on_start, on_finish=on_finish)
         self.jobs.put(job)
         try:
             while True:
@@ -92,6 +108,8 @@ class InferenceWorker:
                 yield chunk
         finally:
             job.cancelled.set()
+            while self.thread.is_alive() and not job.done.wait(0.05):
+                pass
 
     def close(self):
         self.closing.set()

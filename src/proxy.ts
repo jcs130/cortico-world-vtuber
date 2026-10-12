@@ -202,7 +202,7 @@ export class VtuberWorldProxy implements World {
     clips: ['state', 'reload', 'trigger', 'reset'],
     log: ['entries'],
     diag: ['state', 'report', 'record', 'presets', 'perform'],
-    tts: ['state', 'runtime', 'installRuntime', 'downloadModel', 'start', 'stop', 'setProfile', 'saveVoice', 'voiceWav', 'test'],
+    tts: ['state', 'runtime', 'metrics', 'installRuntime', 'downloadModel', 'start', 'stop', 'setProfile', 'saveVoice', 'voiceWav', 'test'],
     align: ['state', 'units', 'align', 'synth'],
     music: ['state', 'play', 'stop', 'generate', 'cancelGeneration'],
   };
@@ -494,6 +494,7 @@ export class VtuberWorldProxy implements World {
 
   ttsConsole(): Asyncified<VtuberTtsConsole> {
     return {
+      metrics: () => this.panelCall('tts', 'metrics'),
       state: () => this.panelCall('tts', 'state'),
       runtime: () => this.panelCall('tts', 'runtime'),
       installRuntime: () => this.panelCall('tts', 'installRuntime'),

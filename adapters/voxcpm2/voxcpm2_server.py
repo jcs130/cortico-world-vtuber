@@ -99,6 +99,8 @@ def pcm_bytes(audio) -> bytes:
 
 class VoiceEngine:
     def __init__(self, config: dict):
+        from synthesis_metrics import SynthesisMetrics
+        self.metrics = SynthesisMetrics()
         self.config = config
         self.default_instructions = prepare_instructions(
             config.get('default_instructions'), bool(config.get('enable_style_instructions', False)))
@@ -181,9 +183,9 @@ class VoiceEngine:
     def _stream_context(self):
         return self.torch.cuda.stream(self.cuda_stream) if self.cuda_stream is not None else nullcontext()
 
-    def generate(self, text: str, seed: int, instructions: str | None = None):
+    def generate(self, text: str, seed: int, instructions: str | None = None, *, observe=None, on_start=None, on_finish=None):
         options = {'instructions': instructions} if instructions else {}
-        yield from self.worker.generate(text, seed, **options)
+        yield from self.worker.generate(text, seed, observe=observe, on_start=on_start, on_finish=on_finish, **options)
 
     def _generate(self, text: str, seed: int, instructions: str | None = None):
         cache = self.prompt_cache
@@ -263,7 +265,9 @@ class Handler(BaseHTTPRequestHandler):
         return bool(readable) and not self.connection.recv(1, socket.MSG_PEEK)
 
     def do_GET(self):
-        if self.path.rstrip('/') in ('/health', '/v1/health'):
+        if self.path.rstrip('/') == '/metrics':
+            self.reply(200, json.dumps(self.server.engine.metrics.snapshot(self.server.engine.worker.thread.is_alive())).encode())
+        elif self.path.rstrip('/') in ('/health', '/v1/health'):
             self.reply(200, json.dumps(self.server.engine.health()).encode())
         elif self.path.rstrip('/') == '/voices':
             self.reply(200, json.dumps({'voices': [self.server.engine.voice]}).encode())
@@ -321,6 +325,7 @@ class Handler(BaseHTTPRequestHandler):
 
         acquired, sent, iterator = False, False, None
         request_id = str(uuid.uuid4())
+        engine.metrics.enqueue(request_id)
         pcm_count, pcm_hash, segments = 0, hashlib.sha256(), 0
         record = {'id': request_id, 'input_sha256': hashlib.sha256(text.encode()).hexdigest(),
                   'input_chars': len(text), 'spoken_chars': len(clean), 'seed': seed,
@@ -341,6 +346,7 @@ class Handler(BaseHTTPRequestHandler):
                 if time.monotonic() > deadline:
                     raise TimeoutError('Speech queue timeout')
             acquired = True
+            engine.metrics.begin(request_id)
             if self.disconnected():
                 raise ConnectionAbortedError('Client disconnected before synthesis')
             record['queue_ms'] = round((time.monotonic() - started) * 1000)
@@ -353,7 +359,10 @@ class Handler(BaseHTTPRequestHandler):
             for segment in texts:
                 if self.disconnected():
                     raise ConnectionAbortedError('Client disconnected between segments')
-                iterator = engine.generate(segment, seed, instructions=instructions) if instructions else engine.generate(segment, seed)
+                iterator = engine.generate(segment, seed, instructions=instructions,
+                    observe=lambda seconds: engine.metrics.work(request_id, seconds),
+                    on_start=lambda: engine.metrics.rendering(request_id, True),
+                    on_finish=lambda: engine.metrics.rendering(request_id, False))
                 segments += 1
                 for pcm in iterator:
                     if self.disconnected():
@@ -413,10 +422,13 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.connection.shutdown(socket.SHUT_RDWR)
         finally:
-            if iterator is not None:
-                iterator.close()
-            if acquired:
-                engine.lock.release()
+            try:
+                if iterator is not None:
+                    iterator.close()
+            finally:
+                engine.metrics.finish(request_id, record.get('outcome', 'failed'))
+                if acquired:
+                    engine.lock.release()
             self.close_connection = True
             record.update(total_ms=round((time.monotonic() - started) * 1000), segments=segments,
                           audio_ms=round(pcm_count / 2 / engine.rate * 1000), pcm_sha256=pcm_hash.hexdigest())

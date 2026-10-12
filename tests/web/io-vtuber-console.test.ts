@@ -58,7 +58,7 @@ describe('VTuber 的面板声明', () => {
       model: ['state'],
       overlay: ['state'],
       clips: ['state'],
-      tts: ['state', 'voiceWav', 'runtime'],
+      tts: ['state', 'voiceWav', 'runtime', 'metrics'],
       align: ['state', 'units'],
       music: ['state'],
       log: ['entries'],

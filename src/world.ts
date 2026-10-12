@@ -836,7 +836,7 @@ export const VTUBER_PANEL_DECLS: readonly WorldPanelDecl[] = [
     id: 'tts',
     title: '声线档案',
     description: '运行时与权重的安装;参考音频、参考转写与生成参数;合成试听。',
-    getMethods: ['state', 'voiceWav', 'runtime'],
+    getMethods: ['state', 'voiceWav', 'runtime', 'metrics'],
   },
   {
     id: 'align',
@@ -996,6 +996,7 @@ export interface VtuberOverlayConsole {
 }
 
 export interface VtuberTtsConsole {
+  metrics(): { schema: 'vtuber-sender-metrics-v1'; time: number; pending_items: number | null; playing: boolean | null };
   state(): Promise<
     TtsServiceState & { reachable: boolean; profile: TtsProfile; voices: TtsVoiceInfo[]; voicesDir: string;
       speech: TtsSpeechPreferences; speechVoices: string[] }
@@ -2745,6 +2746,11 @@ export class VtuberWorld implements World {
 
   ttsConsole(): VtuberTtsConsole {
     return {
+      metrics: () => {
+        const status = this.performer?.status();
+        return { schema: 'vtuber-sender-metrics-v1', time: Date.now() / 1000,
+          pending_items: status?.queuedBeats ?? null, playing: status?.playing ?? null };
+      },
       state: async () => ({
         ...this.ttsServer.state(),
         reachable: await this.ttsServer.probe(),

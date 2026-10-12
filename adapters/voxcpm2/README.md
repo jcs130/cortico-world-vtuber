@@ -1,5 +1,18 @@
 # `voxcpm2_server.py`: official VoxCPM2 Hi-Fi speech service
 
+`GET /metrics` returns only time, health, synthesizing/waiting counts and the last
+request's synthesis duration. Counts start after input preparation. The duration
+sums worker iterator advancement and excludes the inference-lock wait, output
+queue backpressure and HTTP transmission. Cancellation waits for worker
+acknowledgement before releasing the inference lock. It is not playback latency.
+The performer reports unsent beats separately through
+`GET /api/console/providers/world:vtuber/panels/tts/metrics`; this read neither
+probes the speech backend nor starts synthesis. A beat may contain speech or
+actions, so pending_items is not a count of audio chunks.
+
+Run the model-free counter and worker tests with
+`python -m unittest discover -s adapters/voxcpm2 -p test_synthesis_metrics.py`.
+
 The service loads the official VoxCPM2 Python model once and caches a combined
 reference plus continuation prompt. Each request uses the configured reference
 audio and its transcript. The SHA256 in the configuration must match the file.
