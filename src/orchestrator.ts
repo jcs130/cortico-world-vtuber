@@ -9,7 +9,7 @@ import { countPauses, pauseMs, segmentUnits, type AlignedUnit, type PausePriors 
 import type { TraceOptions } from './diagnostics.ts';
 import { planCut, pcm16ToFloat, type CutClass, type CutPlan } from './interrupt-fade.ts';
 import type { GestureCue, IRFrame, Mixer } from './mixer.ts';
-import { isMoodOnlyText, ScriptParser, type Beat, type BeatCommand, type SpeechAnchor, type SpeechPiece } from './parser.ts';
+import { ScriptParser, type Beat, type BeatCommand, type SpeechAnchor, type SpeechPiece } from './parser.ts';
 import { describeSilence, silenceData, type SilenceReport } from './silence-scan.ts';
 import { StateMachines, type StateChannel } from './states.ts';
 import {
@@ -1480,8 +1480,8 @@ export class Performer {
   }
 
   /**
-   * 流式片的分段决策(每片一次):逐字对齐开着整片一段(锚点走时间轴);
-   * 关着沿 <> 剪开,接缝处触发锚点指令。
+   * 一片自然语句只开启一次合成，避免内联表演动作重置音色和韵律。
+   * <> 锚点走播放时间轴；未开启逐字对齐时明确使用估计时刻。
    */
   private ensureSegs(p: PerfPiece): void {
     if (p.segs !== null || p.text === '' || p.tts !== null || p.synthing) return;
@@ -1505,32 +1505,7 @@ export class Performer {
       prefixInFlight: null,
       prefixTriedAtMs: Number.NEGATIVE_INFINITY,
     });
-    if ((this.d.alignEnabled?.() ?? false) || p.anchors.length === 0) {
-      p.segs = [mk(p.text)];
-      return;
-    }
-    const segs: StreamSeg[] = [];
-    let prev = 0;
-    let pendingMood = '';
-    for (const a of p.anchors) {
-      const text = p.text.slice(prev, a.charOffset).trim();
-      const moodOnly = isMoodOnlyText(text);
-      if (moodOnly) pendingMood += text;
-      if (text && !moodOnly) {
-        const seg = mk(pendingMood + text);
-        pendingMood = '';
-        seg.seamCommands = [...a.commands];
-        segs.push(seg);
-      } else if (segs.length > 0) {
-        segs[segs.length - 1].seamCommands.push(...a.commands);
-      } else {
-        p.preCommands.push(...a.commands);
-      }
-      prev = a.charOffset;
-    }
-    const tail = p.text.slice(prev).trim();
-    if (tail && !isMoodOnlyText(tail)) segs.push(mk(pendingMood + tail));
-    p.segs = segs;
+    p.segs = [mk(p.text)];
   }
 
   /** 可以进入播放(流式片:首段已开声或已有定论) */
@@ -2320,21 +2295,23 @@ export class Performer {
     this.emitSubtitle(seg.text, seg.result?.units ?? null, seg.result?.durationMs ?? null, startedAt, 'open');
     const envelope = seg.envelope;
     let accents: { stop(): void } | null = null;
-    let anchors: { finish(): void } | null = null;
+    let anchors: { finish(completed: boolean): void } | null = null;
     let tracker: { stop(): void } | null = null;
+    let completed = false;
     const releaseExpression = this.d.backend.speech?.(piece.text, startedAt);
     try {
       if (envelope) {
         this.d.mixer.speechStart((ms) => envelope.at(ms), startedAt);
         accents = this.startStreamAccents(seg, startedAt);
       }
-      if ((this.d.alignEnabled?.() ?? false) && piece.anchors.length > 0 && (piece.segs?.length ?? 0) === 1) {
+      if (piece.anchors.length > 0 && (piece.segs?.length ?? 0) === 1) {
         anchors = this.startAnchorRunner(piece, seg, startedAt);
       }
       if (!seg.synthDone && (this.d.alignEnabled?.() ?? false)) {
         tracker = this.startSubtitleTracker(seg, startedAt);
       }
       const endTs = await session.ended;
+      completed = !piece.round.dropped && !this.stopped && !seg.failed && !seg.dead && seg.result?.truncated !== true;
       this.prevEnd = endTs;
     } finally {
       releaseExpression?.();
@@ -2342,7 +2319,7 @@ export class Performer {
       this.currentPlayback = null;
       this.d.mixer.speechEnd();
       accents?.stop();
-      anchors?.finish();
+      anchors?.finish(completed);
       tracker?.stop();
     }
   }
@@ -2356,7 +2333,7 @@ export class Performer {
     piece: PerfPiece,
     seg: StreamSeg,
     startedAt: number,
-  ): { finish(): void } {
+  ): { finish(completed: boolean): void } {
     const units = segmentUnits(piece.text);
     // 死线估计与字幕/预算同一口径:整片取一次,片内不随样本增长漂移。
     const msPerUnit = this.rateHint().msPerUnit;
@@ -2365,20 +2342,23 @@ export class Performer {
       estimateMs: number;
       commands: BeatCommand[];
       fired: boolean;
+      dispatched: boolean;
       deadline: ReturnType<typeof setTimeout> | null;
     }
     const states: AnchorState[] = piece.anchors.map((a) => {
       const unitIndex = segmentUnits(piece.text.slice(0, a.charOffset)).length;
       return {
         unitIndex,
-        estimateMs: SPEECH_LEAD_IN_MS + unitIndex * msPerUnit,
+        estimateMs: unitIndex === 0 ? 0 : SPEECH_LEAD_IN_MS + unitIndex * msPerUnit,
         commands: a.commands,
         fired: false,
+        dispatched: false,
         deadline: null,
       };
     });
     let closed = false;
     let aligning = false;
+    const scheduled = new Set<ReturnType<typeof setTimeout>>();
     const fire = (st: AnchorState, ms: number, how: string): void => {
       if (st.fired) return;
       st.fired = true;
@@ -2387,7 +2367,14 @@ export class Performer {
         this.anchorTimers.delete(st.deadline);
         st.deadline = null;
       }
-      this.scheduleCommands(st.commands, startedAt + ms, how);
+      const timer = this.armTimer(Math.max(0, startedAt + ms - this.now()), () => {
+        scheduled.delete(timer);
+        if (!piece.round.dropped && !this.stopped) {
+          st.dispatched = true;
+          this.fireCommands(st.commands, this.now(), how);
+        }
+      });
+      scheduled.add(timer);
     };
     const armDeadline = (st: AnchorState, delayMs: number, graceLeft: boolean): void => {
       st.deadline = this.armTimer(delayMs, () => {
@@ -2414,6 +2401,13 @@ export class Performer {
       const full = seg.result?.units;
       if (full && full.length > 0) {
         for (const st of pending) fire(st, this.unitStartMs(full, st.unitIndex, seg.result?.durationMs ?? 0), '对齐');
+        return;
+      }
+      if (!(this.d.alignEnabled?.() ?? false)) {
+        // 收流后的真实时长改善估计，不启动隐藏的对齐模型调用。
+        if (seg.result && units.length > 0) {
+          for (const st of pending) fire(st, st.unitIndex / units.length * seg.result.durationMs, '比例估计');
+        }
         return;
       }
       const envelope = seg.envelope;
@@ -2445,9 +2439,14 @@ export class Performer {
     const timer = setInterval(() => void poll(), ANCHOR_POLL_MS);
     timer.unref?.();
     return {
-      finish: () => {
+      finish: (completed) => {
         closed = true;
         clearInterval(timer);
+        for (const pending of scheduled) {
+          clearTimeout(pending);
+          this.anchorTimers.delete(pending);
+        }
+        scheduled.clear();
         // 片已播完还没触发的(片尾锚点/彻底没赶上的)现在补上
         for (const st of states) {
           if (st.deadline) {
@@ -2455,8 +2454,9 @@ export class Performer {
             this.anchorTimers.delete(st.deadline);
             st.deadline = null;
           }
-          if (!st.fired) {
+          if (completed && !st.dispatched) {
             st.fired = true;
+            st.dispatched = true;
             this.fireCommands(st.commands, this.now(), '片尾');
           }
         }

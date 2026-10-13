@@ -635,25 +635,26 @@ describe('Performer <> 锚点(四组合)', () => {
     expect(dt).toBeLessThanOrEqual(540);
   });
 
-  it('组合②流式无对齐:沿 <> 剪成两段流,接缝处触发动作', async () => {
-    const p = makeStreamPerformer({ align: false, unitMs: 60 });
+  it('组合②流式无对齐:内联动作保持一次合成，按真实总时长估计触发', async () => {
+    let alignCalls = 0;
+    const p = makeStreamPerformer({ align: false, unitMs: 60, alignPcm: async () => { alignCalls++; return null; } });
     cleanup.push(() => p.performer.stop());
     p.performer.perform('前半段落<点头>后半段落');
-    await waitFor(() => p.played.length === 2 && p.mixer.gestureCues.length === 1, 4000);
-    expect(p.played.map((r) => r.text)).toEqual(['前半段落', '后半段落']);
-    // 接缝 fire-and-go:动作在第一段播毕后、第二段起播前后一小窗内
-    const seam = p.played[0].endedAt ?? 0;
-    const cueTs = p.mixer.gestureCues[0].startTs;
-    expect(cueTs).toBeGreaterThanOrEqual(seam - 30);
-    expect(cueTs - seam).toBeLessThanOrEqual(200);
+    await waitFor(() => p.played.length === 1 && p.mixer.gestureCues.length === 1, 4000);
+    expect(p.synthCalls).toEqual(['前半段落 后半段落']);
+    expect(p.played.map((r) => r.text)).toEqual(['前半段落 后半段落']);
+    const dt = p.mixer.gestureCues[0].startTs - p.played[0].startedAt;
+    expect(dt).toBeGreaterThanOrEqual(160);
+    expect(dt).toBeLessThanOrEqual(400);
+    expect(alignCalls).toBe(0);
   });
 
   it.each([
-    ['(轻松@0.4)<点头>我来了。', ['(轻松@0.4)我来了。']],
-    ['(轻松@0.4)<点头>(平静@0.3)<微笑>我来了。', ['(轻松@0.4)(平静@0.3)我来了。']],
-    ['前半段落<点头>(开心@0.5)<微笑>后半段落', ['前半段落', '(开心@0.5)后半段落']],
-    ['我来了。<点头>(开心@0.5)', ['我来了。']],
-    ['(河豚有毒)<点头>别急着吃。', ['(河豚有毒)', '别急着吃。']],
+    ['(轻松@0.4)<点头>我来了。', ['(轻松@0.4) 我来了。']],
+    ['(轻松@0.4)<点头>(平静@0.3)<微笑>我来了。', ['(轻松@0.4) (平静@0.3) 我来了。']],
+    ['前半段落<点头>(开心@0.5)<微笑>后半段落', ['前半段落 (开心@0.5) 后半段落']],
+    ['我来了。<点头>(开心@0.5)', ['我来了。 (开心@0.5)']],
+    ['(河豚有毒)<点头>别急着吃。', ['(河豚有毒) 别急着吃。']],
   ])('无对齐流式锚点不把情绪标记单独送入 TTS: %s', async (script, expected) => {
     const p = makeStreamPerformer({ align: false, unitMs: 40 });
     cleanup.push(() => p.performer.stop());
@@ -666,6 +667,16 @@ describe('Performer <> 锚点(四组合)', () => {
     expect(p.synthCalls).toEqual(expected);
     expect(p.played.map((r) => r.text)).toEqual(expected);
     expect(p.mixer.gestureCues.filter((cue) => cue.clipId === 'nod')).toHaveLength(1);
+  });
+
+  it('流式无对齐停止时不补做尚未到达的内联动作', async () => {
+    const p = makeStreamPerformer({ align: false, unitMs: 180 });
+    cleanup.push(() => p.performer.stop());
+    p.performer.perform('这是一段比较长的说话内容<点头>后面继续。');
+    await waitFor(() => p.played.length === 1);
+    p.performer.stop();
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(p.mixer.gestureCues).toHaveLength(0);
   });
 
   it('组合④流式+对齐:整片一段,锚点按收流对齐的时间点触发', async () => {
