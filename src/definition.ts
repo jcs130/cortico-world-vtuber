@@ -11,6 +11,8 @@ import {
 } from './world.ts';
 import { VtuberWorldProxy } from './proxy.ts';
 import { playbackConfigOptions } from './device-audio.ts';
+import { createHash } from 'node:crypto';
+import { TTS_API_KEY_SECRET, TTS_TRANSPORT_DEFAULTS, type TtsTransportConfig } from './tts-transport.ts';
 
 /** config.json 的 `worlds.vtuber` 节。 */
 export interface VtuberConfigSection {
@@ -18,6 +20,7 @@ export interface VtuberConfigSection {
   vtsWsUrl: string;
   streamPort: number;
   ttsUrl: string;
+  ttsTransport: TtsTransportConfig;
   ttsService: import('./tts-service.ts').TtsServiceConfig;
   ttsSpeech: import('./tts-speech.ts').TtsSpeechPreferences;
   ttsRuntimeDir: string;
@@ -87,6 +90,9 @@ export const VTUBER: WorldDefinition<VtuberConfigSection> = {
       vtsWsUrl: cfg.vtsWsUrl,
       streamPort: cfg.streamPort,
       ttsUrl: cfg.ttsUrl,
+      ttsTransport: { ...TTS_TRANSPORT_DEFAULTS, ...cfg.ttsTransport,
+        sessionId: cfg.ttsTransport?.sessionId || `vtuber-${createHash('sha256').update(ctx.dataDir).digest('hex').slice(0, 24)}` },
+      ttsApiKey: ctx.secret(TTS_API_KEY_SECRET),
       ttsService: cfg.ttsService,
       ttsSpeech: () => cfg.ttsSpeech ?? VTUBER_DEFAULTS.ttsSpeech,
       ttsRuntimeDir: () => cfg.ttsRuntimeDir,

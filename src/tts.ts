@@ -15,6 +15,7 @@
 import type { AlignedUnit } from './align.ts';
 import type { TtsSpeechPreferences } from './tts-speech.ts';
 import { SilenceScanner, scanSilence, type SilenceReport } from './silence-scan.ts';
+import { receiveSpeech, requestMetadata, ttsHeaders, TTS_TRANSPORT_DEFAULTS, type TtsTransportConfig, type TtsRequestTrace } from './tts-transport.ts';
 
 /** 整段包络与流式增量包络共用的只读接口。 */
 export interface EnvelopeLike {
@@ -23,6 +24,7 @@ export interface EnvelopeLike {
 }
 
 export interface TtsPiece {
+  requestTrace?: TtsRequestTrace;
   text: string;
   /** 原始 wav 字节(经 device-audio 写本机声卡) */
   wav: Uint8Array;
@@ -265,6 +267,9 @@ export interface TtsSynthProfile {
 
 export interface TtsClientOptions {
   url: string;
+  transport?: Partial<TtsTransportConfig>;
+  apiKey?: string;
+  trace?: (trace: TtsRequestTrace) => void;
   /** 单片合成超时;VoxCPM2 本机 CUDA 合成短句通常秒级 */
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
@@ -274,6 +279,7 @@ export interface TtsClientOptions {
 
 /** 流式合成的接收端 */
 export interface TtsStreamSink {
+  abort?(): void;
   /** 头解析完成,采样率已知;envelope 是增量包络,lipsync/重音扫描边播边读 */
   begin?(info: { sampleRate: number; envelope: StreamingEnvelope }): void;
   /** 一块 PCM16LE 字节(偶数长度),到达即转发舞台页 */
@@ -304,6 +310,9 @@ function ttsResponseError(status: number, detail: string, streaming = false): Er
 }
 
 export class TtsClient {
+  readonly transport: TtsTransportConfig;
+  private readonly apiKey: string;
+  private readonly requestTrace?: (trace: TtsRequestTrace) => void;
   private readonly url: string;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
@@ -311,10 +320,52 @@ export class TtsClient {
   private styleCapability: { at: number; supported: boolean } | null = null;
 
   constructor(opts: TtsClientOptions) {
+    this.transport = { ...TTS_TRANSPORT_DEFAULTS, ...opts.transport };
+    this.apiKey = opts.apiKey ?? '';
+    this.requestTrace = opts.trace;
     this.url = opts.url.replace(/\/$/, '');
     this.timeoutMs = opts.timeoutMs ?? 60_000;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.profile = opts.profile;
+  }
+
+  private async synthRemote(text: string, sink: TtsStreamSink, signal?: AbortSignal): Promise<TtsPiece> {
+    let envelope: StreamingEnvelope | undefined;
+    const received = await receiveSpeech({ url: this.url, config: this.transport, apiKey: this.apiKey,
+      text, signal, fetchImpl: this.fetchImpl, abort: sink.abort,
+      trace: trace => {
+        this.requestTrace?.(trace);
+        if (this.requestTrace && ['received', 'aborted', 'error'].includes(trace.phase)
+          && (trace.requestId || trace.callId)) void this.recordRemoteMetadata(trace);
+      },
+      begin: sampleRate => {
+        envelope = new StreamingEnvelope(sampleRate);
+        sink.begin?.({ sampleRate, envelope });
+      },
+      pcm: chunk => {
+        const view = new DataView(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+        const samples = new Float32Array(chunk.length / 2);
+        for (let i = 0; i < samples.length; i++) samples[i] = view.getInt16(i * 2, true) / 32768;
+        envelope!.append(samples);
+        sink.pcm(chunk);
+      },
+    });
+    envelope!.finish();
+    return { text, wav: pcm16ToWav(received.parts, received.sampleRate), envelope: envelope!,
+      durationMs: received.trace.pcmBytes / 2 / received.sampleRate * 1000, requestTrace: received.trace };
+  }
+
+  private async recordRemoteMetadata(trace: TtsRequestTrace): Promise<void> {
+    try {
+      // The gateway records its terminal outcome after the response closes.
+      await new Promise(resolve => setTimeout(resolve, 250));
+      const response = await this.fetchImpl(`${this.url}${this.transport.healthPath}`, {
+        headers: ttsHeaders(this.apiKey, this.transport.sessionId), signal: AbortSignal.timeout(2000),
+      });
+      if (!response.ok) { await response.body?.cancel(); return; }
+      const status = await response.json() as Record<string, unknown>;
+      this.requestTrace?.({ ...trace, phase: 'metadata', server: requestMetadata(status, trace) });
+    } catch { /* Request transport outcome remains available when metrics cannot be read. */ }
   }
 
   /** 旧服务可能忽略未知请求字段；有文字语气时先核对明确的能力回执。 */
@@ -334,6 +385,7 @@ export class TtsClient {
 
   /** override 给控制台试听用:按面板上的档案合成一次,不动当前生效的那份 */
   async synth(text: string, override?: TtsSynthProfile, signal?: AbortSignal): Promise<TtsPiece> {
+    if (this.transport.protocol === 'openai-chunked') return this.synthRemote(text, { pcm: () => {} }, signal);
     const p = override ?? this.profile?.() ?? {};
     await this.requireStyleCapability(p.instructions, signal);
     const body: Record<string, unknown> = {
@@ -401,6 +453,7 @@ export class TtsClient {
     sink: TtsStreamSink,
     opts: { override?: TtsSynthProfile; signal?: AbortSignal; maxDurationMs?: number; segmentText?: boolean } = {},
   ): Promise<TtsPiece> {
+    if (this.transport.protocol === 'openai-chunked') return this.synthRemote(text, sink, opts.signal);
     const p = opts.override ?? this.profile?.() ?? {};
     await this.requireStyleCapability(p.instructions, opts.signal);
     const body: Record<string, unknown> = {

@@ -192,3 +192,60 @@ IndexTTS 适配器随本扩展发布，Python 依赖见
 显式的 `【演出指令】` 仍构成拍边界。开启时恢复分句预合成与流式播放。
 
 控制台静态资源以包版本缓存；更新浏览器代码时同时更新包版本，宿主重载后使用新的资源地址。
+
+## LiteLLM / 远程分块 WAV
+
+在 `worlds.vtuber` 配置服务根地址和传输协议：
+
+```json
+{
+  "ttsUrl": "http://speech-gateway:4000",
+  "ttsService": { "kind": "external", "autoStart": true },
+  "ttsTransport": {
+    "protocol": "openai-chunked",
+    "model": "your-speech-model",
+    "voice": "your-voice",
+    "speed": 1,
+    "sessionId": "my-deployment-tts",
+    "prebufferMs": 480,
+    "timeoutMs": 180000,
+    "healthPath": "/metrics/tts"
+  }
+}
+```
+
+将授权 Key 存入部署 `.env` 的 `CORTICO_TTS_API_KEY`，或同名进程环境变量。
+密钥经宿主私有 IPC 传给演出引擎，不进入配置面板、日志、模型上下文或 npm 包。
+`sessionId` 在同一部署保持稳定；留空时用部署目录生成，搬迁目录时应显式保存原值。
+服务地址填根地址，不附加 `/v1`。配置变更后重载演出扩展；安装新源码后还需让宿主加载新版入口。
+
+该模式向 `POST /v1/audio/speech` 只发送 `model`、`input`、`voice`、`speed`、
+`response_format: "wav"`，使用 Bearer 鉴权及 `x-litellm-session-id`。
+响应是 HTTP 分块的 48kHz 单声道 PCM16 WAV，不使用 SSE。
+累计 480ms 音频后开始交给播放器；不足 480ms 的有效短句在收流完成时播放。
+每拍正文交给服务端分句；本地不再附加参考音频、注音、情绪指令或重试生成参数，
+也不调用旧 `/health`、`/align`、`/v1/audio/speech/stream`。
+演出标签继续控制动作，声音由远程模型和音色配置决定。
+
+打断关闭在途 HTTP 请求、清空当前及排队音频并关闭声卡旧输出流，新台词按需重开输出。
+HTTP 完成只表示音频收齐，实际播毕仍由声卡时间线确认。远程请求失败会记录失败，
+不会重新提交同一句或启动本地模型。远程音色参与缓存标识，换模型或音色不会复用旧语音。
+
+日志 `tts-http-*` 记录 `callId`（`x-litellm-call-id`）、`sessionId`、`requestId`
+（`x-tts-request-id`）、缓冲释放、收流及中断时间。
+`GET /metrics/tts` 的 `tts-status-v1` 用于健康状态及终态查询；按请求编号关联
+`gateway_last` / `gateway_recent` / `gateway_active`，不把同会话另一条语音当作当前结果。
+`metadata.server: null` 表示本次查询未找到关联记录，不能当作服务端已完成。
+
+真实服务验收脚本：
+
+```sh
+node --import tsx scripts/tts-acceptance.ts acceptance-config.json output-dir
+```
+
+验收配置包含 `url`、`transport`（同上）、`envFile`、`secretName`（默认
+`CORTICO_TTS_API_KEY`）、`audioDevice` 及可选 `audioSecondary`。脚本会实际播放一段，
+验证开播早于 HTTP 收齐，再于播放中关闭请求和队列，最后发起三个独立会话的并发请求。
+`acceptance.json` 保存设备开流、请求追踪、服务端终态和排队采样。三个请求都完成、
+观察到两个等待者且得到各自关联元数据后才通过排队验收。测试音频保存在同一输出目录。
+普通自动化测试使用本地夹具；该脚本仅在操作员明确要求真实服务验收时运行。

@@ -252,6 +252,7 @@ export interface PerformerDeps {
   incrementalSpeech?: () => boolean;
   /** 礼让收束找停顿的窗口(ms;控制台热调);缺省 500 */
   yieldWindowMs?: () => number;
+  hardInterrupt?: () => boolean;
   /** 礼让收束的回落淡出时长(ms;控制台热调);音素感知切断走不了时才用,缺省 150 */
   yieldFadeMs?: () => number;
   /** 逐字对齐开关(热):关闭时流式片沿 <> 剪成子片、接缝触发锚点 */
@@ -640,6 +641,9 @@ export class Performer {
           p.synthAbort?.abort();
           if (!p.segs) continue;
           for (const s of p.segs) s.abort?.();
+          if (this.d.hardInterrupt?.()) for (const s of p.segs) {
+            s.session?.abort(); s.chunks = []; s.pcm = [];
+          }
         }
       }
     }
@@ -1123,6 +1127,12 @@ export class Performer {
     this.gate.pulse();
 
     let cutInfo: { playing: CurrentPlayback; cutMs: number } | null = null;
+    if (this.d.hardInterrupt?.()) {
+      if (playingInScope) this.d.audio.stop(0);
+      const posMs = playing ? Math.max(0, this.now() - playing.startedAt) : 0;
+      return live.filter(r => !r.beats.some(b => b.pieces.some(p => p.music)))
+        .map(r => this.roundOutcome(r, playingInScope ? playing : null, posMs));
+    }
     if (playing && playingInScope && !playing.piece.played) {
       // startedAt 是预计可听时刻，可位于未来；此时发生打断，已播时长钳为 0。
       const posMs = Math.max(0, this.now() - playing.startedAt);
@@ -1610,12 +1620,14 @@ export class Performer {
     const t0 = this.now();
     try {
       const sink: TtsStreamSink = {
+        abort: () => { seg.chunks = []; seg.session?.abort(); },
         begin: ({ sampleRate, envelope }) => {
           seg.sampleRate = sampleRate;
           seg.envelope = envelope;
           this.gate.pulse();
         },
         pcm: (chunk) => {
+          if (ac.signal.aborted || piece.round.dropped || this.stopped) return;
           seg.pcm.push(chunk);
           seg.pcmBytes += chunk.length;
           if (seg.session) seg.session.push(chunk);

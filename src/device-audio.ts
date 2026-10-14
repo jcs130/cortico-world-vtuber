@@ -459,6 +459,7 @@ export class DeviceAudioSink implements AudioSink {
   }
 
   stop(fadeMs: number): void {
+    if (fadeMs <= 0) { this.close(); return; }
     const head = this.tracks[0];
     const retainFade = head?.startedResolved === true;
     if (head && retainFade) this.truncateWithFade(head, fadeMs);

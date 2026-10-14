@@ -189,6 +189,7 @@ function makeStreamPerformer(opts: {
   /** 块间只让出事件循环、不等定时器:合成远快于播放,预取的片在前一片还播着时就收完流 */
   fastStream?: boolean;
   incrementalSpeech?: () => boolean;
+  hardInterrupt?: () => boolean;
   /** 每块音频的毫秒数(缺省 20)。测几十秒长的片时调大,免得挂在定时器上跑几十秒。 */
   chunkMs?: number;
   /** 当前声线的实测语速;缺席即冷启动(编排器回落常数) */
@@ -341,6 +342,7 @@ function makeStreamPerformer(opts: {
     },
     streamEnabled: () => true,
     incrementalSpeech: opts.incrementalSpeech,
+    hardInterrupt: opts.hardInterrupt,
     alignEnabled: () => opts.align,
     speechRate: opts.speechRate,
     audio,
@@ -415,6 +417,29 @@ describe('Performer', () => {
     expect(p.played[0].text).toBe(first + tail);
     expect(p.traces.some(trace => trace.event === 'stream-received')).toBe(false);
     await waitFor(() => p.performer.status().queuedBeats === 0 && !p.performer.status().playing, 30_000);
+  });
+
+  it('remote interruption clears playing and queued speech immediately; stopped work never resumes', async () => {
+    const p = makeStreamPerformer({ align: false, unitMs: 500, incrementalSpeech: () => false,
+      hardInterrupt: () => true });
+    cleanup.push(() => p.performer.stop());
+    const first = p.performer.beginRound();
+    first.feed('这是一段很长的语音，我们要在它还没有接收完成的时候直接打断。'); first.end();
+    const queued = p.performer.beginRound(); queued.feed('这一句排在后面，不应该继续播放。'); queued.end();
+    await waitFor(() => p.played.length === 1);
+    const now = Date.now();
+    const outcomes = await p.performer.preempt();
+    expect(Date.now()).toBe(now);
+    expect(p.stops.at(-1)).toBe(0);
+    expect(outcomes.every(o => !o.complete)).toBe(true);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(p.played).toHaveLength(1);
+    p.performer.perform('新的语音。');
+    await waitFor(() => p.played.length === 2);
+    p.performer.stop();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(p.played).toHaveLength(2);
+    expect(p.performer.status().playing).toBe(false);
   });
 
   it('关闭流式后等待整拍正文，长句只合成播放一次；下一轮可热切回分句预合成', async () => {

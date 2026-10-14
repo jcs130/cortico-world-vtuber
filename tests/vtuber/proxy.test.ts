@@ -9,6 +9,7 @@ import { PassThrough } from 'node:stream';
 import { HANDOFF_NOTE, type VtuberWorldOptions } from '../../src/world.ts';
 import { TTS_SPEECH_DEFAULTS } from '../../src/tts-speech.ts';
 import { WAITING_MEDIA_DEFAULTS } from '../../src/waiting-media.ts';
+import { pcm16ToWav } from '../../src/tts.ts';
 import { attachStdio, VtuberWorldProxy } from '../../src/proxy.ts';
 import { makeWav, recordingLogger, type LogLine } from './helpers.ts';
 
@@ -276,6 +277,52 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     const silent = String(await act.handler({ script: '' }, { role: 'main', log: host.log, callId: 'p2' }));
     expect(silent).toContain('没有台词正文');
     expect(silent).not.toContain('本轮沉默');
+  });
+
+  it('remote WAV transport crosses IPC, starts before EOF and interruption closes the HTTP stream', async () => {
+    const requests: Array<{ url?: string; auth?: string; session?: string; body: Record<string, unknown> }> = [];
+    let disconnected = false;
+    const server = createServer((req, res) => {
+      if (req.url === '/metrics/tts') {
+        res.end(JSON.stringify({ schema: 'tts-status-v1', status: 'ok' })); return;
+      }
+      const chunks: Buffer[] = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => {
+        requests.push({ url: req.url, auth: req.headers.authorization,
+          session: String(req.headers['x-litellm-session-id']), body: JSON.parse(Buffer.concat(chunks).toString()) });
+        res.writeHead(200, { 'content-type': 'audio/wav', 'x-litellm-call-id': 'test-call',
+          'x-litellm-session-id': 'test-session', 'x-tts-request-id': 'test-native' });
+        const wav = pcm16ToWav([new Uint8Array(48000 * 2 * 10).fill(42)], 48000);
+        res.write(wav.subarray(0, 44 + 48000));
+        res.on('close', () => { disconnected = true; });
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const logStart = host.logs.length;
+    try {
+      await freshProxy({ ttsUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+        ttsApiKey: 'private-test-key', ttsService: { kind: 'external', autoStart: true },
+        ttsTransport: { protocol: 'openai-chunked', model: 'test-model', voice: 'test-voice', sessionId: 'test-session' },
+        alignEnabled: () => true, streamEnabled: () => false,
+      });
+      const act = proxy.tools().find(t => t.name === 'vtuber_act')!;
+      await act.handler({ script: '这是流式传输测试。第二句交给服务端分句。' }, { role: 'main', log: host.log, callId: 'remote-act' });
+      await waitFor(() => host.logs.slice(logStart).some(log => log.event === 'tts-http-playable'));
+      expect(disconnected).toBe(false);
+      const state = await proxy.ttsConsole().state();
+      expect(state.speech.voice).toBe('test-voice');
+      expect(JSON.stringify(state)).not.toContain('private-test-key');
+      await proxy.tools().find(t => t.name === 'vtuber_interrupt')!.handler({}, { role: 'main', log: host.log });
+      await waitFor(() => disconnected);
+      expect(requests).toEqual([{ url: '/v1/audio/speech', auth: 'Bearer private-test-key', session: 'test-session',
+        body: { model: 'test-model', input: '这是流式传输测试。第二句交给服务端分句。', voice: 'test-voice', speed: 1, response_format: 'wav' } }]);
+      expect(JSON.stringify(host.logs.slice(logStart))).not.toContain('private-test-key');
+    } finally {
+      await freshProxy();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
   });
 
   it('子进程代理对外部数组字符串采用相同归一化与拒绝规则', async () => {

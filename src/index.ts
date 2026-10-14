@@ -12,3 +12,4 @@ export default VTUBER;
 export { VTUBER };
 export type { VtuberConfigSection } from './definition.ts';
 export type { OverlayConfig, TtsProfile } from './world.ts';
+export type { TtsTransportConfig, TtsRequestTrace } from './tts-transport.ts';

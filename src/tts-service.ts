@@ -50,6 +50,9 @@ export interface TtsServiceState {
 
 export interface TtsServiceOptions {
   url: string;
+  healthPath?: string;
+  headers?: () => Record<string, string>;
+  healthSchema?: string;
   config?: Partial<TtsServiceConfig>;
   log: Logger;
   voxcpm2: TtsServerOptions;
@@ -179,12 +182,15 @@ export class TtsService {
 
   private async readHealth(): Promise<HealthResult> {
     try {
-      const response = await this.fetchImpl(`${this.opts.url.replace(/\/$/, '')}/health`,
-        { signal: AbortSignal.timeout(Math.min(2000, this.config.startupTimeoutMs)) });
+      const response = await this.fetchImpl(`${this.opts.url.replace(/\/$/, '')}${this.opts.healthPath ?? '/health'}`,
+        { headers: this.opts.headers?.(), signal: AbortSignal.timeout(Math.min(2000, this.config.startupTimeoutMs)) });
       if (!response.ok) return { kind: 'occupied', detail: `语音端点健康检查返回 ${response.status}` };
       const body = await response.json() as Record<string, unknown>;
       if (!body || typeof body !== 'object' || Array.isArray(body)) {
         return { kind: 'occupied', detail: '语音端点未返回有效的健康对象。' };
+      }
+      if (this.opts.healthSchema && (body.schema !== this.opts.healthSchema || body.status !== 'ok')) {
+        return { kind: 'occupied', detail: '语音状态协议不匹配或服务未就绪。' };
       }
       if (this.config.kind === 'indextts' && !(body.status === 'ok' && typeof body.version === 'string'
         && body.streaming === true && String(body.backend).startsWith('indextts'))) {

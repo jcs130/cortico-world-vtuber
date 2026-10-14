@@ -58,6 +58,7 @@ import { describeSilence, silenceData } from './silence-scan.ts';
 import { DEFAULT_TIMEOUT_RANGE_MS, type StateChannel } from './states.ts';
 import { computeSubtitleCues } from './subtitle-cues.ts';
 import { DeviceAudioSink } from './device-audio.ts';
+import { TTS_TRANSPORT_DEFAULTS, ttsHeaders, type TtsTransportConfig } from './tts-transport.ts';
 import { AlignerClient, countPauses, segmentUnits, type AlignedUnit, type AlignResult } from './align.ts';
 import {
   decodeWav,
@@ -152,6 +153,7 @@ export const VTUBER_DEFAULTS = {
   streamPort: 7792,
   /** VoxCPM2 server;VTS 占 8001,TTS 用 8010 */
   ttsUrl: 'http://127.0.0.1:8010',
+  ttsTransport: { ...TTS_TRANSPORT_DEFAULTS },
   ttsService: { ...TTS_SERVICE_DEFAULTS },
   ttsSpeech: { ...TTS_SPEECH_DEFAULTS },
   /** 自备运行时目录;空 = 走面板的托管下载 */
@@ -382,6 +384,33 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
       'worlds.vtuber.ttsService.kind': {
         type: 'string', enum: ['voxcpm2', 'indextts', 'external'], title: '语音服务类型', 'x-hot': false,
         description: 'VoxCPM2、本地 IndexTTS 适配器，或只连接外部服务。',
+      },
+      'worlds.vtuber.ttsTransport.protocol': {
+        type: 'string', enum: ['legacy', 'openai-chunked'], title: '语音接口协议', 'x-hot': false,
+        description: 'OpenAI 分块 WAV 使用 /v1/audio/speech；密钥保存在部署 .env 的 CORTICO_TTS_API_KEY。',
+      },
+      'worlds.vtuber.ttsTransport.model': {
+        type: 'string', title: '远程语音模型', 'x-hot': false,
+      },
+      'worlds.vtuber.ttsTransport.voice': {
+        type: 'string', title: '远程音色', 'x-hot': false,
+      },
+      'worlds.vtuber.ttsTransport.speed': {
+        type: 'number', minimum: 0.25, maximum: 4, title: '远程语速', 'x-hot': false,
+      },
+      'worlds.vtuber.ttsTransport.sessionId': {
+        type: 'string', title: '语音会话标识', 'x-hot': false,
+        description: '同一部署保持稳定；留空按部署目录生成。',
+      },
+      'worlds.vtuber.ttsTransport.prebufferMs': {
+        type: 'integer', minimum: 0, maximum: 5000, title: '语音预缓冲（毫秒）', 'x-hot': false,
+      },
+      'worlds.vtuber.ttsTransport.timeoutMs': {
+        type: 'integer', minimum: 1000, maximum: 600000, title: '排队与收流超时（毫秒）', 'x-hot': false,
+      },
+      'worlds.vtuber.ttsTransport.healthPath': {
+        type: 'string', title: '语音状态路径', 'x-hot': false,
+        description: '相对服务根地址的路径；返回 tts-status-v1 状态。',
       },
       'worlds.vtuber.ttsService.autoStart': {
         type: 'boolean', title: '随演出启动语音服务', 'x-hot': false,
@@ -873,6 +902,8 @@ export interface VtuberWorldOptions {
   /** 演出流服务的偏好端口(0 = 随机空闲口;测试用) */
   streamPort?: number;
   ttsUrl?: string;
+  ttsTransport?: Partial<TtsTransportConfig>;
+  ttsApiKey?: string;
   ttsService?: Partial<TtsServiceConfig>;
   ttsSpeech?: () => TtsSpeechPreferences;
   /** 自备的运行时目录;非空就不走托管下载(自编译、签过名的构建走这里) */
@@ -1001,7 +1032,7 @@ export interface VtuberTtsConsole {
   metrics(): { schema: 'vtuber-sender-metrics-v1'; time: number; pending_items: number | null; playing: boolean | null };
   state(): Promise<
     TtsServiceState & { reachable: boolean; profile: TtsProfile; voices: TtsVoiceInfo[]; voicesDir: string;
-      speech: TtsSpeechPreferences; speechVoices: string[] }
+      speech: TtsSpeechPreferences; speechVoices: string[]; transport?: TtsTransportConfig }
   >;
   /** 运行时与权重的安装状态 */
   runtime(): {
@@ -1652,7 +1683,10 @@ export class VtuberWorld implements World {
     this.ttsUrl = ttsUrl;
     this.ttsProfile = this.clampProfile({ ...TTS_PROFILE_DEFAULTS, ...opts.ttsProfile });
     this.onTtsProfile = opts.onTtsProfile;
-    this.ttsClient = new TtsClient({ url: ttsUrl, profile: () => this.synthProfileOf(this.ttsProfile) });
+    this.ttsClient = new TtsClient({ url: ttsUrl, transport: opts.ttsTransport, apiKey: opts.ttsApiKey,
+      profile: () => this.synthProfileOf(this.ttsProfile),
+      trace: trace => this.tracePerf('TTS HTTP', trace.phase, { event: `tts-http-${trace.phase}`, data: { ...trace } }),
+    });
     // 对齐器与 TTS 同进程同端口:一个 llama-tts-server 同时驮着 VoxCPM2 和对齐模型
     this.aligner = new AlignerClient({ url: ttsUrl });
     this.alignEnabled = opts.alignEnabled;
@@ -1683,7 +1717,13 @@ export class VtuberWorld implements World {
     this.runtimeStore = new RuntimeStore(runtimesRoot(), this.log);
     this.modelStore = new ModelStore(TTS_MODELS_DIR, this.log);
     this.ttsServer = new TtsService({
-      url: ttsUrl, config: opts.ttsService, log: this.log,
+      url: ttsUrl, config: this.ttsClient.transport.protocol === 'openai-chunked'
+        ? { ...opts.ttsService, kind: 'external' } : opts.ttsService, log: this.log,
+      ...(this.ttsClient.transport.protocol === 'openai-chunked' ? {
+        healthPath: this.ttsClient.transport.healthPath,
+        headers: () => ttsHeaders(opts.ttsApiKey ?? '', this.ttsClient.transport.sessionId),
+        healthSchema: 'tts-status-v1',
+      } : {}),
       voxcpm2: {
       runtimeDir: () => this.runtimeDir(),
       serverExe: () => this.releasePlan?.serverExe ?? (process.platform === 'win32' ? 'llama-tts-server.exe' : 'llama-tts-server'),
@@ -2049,6 +2089,7 @@ export class VtuberWorld implements World {
   }
 
   private alignOn(): boolean {
+    if (this.ttsClient.transport.protocol === 'openai-chunked') return false;
     return this.alignEnabled?.() ?? VTUBER_DEFAULTS.alignEnabled;
   }
 
@@ -2139,6 +2180,7 @@ export class VtuberWorld implements World {
     let deliveredPcmBytes = 0;
     try {
       piece = await this.ttsClient.synthStream(text, {
+        abort: sink.abort,
         begin: sink.begin,
         pcm: (chunk) => {
           deliveredPcmBytes += chunk.length;
@@ -2149,6 +2191,7 @@ export class VtuberWorld implements World {
       this.ttsOk = true;
     } catch (err) {
       if (signal.aborted) throw err;
+      if (this.ttsClient.transport.protocol === 'openai-chunked') { this.ttsOk = false; throw err; }
       if (err instanceof TtsSkipped) throw err;
       if (err instanceof TtsHttpError && err.status !== 404 && err.status !== 405) {
         this.ttsOk = false;
@@ -2233,6 +2276,7 @@ export class VtuberWorld implements World {
 
   /** server 流式能力:health 的 streaming 标志,30s 缓存后台刷新 */
   private streamCapable(): boolean {
+    if (this.ttsClient.transport.protocol === 'openai-chunked') return true;
     const now = Date.now();
     if (now - this.streamProbeAt > 30_000) {
       this.streamProbeAt = now;
@@ -2246,6 +2290,7 @@ export class VtuberWorld implements World {
    * 其他回码(参数错)说明路由在。不靠 /health 里的自述标志,那样每换一个后端都要它配合。
    */
   private async probeStreaming(): Promise<void> {
+    if (this.ttsClient.transport.protocol === 'openai-chunked') { this.streamOk = true; return; }
     try {
       const res = await fetch(`${this.ttsUrl}/v1/audio/speech/stream`, {
         method: 'POST',
@@ -2855,10 +2900,14 @@ export class VtuberWorld implements World {
         ...this.ttsServer.state(),
         reachable: await this.ttsServer.probe(),
         profile: { ...this.ttsProfile },
+        transport: { ...this.ttsClient.transport },
         voices: this.listVoices(),
         voicesDir: this.voicesDir(),
-        speech: { ...(this.ttsSpeechOpt?.() ?? TTS_SPEECH_DEFAULTS) },
-        speechVoices: await this.ttsServer.listVoices(),
+        speech: this.ttsClient.transport.protocol === 'openai-chunked'
+          ? { ...TTS_SPEECH_DEFAULTS, enabled: true, voice: this.ttsClient.transport.voice, speed: this.ttsClient.transport.speed }
+          : { ...(this.ttsSpeechOpt?.() ?? TTS_SPEECH_DEFAULTS) },
+        speechVoices: this.ttsClient.transport.protocol === 'openai-chunked'
+          ? [this.ttsClient.transport.voice] : await this.ttsServer.listVoices(),
       }),
       runtime: () => ({ kind: this.ttsServer.state().kind, service: this.ttsServer.state(), ...this.ttsRuntimeState(), models: this.ttsModelStates() }),
       installRuntime: () => this.installTtsRuntime(),
@@ -2909,7 +2958,7 @@ export class VtuberWorld implements World {
         if (this.performer) this.performer.enqueuePreparedSpeech(piece);
         else void this.audio.play(piece).then(({ ended }) => ended).catch(() => {});
         const speech = this.ttsSpeechOpt?.();
-        const voice = this.ttsServer.state().kind === 'indextts'
+        const voice = this.ttsClient.transport.protocol === 'openai-chunked' ? this.ttsClient.transport.voice : this.ttsServer.state().kind === 'indextts'
           ? (speech?.enabled && speech.voice.trim() ? speech.voice.trim() : this.ttsServer.state().health?.voice)
           : audition?.refAudio ?? this.ttsProfile.refAudio;
         return {
@@ -3056,6 +3105,7 @@ export class VtuberWorld implements World {
 
   /** 组装一次合成的请求档案;参考音频按文件名缓存 base64 */
   private synthProfileOf(p: TtsProfile): TtsSynthProfile {
+    if (this.ttsClient.transport.protocol === 'openai-chunked') return {};
     if (this.ttsServer.state().kind === 'indextts') {
       const speech = this.ttsSpeechOpt?.();
       return speech?.enabled ? { speech } : {};
@@ -3147,8 +3197,10 @@ export class VtuberWorld implements World {
         alignPcm: (pcm, sampleRate, units) => this.alignPcmPrefix(pcm, sampleRate, units),
       },
       streamEnabled: () =>
-        (this.streamEnabledOpt?.() ?? VTUBER_DEFAULTS.streamEnabled) && this.streamCapable(),
-      incrementalSpeech: () => this.incrementalSpeechOpt?.() ?? this.streamEnabledOpt?.() ?? VTUBER_DEFAULTS.incrementalSpeech,
+        this.ttsClient.transport.protocol === 'openai-chunked'
+        || ((this.streamEnabledOpt?.() ?? VTUBER_DEFAULTS.streamEnabled) && this.streamCapable()),
+      incrementalSpeech: () => this.ttsClient.transport.protocol === 'openai-chunked' ? false
+        : this.incrementalSpeechOpt?.() ?? this.streamEnabledOpt?.() ?? VTUBER_DEFAULTS.incrementalSpeech,
       alignEnabled: () => this.alignOn(),
       speechRate: () => this.speechRateHint(),
       yieldWindowMs: () => {
@@ -3157,6 +3209,7 @@ export class VtuberWorld implements World {
           ? Math.min(2000, Math.max(0, Math.round(v)))
           : VTUBER_DEFAULTS.yieldWindowMs;
       },
+      hardInterrupt: () => this.ttsClient.transport.protocol === 'openai-chunked',
       yieldFadeMs: () => {
         const v = this.yieldFadeMsOpt?.();
         return typeof v === 'number' && Number.isFinite(v)
@@ -3543,6 +3596,10 @@ export class VtuberWorld implements World {
   }
 
   private speechProfileKey(): string {
+    const transport = this.ttsClient.transport;
+    if (transport.protocol === 'openai-chunked') return createHash('sha256')
+      .update(JSON.stringify({ url: this.ttsUrl, protocol: transport.protocol,
+        model: transport.model, voice: transport.voice, speed: transport.speed })).digest('hex');
     const ref = this.ttsProfile.refAudio;
     let refVersion: { size: number; mtimeMs: number } | null = null;
     if (ref) {

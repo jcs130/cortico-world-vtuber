@@ -55,6 +55,24 @@ async function existing(value: number, health: object): Promise<Server> {
 }
 
 describe('TtsService lifecycle and ownership', () => {
+  it('reads authenticated remote status without starting a local model or using /health', async () => {
+    const urls: string[] = [];
+    const manager = new TtsService({ url: 'http://fixture.invalid', config: { kind: 'external' },
+      log: nullLogger(), healthPath: '/metrics/tts', healthSchema: 'tts-status-v1',
+      headers: () => ({ Authorization: 'Bearer test-key' }),
+      voxcpm2: { runtimeDir: () => '', serverExe: () => '', modelsDir: '', port: 0, log: nullLogger() },
+      fetchImpl: (async (url, init) => {
+        urls.push(String(url));
+        return Response.json({ status: new Headers(init?.headers).get('Authorization') ? 'ok' : 'error',
+          schema: 'tts-status-v1', gateway_last: { gateway_outcome: 'completed' } });
+      }) as typeof fetch,
+    });
+    services.push(manager);
+    expect(await manager.start()).toMatchObject({ phase: 'running', ownership: 'external', pid: null });
+    expect(urls).toEqual(['http://fixture.invalid/metrics/tts']);
+    await manager.stop();
+    expect(await manager.probe()).toBe(true);
+  });
   it('coalesces concurrent starts, authenticates its child and waits for stop', async () => {
     const manager = service(await port());
     const [first, second] = await Promise.all([manager.start(), manager.start()]);
