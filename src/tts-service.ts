@@ -6,7 +6,7 @@ import { dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import type { Logger } from 'cortico/core/types.ts';
-import { TtsServerManager, type TtsServerOptions, type TtsServerPhase, type TtsServerResources } from './tts-server.ts';
+import { TtsServerManager, type TtsServerOptions, type TtsServerPhase, type TtsServerResources, type TtsServerState } from './tts-server.ts';
 
 export interface TtsServiceConfig {
   kind: 'voxcpm2' | 'indextts' | 'external';
@@ -33,6 +33,8 @@ export const TTS_SERVICE_DEFAULTS: TtsServiceConfig = {
 
 export interface TtsServiceState {
   kind: TtsServiceConfig['kind'];
+  failure: TtsServerState['failure'];
+  autoRestart: TtsServerState['autoRestart'];
   phase: TtsServerPhase;
   url: string;
   pid: number | null;
@@ -112,6 +114,7 @@ export class TtsService {
           ? [{ label: 'Python', path: this.config.pythonFile, ready: existsSync(this.config.pythonFile) }] : [])]
       : [];
     return { kind: this.config.kind, phase: this.phase, url: this.opts.url,
+      failure: null, autoRestart: null,
       pid: this.proc?.pid ?? null, ownership: this.proc ? 'owned' : this.health ? 'external' : 'none',
       detail: this.detail, restarts: this.restarts, health: this.health,
       resources: { ready: files.every(file => file.ready), files } };
