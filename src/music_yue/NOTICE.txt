@@ -1,0 +1,9 @@
+The score helpers in score/ are vendored from YuE2, commit
+1647252d68b70cbead046ffd3f7caf036dde47ee, directory
+skills/yue2-music/instrumental/scripts (abc_tools.py, common.py,
+compile_score.py, instrumentalize.py). Upstream: https://github.com/multimodal-art-projection/YuE
+They are distributed under the MIT license preserved in score/LICENSE.
+Local changes: use package-relative imports. Musical transformations and strict
+pitch, onset, duration, meter and tempo checks are otherwise unchanged.
+Model weights are not bundled. Configure and provision a compatible checkpoint
+separately; preserve its own upstream model license and download manifest.

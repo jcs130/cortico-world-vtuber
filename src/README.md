@@ -126,7 +126,7 @@ API 模板必须含 `TextEncodeAceStepAudio1.5`、`EmptyAceStep1.5LatentAudio`�
 
 控制台 `music` 面板调用 `state([])`、`play([trackId,{intro?,outro?}])`（第二参数可省略）、`stop([])`。
 `state` 返回 `{tracks,current,queue,last,volume,generation?,error?}`；曲目为
-`{id,title,durationMs,envelopeSource:'vocal'|'mix',description?,lyrics?,aiGenerated?}`。
+`{id,title,durationMs,envelopeSource:'vocal'|'mix'|'none',instrumental?,description?,lyrics?,aiGenerated?}`。
 `generate([request,requestKey?])` 提交后台原创，`cancelGeneration([jobId])` 取消该创作；
 `generation` 带 `{enabled,jobs,error?}`，面板仅展示审核后可公开的任务信息。
 `play`/`stop` 返回 `{ok,message,current,queue,last}`。

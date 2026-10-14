@@ -7,7 +7,8 @@ export type MusicGenerationStatus = 'queued' | 'reviewing' | 'generating' | 'val
 export interface MusicGenerationRequest {
   requestText: string;
   title: string;
-  lyrics: string;
+  lyrics?: string;
+  instrumental?: boolean;
   style: string;
   durationSec: number;
   requesterKey?: string;
@@ -15,6 +16,8 @@ export interface MusicGenerationRequest {
   outro?: string;
 }
 export interface MusicGenerationJob {
+  instrumental?: boolean;
+  musicModel?: 'ace-step' | 'yue2';
   jobId: string;
   state: MusicGenerationStatus;
   title: string;
@@ -45,13 +48,16 @@ function text(value: unknown, max: number, multiline = false): value is string {
 }
 export function generationRequest(value: unknown): MusicGenerationRequest {
   const r = value as MusicGenerationRequest;
-  if (!r || !text(r.requestText, 1500) || !text(r.title, 100) || !text(r.lyrics, 3000, true)
+  if (!r || !text(r.requestText, 1500) || !text(r.title, 100)
+    || (r.instrumental !== undefined && typeof r.instrumental !== 'boolean')
+    || (r.instrumental ? (r.lyrics !== undefined && r.lyrics !== '') : !text(r.lyrics, 3000, true))
     || !text(r.style, 600) || !Number.isInteger(r.durationSec) || r.durationSec < 30 || r.durationSec > 120
     || (r.requesterKey !== undefined && !text(r.requesterKey, 150))
     || (r.intro !== undefined && !text(r.intro, 500)) || (r.outro !== undefined && !text(r.outro, 500))) {
-    throw new Error('原创歌曲需要点歌要求、标题、原创歌词、曲风和 30–120 秒整数时长。');
+    throw new Error('原创音乐需要要求、标题、曲风和 30–120 秒整数时长；纯器乐设 instrumental=true 并省略歌词，歌曲需原创歌词。');
   }
-  return { requestText: r.requestText, title: r.title, lyrics: r.lyrics, style: r.style, durationSec: r.durationSec,
+  return { requestText: r.requestText, title: r.title, lyrics: r.instrumental ? '' : r.lyrics, style: r.style, durationSec: r.durationSec,
+    ...(r.instrumental ? { instrumental: true } : {}),
     ...(r.requesterKey ? { requesterKey: r.requesterKey } : {}), ...(r.intro ? { intro: r.intro } : {}), ...(r.outro ? { outro: r.outro } : {}) };
 }
 export function generationJob(value: unknown): MusicGenerationJob {
@@ -59,6 +65,8 @@ export function generationJob(value: unknown): MusicGenerationJob {
   if (!j || typeof j.jobId !== 'string' || !ID.test(j.jobId) || !STATES.has(j.state)
     || !text(j.title, 200) || !text(j.createdAt, 40) || !Number.isFinite(Date.parse(j.createdAt))
     || !text(j.updatedAt, 40) || !Number.isFinite(Date.parse(j.updatedAt))
+    || (j.instrumental !== undefined && typeof j.instrumental !== 'boolean')
+    || (j.musicModel !== undefined && !['ace-step', 'yue2'].includes(j.musicModel))
     || (j.requesterKey !== undefined && !text(j.requesterKey, 150))
     || (j.trackId !== undefined && (typeof j.trackId !== 'string' || !ID.test(j.trackId)))) {
     throw new Error('歌曲生成服务返回了无效任务状态。');
@@ -68,6 +76,7 @@ export function generationJob(value: unknown): MusicGenerationJob {
   }
   return { jobId: j.jobId, state: j.state, title: j.contentApproved === true ? j.title : '正在创作 AI 歌曲',
     createdAt: j.createdAt, updatedAt: j.updatedAt,
+    ...(j.instrumental ? { instrumental: true } : {}), ...(j.musicModel ? { musicModel: j.musicModel } : {}),
     ...(j.requesterKey ? { requesterKey: j.requesterKey } : {}), ...(j.trackId ? { trackId: j.trackId } : {}),
     ...(j.contentApproved === true ? { contentApproved: true as const } : {}),
     ...(j.audioValidated === true ? { audioValidated: true as const } : {}), ...(j.aiGenerated === true ? { aiGenerated: true as const } : {}) };

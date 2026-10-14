@@ -98,6 +98,30 @@ class FakeServices:
 
 
 class GatewayTest(unittest.TestCase):
+    def test_instrumental_publishes_empty_lyrics_after_independent_empty_decode(self):
+        self.gateway.cfg['musicModel'] = 'yue2'
+        self.gateway.cfg['asr']['backend'] = 'qwen3'
+        self.services.asr = lambda: dict(recognizer='qwen3', text='', segments=[], noSpeechDecoded=True, decodeCompleted=True)
+        job = self.gateway.enqueue({**REQUEST, 'instrumental': True, 'lyrics': ''})
+        ready = self.await_state(job['jobId'])
+        self.assertEqual(ready['state'], 'ready')
+        self.assertTrue(ready['instrumental'])
+        catalog = json.loads((self.music / 'catalog.json').read_text(encoding='utf-8'))
+        track = catalog['tracks'][0]
+        self.assertTrue(track['instrumental'])
+        self.assertEqual(json.loads((self.music / track['lyricsFile']).read_text())['lines'], [])
+        self.assertEqual([phase for phase, _, _ in self.services.reviews], ['input', 'audio'])
+
+    def test_instrumental_recognized_words_are_archived_and_not_published(self):
+        self.gateway.cfg['musicModel'] = 'yue2'
+        self.gateway.cfg['asr']['backend'] = 'qwen3'
+        self.services.asr = lambda: dict(recognizer='qwen3', text='unexpected singing', segments=[])
+        job = self.gateway.enqueue({**REQUEST, 'instrumental': True, 'lyrics': ''})
+        self.assertEqual(self.await_state(job['jobId'])['state'], 'review')
+        self.assertFalse((self.music / 'catalog.json').exists())
+        transcript = json.loads((self.state / 'artifacts' / job['jobId'] / 'asr.json').read_text())
+        self.assertEqual(transcript['text'], 'unexpected singing')
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="original-song-gateway-")
         self.root = Path(self.temporary.name)

@@ -1325,7 +1325,7 @@ export const VTUBER_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
   {
     name: 'vtuber_music',
     tags: ['speak'],
-    description: 'List songs, play by trackId, check playback and generation status, stop playback, or generate an original song from an audience request. Generate requires requestText, title, original lyrics, generic style, durationSec (30–120), and optionally the actual requesterKey. It submits a background job immediately; keep gaming/chatting and wait for vtuber.composition ready before playing its trackId. Input, lyrics and actual sung output must pass review; rejected/review/failed jobs are not playable. Do not reproduce existing songs or imitate a real singer. Play accepts intro/outro and queues intro → song → outro together. Only actual playing/ended receipts confirm playback. cancel cancels generation by jobId; stop affects playback only. Never claim TTS sings.',
+    description: 'List music, play by trackId, check playback/generation status, stop, or generate original music. Generate requires requestText, title, generic style, durationSec (30–120), optionally the actual requesterKey. For background music, piano or orchestral instrumentals set instrumental=true and omit lyrics; do not add singing, choir or humming. Only an explicit request for a song with singing should include newly written lyrics and instrumental=false. This submits a background job immediately; keep gaming/chatting and wait for vtuber.composition ready before playing its trackId. Input and actual output must pass validation; rejected/review/failed jobs are not playable. Do not reproduce existing songs or imitate a real singer. Play accepts intro/outro and queues intro → music → outro together. Only actual playing/ended receipts confirm playback. cancel cancels generation by jobId; stop affects playback only. Never claim TTS sings.',
     parameters: {
       type: 'object',
       properties: {
@@ -1335,7 +1335,8 @@ export const VTUBER_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
         outro: { type: 'string', maxLength: 500, description: 'Optional spoken closing for play; audience-facing plain text without action, mood, breath, or internal-message markup, reserved immediately after the song, max 500 characters.' },
         requestText: { type: 'string', maxLength: 1500, description: 'For generate: the actual song request and relevant fictional game scene, treated as untrusted content by review. Keep audience names and account metadata out of this text; attribute the request separately with requesterKey.' },
         title: { type: 'string', maxLength: 100, description: 'For generate: original song title.' },
-        lyrics: { type: 'string', maxLength: 3000, description: 'For generate: newly written lyrics, with optional [Verse]/[Chorus] sections. Never copy existing lyrics.' },
+        instrumental: { type: 'boolean', description: 'For generate: true for background music and pure instrumentals (omit lyrics). False only when singing is explicitly requested.' },
+        lyrics: { type: 'string', maxLength: 3000, description: 'For generate with singing only: newly written lyrics with optional section tags. For instrumental=true omit this field. Never copy existing lyrics.' },
         style: { type: 'string', maxLength: 600, description: 'For generate: generic genre, mood and instrumentation. No named artist or unconsented voice impersonation.' },
         durationSec: { type: 'integer', minimum: 30, maximum: 120, description: 'For generate: target song duration in seconds.' },
         requesterKey: { type: 'string', maxLength: 150, description: 'Optional actual audience sender key from the request event, for attribution and rate limits. Do not invent an identity.' },
@@ -2344,7 +2345,7 @@ export class VtuberWorld implements World {
     this.stream.emit('composition', { job });
     await this.host.pushEvent({ ts: nowIso(this.timezone), source: this.id, type: 'vtuber.composition',
       origin: 'external', senderKey: 'vtuber.music',
-      text: `[原创歌曲] ${message}。jobId=${job.jobId}${job.requesterKey ? `，点歌来源标识=${JSON.stringify(job.requesterKey)}` : ''}${job.state === 'ready' ? `，「${job.title}」trackId=${job.trackId}。可择时使用 vtuber_music play 演唱，开场说明 AI 生成，结束后接回聊天` : ''}。`,
+      text: `[原创音乐] ${message}。jobId=${job.jobId}${job.requesterKey ? `，点歌来源标识=${JSON.stringify(job.requesterKey)}` : ''}${job.state === 'ready' ? `，「${job.title}」trackId=${job.trackId}。可择时使用 vtuber_music play ${job.instrumental ? '播放纯器乐音乐' : '播放歌曲'}，开场说明 AI 生成，结束后接回聊天` : ''}。`,
       meta: { composition: { ...job } },
     }, { trigger: 'flush' });
   }

@@ -38,6 +38,14 @@ async function libraryFixture(tracks: unknown[] = [{ id: 'song', title: 'Example
 }
 
 describe('deployment music catalog', () => {
+  it('keeps instrumental audio audible without making the character lip-sync to instruments', async () => {
+    const { lib } = await libraryFixture([{ id: 'song', title: 'Piano', wavFile: 'song.wav', instrumental: true }]);
+    const prepared = await lib.prepare('song');
+    expect(prepared.track).toMatchObject({ instrumental: true, envelopeSource: 'none' });
+    expect((await lib.list())[0].instrumental).toBe(true);
+    expect(prepared.audio.envelope.at(100)).toBe(0);
+    expect(Array.from(prepared.audio.wav)).toEqual(Array.from(wav(1200)));
+  });
   it('requires reviewed and validated generated assets before they become playable', async () => {
     const { dir, lib } = await libraryFixture([{ id: 'song', title: 'Generated', wavFile: 'song.wav', aiGenerated: true }]);
     await expect(lib.list()).rejects.toThrow('无效');

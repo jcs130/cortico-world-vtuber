@@ -1,5 +1,44 @@
 # `music-generation-gateway.py` / `MusicGenerationGateway` / `music_asr.py`
 
+## YuE2 原生音乐与纯器乐
+
+部署可设置 `musicModel: "yue2"`、`generationMode: "text-to-music"`、
+`voiceConversion.enabled: false`，并将 `comfy.endpoint` 指向专用的本地 ComfyUI。
+`yue2.checkpoint` 默认为 `yue2_3b_int8_convrot.safetensors`。旧配置不声明
+`musicModel` 时仍使用 ACE-Step；不会在失败后偷偷换模型。YuE2 不需要旧的 ACE 提示模板。
+
+`POST /jobs` 及 `vtuber_music generate` 增加布尔参数 `instrumental`。
+背景音乐使用 `instrumental: true`，省略 `lyrics` 或传空字符串；混入唱词会拒绝受理。
+只有明确要求演唱时才传原创歌词。时长为 30–120 秒，也是生成上限，不保证完整自然收尾。
+`/health` 返回当前 `musicModel` 和 `instrumentalSupported`；任务回执保留模型和纯器乐标识。
+
+YuE2 先作曲，再把纯器乐谱面的 Vocal 音符迁移到 Ins，逐项校验音高、时值、拍号、
+速度和和弦。保留原始谱、转换谱、校验记录、请求图及返回图；结构错误最多重新作曲一次，
+不将华尔兹强改成四拍。渲染沿用试听的 32 步、DPM2 / SGM uniform、零负条件及
+-6 dB 导出增益。`generation.json` 标记时间上限，Comfy API 未提供终止 token 状态。
+
+纯器乐也执行音频质量检查及独立 Qwen3 转写。只接受正常解码终止且转写为空的结果；
+识别到词语或识别失败进入 `review`，不改写为歌词、不自动入库。空转写不能排除哼唱，
+谱面检查也不等于人耳验收。纯器乐歌词文件保留空 `lines`。歌曲仍沿用实际转写、
+内容审核、歌词覆盖率和时间轴校验。原生 YuE2 不做参考音色或后置换声。
+
+两个阶段分别持久化提交意图和 promptId。丢失提交应答不会自动重复提交；可确认的任务
+重启后继续查询。取消和停止会阻止后续渲染与入库，不中断共享显卡上的其他服务。
+
+### 专用离线运行器
+
+`src/music-yue-worker.py --config worker.json` 使用预先安装的 ComfyUI 和权重，
+启动前检查 checkpoint SHA256，不下载依赖或模型。JSON 键：`comfyRoot`、`checkpoint`、
+`checkpointSha256`、`stateDir`、`port`（例如 8288）、`host`（仅 127.0.0.1）。
+Windows 可通过 `scripts/music-yue-watch.ps1 -ConfigPath ... -PythonExe ...` 托管，
+应使用有 GPU 访问权的登录用户，独立于游戏宿主和 TTS。CPU VAE、低进程优先级、
+保留 3 GiB 显存、禁用自定义节点、生成后释放缓存沿用已验收的本机设置。
+权重、ComfyUI 与 Python 环境不打入 npm；本地路径必须显式配置。第三方曲谱工具
+来源与 MIT 许可证见 `src/music_yue/NOTICE.txt` 和 `score/LICENSE`。
+
+服务进程重载与宿主工具加载是两件事：音乐网关重载即可切换生成模型；新增工具参数
+需要宿主重新导入 VTuber 源码，普通 World stop/start 不会清除 Node 模块缓存。
+
 原创点歌请求立即返回任务回执，生成、音色转换和审核在后台串行执行。
 `requestText` 保存点歌要求和相关虚构游戏场景，`requesterKey` 单独保存来源标识。来源标识不进入审核；观众昵称不写入创作文本。
 完整成品混音的独立转写用于内容审核；启用音色转换时，歌词时间轴在最终转换人声上校验，保留 `asr.json` 和 `asr-vocals.json` 供检查。

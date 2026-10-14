@@ -38,6 +38,10 @@ _voice_spec.loader.exec_module(voice_module)
 _asr_spec = importlib.util.spec_from_file_location("music_asr", Path(__file__).with_name("music_asr.py"))
 asr_module = importlib.util.module_from_spec(_asr_spec)
 _asr_spec.loader.exec_module(asr_module)
+_yue_spec = importlib.util.spec_from_file_location("vtuber_music_yue", Path(__file__).with_name("music_yue") / "__init__.py")
+yue_module = importlib.util.module_from_spec(_yue_spec)
+sys.modules[_yue_spec.name] = yue_module
+_yue_spec.loader.exec_module(yue_module)
 
 
 TERMINAL = {"ready", "rejected", "review", "failed", "cancelled"}
@@ -141,7 +145,14 @@ def load_config(path: Path) -> dict:
 def normalize_config(data: dict, base: Path | None = None) -> dict:
     cfg = copy.deepcopy(data)
     base = base or Path.cwd()
-    for key in ("stateDir", "musicDir", "promptTemplateFile"):
+    cfg.setdefault("musicModel", "ace-step")
+    if cfg["musicModel"] not in ("ace-step", "yue2"):
+        raise GatewayError("音乐模型配置无效。")
+    cfg.setdefault("yue2", {"checkpoint": "yue2_3b_int8_convrot.safetensors"})
+    if not isinstance(cfg["yue2"], dict) or not re.fullmatch(r"[A-Za-z0-9_.-]+\.safetensors", str(cfg["yue2"].get("checkpoint", ""))):
+        raise GatewayError("YuE2 需要有效的本地 checkpoint 文件名。")
+    keys = ("stateDir", "musicDir") if cfg["musicModel"] == "yue2" else ("stateDir", "musicDir", "promptTemplateFile")
+    for key in keys:
         value = cfg.get(key)
         if not isinstance(value, str) or not value.strip():
             raise GatewayError("缺少网关目录或提示模板配置。")
@@ -157,6 +168,8 @@ def normalize_config(data: dict, base: Path | None = None) -> dict:
     except ValueError:
         raise GatewayError("歌声转换需要有效的私有配置、授权参考与固定模型校验值。") from None
     cfg.setdefault("generationMode", "reference-timbre")
+    if cfg["musicModel"] == "yue2" and (cfg["generationMode"] != "text-to-music" or cfg["voiceConversion"]["enabled"]):
+        raise GatewayError("YuE2 使用原生文本音乐生成；请关闭参考音色与歌声转换。")
     if cfg["generationMode"] not in ("reference-timbre", "text-to-music"):
         raise GatewayError("歌曲生成模式无效。")
     if cfg["voiceConversion"]["enabled"] and cfg["generationMode"] != "text-to-music":
@@ -240,13 +253,20 @@ def normalize_config(data: dict, base: Path | None = None) -> dict:
 
 
 def validate_request(data: object) -> dict:
-    if not isinstance(data, dict) or any(key not in {"requestKey", "requesterKey", "requestText", "title", "lyrics", "style", "durationSec", "intro", "outro"} for key in data):
+    if not isinstance(data, dict) or any(key not in {"requestKey", "requesterKey", "requestText", "title", "lyrics", "style", "durationSec", "intro", "outro", "instrumental"} for key in data):
         raise GatewayError("创作请求格式无效。")
+    if "instrumental" in data and type(data["instrumental"]) is not bool:
+        raise GatewayError("纯器乐标识必须为布尔值。")
     result = {}
     for key, limit in (("requestKey", 128), ("requesterKey", 160), ("requestText", 4000), ("title", 200), ("lyrics", 10000), ("style", 2000), ("intro", 2000), ("outro", 2000)):
         if key in ("requesterKey", "intro", "outro") and key not in data:
             continue
         value = data.get(key)
+        if key == "lyrics" and data.get("instrumental"):
+            if value not in (None, ""):
+                raise GatewayError("纯器乐请求不能包含歌词。")
+            result[key] = ""
+            continue
         if not isinstance(value, str) or len(value) > limit or (key not in ("intro", "outro") and not value.strip()) or any(ord(ch) < 32 and ch not in "\n\r\t" for ch in value):
             raise GatewayError("创作文本长度或格式无效。")
         result[key] = value.strip()
@@ -254,8 +274,16 @@ def validate_request(data: object) -> dict:
     if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or not 30 <= duration <= 120:
         raise GatewayError("歌曲时长需要在 30 至 120 秒之间。")
     result["durationSec"] = duration
-    lyric_lines(result["lyrics"])
+    if data.get("instrumental"):
+        result["instrumental"] = True
+    else:
+        lyric_lines(result["lyrics"])
     return result
+
+
+def validate_instrumental_transcript(transcript: object, backend: str) -> None:
+    if not isinstance(transcript, dict) or backend != "qwen3" or transcript.get("recognizer") != backend or transcript.get("text") != "" or transcript.get("segments") != [] or transcript.get("noSpeechDecoded") is not True or transcript.get("decodeCompleted") is not True:
+        raise NeedsReview()
 
 
 def lyric_lines(text: str) -> list[str]:
@@ -527,6 +555,7 @@ class ExternalServices:
     """Injected as a whole in offline tests; production methods use bounded local calls."""
     def __init__(self, cfg: dict):
         self.cfg = cfg
+        self.yue = yue_module.YuE2(cfg, self._json, atomic_json, NeedsReview)
 
     def _json(self, url: str, data=None, timeout: float = 20, headers=None):
         body = None if data is None else json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -542,9 +571,14 @@ class ExternalServices:
         # Administrative identifiers never enter the model context.
         material = {key: value for key, value in request.items() if key not in ("requestKey", "requesterKey")}
         policy = SYSTEM_POLICY
+        if request.get("instrumental"):
+            policy += "\nThis is original instrumental music: empty lyrics are intentional and do not require review by themselves. No singer, choir or humming is requested."
         if transcript is not None:
             material = {"actualTranscript": transcript.get("text", "")}
             policy += "\nThis call reviews actual ASR text. The proposed input and generic style have passed separate input review. Assess the actual transcript's semantic safety and originality; do not judge draft correspondence or infer acoustic voice identity from ASR text."
+            if transcript.get("noSpeechDecoded") is True:
+                material["noSpeechDecoded"] = True
+                policy += "\nThe independent recognizer completed with no speech text on instrumental music. There are no decoded words to review; do not invent lyrics. This is not a guarantee of absence of humming or all vocal sounds."
         payload = {
             "model": cfg["model"], "temperature": 0, "max_tokens": 300,
             "messages": [
@@ -590,6 +624,10 @@ class ExternalServices:
             time.sleep(min(0.25, max(0, deadline - time.monotonic())))
 
     def submit(self, request: dict, job_id: str) -> str:
+        if self.cfg["musicModel"] == "yue2":
+            return self.yue.submit(request, job_id)
+        if request.get("instrumental"):
+            raise NeedsReview()
         prompt = json.loads(Path(self.cfg["promptTemplateFile"]).read_text(encoding="utf-8-sig"))
         if not isinstance(prompt, dict):
             raise NeedsReview()
@@ -627,7 +665,9 @@ class ExternalServices:
             raise NeedsReview()
         return prompt_id
 
-    def poll(self, prompt_id: str) -> dict:
+    def poll(self, prompt_id: str, cancelled=lambda: False) -> dict:
+        if prompt_id.startswith("yue2_"):
+            return self.yue.poll(prompt_id, cancelled)
         response = self._json(self.cfg["comfy"]["endpoint"].rstrip("/") + "/history/" + urllib.parse.quote(prompt_id, safe=""), timeout=self.cfg["comfy"]["requestTimeoutSec"])
         history = response.get(prompt_id) if isinstance(response, dict) else None
         if not history:
@@ -785,6 +825,10 @@ class MusicGenerationGateway:
             self._state(job, "review")
         fields = ("jobId", "state", "message", "createdAt", "updatedAt")
         result = {key: job[key] for key in fields}
+        if job["request"].get("instrumental"):
+            result["instrumental"] = True
+        if job.get("musicModel"):
+            result["musicModel"] = job["musicModel"]
         result["title"] = job["request"]["title"] if job.get("inputApproved") is True and job["state"] not in ("rejected", "review", "failed", "cancelled") else PLACEHOLDER
         if job["request"].get("requesterKey"):
             result["requesterKey"] = job["request"]["requesterKey"]
@@ -796,6 +840,8 @@ class MusicGenerationGateway:
 
     def enqueue(self, data: object) -> dict:
         request = validate_request(data)
+        if request.get("instrumental") and (self.cfg["musicModel"] != "yue2" or self.cfg["asr"]["backend"] != "qwen3"):
+            raise GatewayError("当前音乐生成器未配置纯器乐支持。")
         with self.condition:
             for job in self.jobs.values():
                 if job["request"]["requestKey"] == request["requestKey"]:
@@ -812,6 +858,7 @@ class MusicGenerationGateway:
                 raise GatewayError("原创歌曲请求较多，请稍后再试。", 429)
             stamp = now_iso()
             job = {"jobId": uuid.uuid4().hex, "state": "queued", "request": request, "message": MESSAGES["queued"], "createdAt": stamp, "updatedAt": stamp, "createdAtMs": round(time.time() * 1000)}
+            job["musicModel"] = self.cfg["musicModel"]
             self._save(job)
             self.jobs[job["jobId"]] = job
             self.pending.append(job["jobId"])
@@ -900,6 +947,8 @@ class MusicGenerationGateway:
 
     def _run(self, job: dict) -> None:
         request = job["request"]
+        if job.get("musicModel", "ace-step") != self.cfg["musicModel"]:
+            raise NeedsReview()
         if not job.get("promptId"):
             with self.condition:
                 self._state(job, "reviewing")
@@ -940,7 +989,14 @@ class MusicGenerationGateway:
         elapsed = max(0, time.time() - job.get("submittedAtMs", job["createdAtMs"]) / 1000)
         deadline = time.monotonic() + max(0, self.cfg["comfy"]["generationTimeoutSec"] - elapsed)
         while True:
-            result = self.services.poll(job["promptId"])
+            if self._cancelled(job) or self.stopping.is_set():
+                return
+            if job["promptId"].startswith("yue2_"):
+                result = self.services.poll(job["promptId"], lambda: self._cancelled(job) or self.stopping.is_set())
+            else:
+                result = self.services.poll(job["promptId"])
+            if result.get("state") == "cancelled":
+                return
             if result.get("state") == "failed":
                 raise RuntimeError("generation failed")
             if result.get("state") == "done":
@@ -955,6 +1011,8 @@ class MusicGenerationGateway:
             self._state(job, "validating")
         artifacts = self.state_dir / "artifacts" / job["jobId"]
         artifacts.mkdir(parents=True, exist_ok=True)
+        if result.get("generation"):
+            atomic_json(artifacts / "generation.json", result["generation"])
         source = artifacts / "source.audio"
         self.services.fetch(result["output"], source)
         generated = artifacts / "generated.wav"
@@ -964,12 +1022,13 @@ class MusicGenerationGateway:
     def _validate(self, job: dict, generated: Path) -> None:
         request = job["request"]
         artifacts, audio = generated.parent, generated.parent / "song.wav"
-        prepared = artifacts / "prepared.wav" if self.cfg["voiceConversion"]["enabled"] else audio
+        convert_voice = self.cfg["voiceConversion"]["enabled"] and not request.get("instrumental")
+        prepared = artifacts / "prepared.wav" if convert_voice else audio
         prepare_wav(generated, prepared, request["durationSec"])
         self.services.release_generation_memory(lambda: self._cancelled(job) or self.stopping.is_set())
         if self._cancelled(job) or self.stopping.is_set():
             return
-        if self.cfg["voiceConversion"]["enabled"]:
+        if convert_voice:
             def on_stage(stage, message):
                 with self.condition:
                     if not self._cancelled(job):
@@ -999,6 +1058,20 @@ class MusicGenerationGateway:
         duration = inspect_wav(audio, request["durationSec"])
         if self._cancelled(job):
             return
+        if request.get("instrumental"):
+            # Score validation alone cannot establish that audio has no speech.
+            # Keep the independent decode, including unexpected words, for inspection.
+            try:
+                transcript = self.services.transcribe(audio)
+                atomic_json(artifacts / "asr.json", transcript)
+                validate_instrumental_transcript(transcript, self.cfg["asr"]["backend"])
+                review_decision(self.services.review("audio", request, transcript))
+            except (NeedsReview, Rejected):
+                raise
+            except Exception:
+                raise NeedsReview() from None
+            self._finish(job, audio, [])
+            return
         try:
             transcript = validate_transcript(self.services.transcribe(audio))
             atomic_json(artifacts / "asr.json", transcript)
@@ -1024,9 +1097,13 @@ class MusicGenerationGateway:
             raise
         except Exception:
             raise NeedsReview() from None
+        self._finish(job, audio, lines)
+
+    def _finish(self, job: dict, audio: Path, lines: list) -> None:
+        artifacts = audio.parent
         atomic_json(artifacts / "lyrics.json", {"version": 1, "lines": lines})
         with self.condition:
-            if self._cancelled(job):
+            if self._cancelled(job) or self.stopping.is_set():
                 return
             job.update(contentApproved=True, audioValidated=True, aiGenerated=True)
             self._save(job)
@@ -1076,6 +1153,9 @@ class MusicGenerationGateway:
             prefix = "generated/" + job["jobId"] + "/"
             description = f"{DESCRIPTION}；创作主题：{job['request']['requestText'][:900]}；曲风：{job['request']['style']}"
             catalog["tracks"].append({"id": track_id, "title": job["request"]["title"], "wavFile": prefix + "song.wav", "lyricsFile": prefix + "lyrics.json", "description": description, "aiGenerated": True, "contentApproved": True, "audioValidated": True})
+            catalog["tracks"][-1]["musicModel"] = job.get("musicModel", "ace-step")
+            if job["request"].get("instrumental"):
+                catalog["tracks"][-1].update(instrumental=True, description=description.replace(DESCRIPTION, "AI生成原创纯器乐背景音乐", 1))
             if job.get("voiceConditioned") is True:
                 catalog["tracks"][-1].update(voiceConditioned=True, singingVoiceVerified=False, voiceProvenanceFile=prefix + "voice-provenance.json", vocalFile=prefix + "vocals.wav")
             atomic_json(catalog_file, catalog)
@@ -1110,7 +1190,7 @@ def make_server(gateway: MusicGenerationGateway) -> ThreadingHTTPServer:
                 if self.path == "/health":
                     asr = gateway.cfg["asr"]
                     configured = bool(asr.get("modelDir") and asr.get("alignerDir")) if asr["backend"] == "qwen3" else bool(asr.get("modelFile"))
-                    self._reply(200, {"ok": gateway.worker.is_alive(), "service": "original-song-gateway", "asrConfigured": configured, "asrBackend": asr["backend"], "voiceConversionEnabled": gateway.cfg["voiceConversion"]["enabled"], "generationMode": gateway.cfg["generationMode"]})
+                    self._reply(200, {"ok": gateway.worker.is_alive(), "service": "original-song-gateway", "asrConfigured": configured, "asrBackend": asr["backend"], "voiceConversionEnabled": gateway.cfg["voiceConversion"]["enabled"], "generationMode": gateway.cfg["generationMode"], "musicModel": gateway.cfg["musicModel"], "instrumentalSupported": gateway.cfg["musicModel"] == "yue2" and asr["backend"] == "qwen3"})
                 elif self.path == "/jobs":
                     self._reply(200, gateway.list())
                 elif re.fullmatch(r"/jobs/[a-f0-9]{32}", self.path):

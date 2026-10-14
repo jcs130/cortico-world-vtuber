@@ -30,6 +30,15 @@ async function fixture(options: { checkpoint?: string; onJob?: (job: MusicGenera
 }
 
 describe('background original-song jobs', () => {
+  it('passes instrumental requests and their identity through the client', async () => {
+    const f = await fixture();
+    const instrumental = { ...input, lyrics: '', instrumental: true };
+    await f.client.submit(instrumental, 'bgm-1');
+    expect(f.requests.find(r => r.method === 'POST')?.body).toMatchObject({ instrumental: true, lyrics: '' });
+    expect(generationRequest({ ...instrumental, lyrics: undefined }).lyrics).toBe('');
+    expect(() => generationRequest({ ...instrumental, lyrics: '唱一句' })).toThrow();
+    expect(generationJob({ ...ready, instrumental: true, musicModel: 'yue2' })).toMatchObject({ instrumental: true, musicModel: 'yue2' });
+  });
   it('returns a queued receipt and notifies only terminal changes once', async () => {
     const f = await fixture();
     const accepted = await f.client.submit(input, 'call-1');
@@ -96,7 +105,7 @@ describe('background original-song jobs', () => {
     expect(() => generationJob({ ...ready, trackId: '../song' })).toThrow('无效');
     expect(() => generationJob({ ...ready, updatedAt: 'invalid' })).toThrow('无效');
     expect(() => generationJob({ ...ready, trackId: undefined })).toThrow('不能播放');
-    expect(() => generationRequest({ ...input, style: 'pop\u0000' })).toThrow('原创歌曲');
+    expect(() => generationRequest({ ...input, style: 'pop\u0000' })).toThrow('原创音乐');
     expect(generationRequest(input).lyrics).toBe(input.lyrics);
   });
 });

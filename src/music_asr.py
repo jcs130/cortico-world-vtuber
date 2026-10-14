@@ -114,6 +114,15 @@ def run(audio, model_dir, aligner_dir, language, device, cpu_threads, source=Non
         ids = output.sequences[0, inputs["input_ids"].shape[1]:].tolist()
         probabilities = model.compute_transition_scores(output.sequences, output.scores, normalize_logits=True).exp()[0].tolist()
         text = processor.decode([ids], return_format="transcription_only")[0]
+        if text == "":
+            # Only a completed decoder result, never a timeout/error, can establish
+            # that no speech text was recognized. It does not rule out humming.
+            eos = model.generation_config.eos_token_id
+            eos = [eos] if isinstance(eos, int) else eos
+            if not ids or not eos or ids[-1] not in eos:
+                raise ValueError("Empty transcription without decoder completion")
+            return {"recognizer": "qwen3", "text": "", "segments": [], "noSpeechDecoded": True,
+                    "decodeCompleted": True, "rawDecoded": processor.tokenizer.decode(ids, skip_special_tokens=False)}
         confidence, log_probability = decoder_confidence(processor.tokenizer, ids, probabilities, text)
         del model, processor, inputs, output
         gc.collect()

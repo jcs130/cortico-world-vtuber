@@ -15,7 +15,8 @@ export interface MusicTrack {
   id: string;
   title: string;
   durationMs: number;
-  envelopeSource: 'vocal' | 'mix';
+  envelopeSource: 'vocal' | 'mix' | 'none';
+  instrumental?: boolean;
   description?: string;
   aiGenerated?: boolean;
   lyrics?: MusicLyricLine[];
@@ -29,7 +30,7 @@ export interface MusicPlayback {
   durationMs: number;
   startedAt: number | null;
   volume: number;
-  envelopeSource: 'vocal' | 'mix';
+  envelopeSource: 'vocal' | 'mix' | 'none';
   error?: string;
   aiGenerated?: boolean;
   lyrics?: MusicLyricLine[];
@@ -45,7 +46,7 @@ export interface MusicState extends MusicQueueState {
   error?: string;
   generation?: MusicGenerationState;
 }
-interface CatalogTrack { id: string; title: string; wavFile: string; vocalFile?: string; description?: string; lyricsFile?: string; aiGenerated?: boolean; contentApproved?: boolean; audioValidated?: boolean }
+interface CatalogTrack { id: string; title: string; wavFile: string; vocalFile?: string; description?: string; lyricsFile?: string; instrumental?: boolean; aiGenerated?: boolean; contentApproved?: boolean; audioValidated?: boolean }
 export interface PreparedMusic { track: MusicTrack; audio: TtsPiece }
 const LYRICS_MAX_BYTES = 256 * 1024;
 
@@ -76,6 +77,7 @@ export class MusicLibrary {
         || typeof t.wavFile !== 'string' || (t.vocalFile !== undefined && typeof t.vocalFile !== 'string')
         || (t.lyricsFile !== undefined && typeof t.lyricsFile !== 'string')
         || (t.aiGenerated !== undefined && typeof t.aiGenerated !== 'boolean')
+        || (t.instrumental !== undefined && typeof t.instrumental !== 'boolean')
         || (t.aiGenerated === true && (t.contentApproved !== true || t.audioValidated !== true))
         || (t.description !== undefined && (typeof t.description !== 'string' || t.description.length > 2000))) {
         throw new Error('歌曲清单存在无效或重复曲目');
@@ -159,12 +161,12 @@ export class MusicLibrary {
       const p = await this.asset(root, t.wavFile);
       const s = await stat(p);
       const lyricsAsset = t.lyricsFile !== undefined ? await this.lyricsAsset(root, t.lyricsFile) : undefined;
-      const stamp = `${p}:${s.size}:${s.mtimeMs}:${t.title}:${t.description ?? ''}:${t.vocalFile ?? ''}:${lyricsAsset?.stamp ?? ''}:${t.aiGenerated ?? ''}`;
+      const stamp = `${p}:${s.size}:${s.mtimeMs}:${t.title}:${t.description ?? ''}:${t.vocalFile ?? ''}:${lyricsAsset?.stamp ?? ''}:${t.aiGenerated ?? ''}:${t.instrumental ?? ''}`;
       const cached = this.cache.get(t.id);
       if (cached?.stamp === stamp) { result.push(this.copyTrack(cached.track)); continue; }
       const wav = this.decode(await this.wav(root, t.wavFile));
       const lyrics = lyricsAsset ? await this.lyrics(lyricsAsset.path, wav.durationMs) : undefined;
-      const track: MusicTrack = { id: t.id, title: t.title, durationMs: wav.durationMs, envelopeSource: t.vocalFile ? 'vocal' : 'mix', ...(t.description ? { description: t.description } : {}), ...(lyrics !== undefined ? { lyrics } : {}), ...(t.aiGenerated === true ? { aiGenerated: true } : {}) };
+      const track: MusicTrack = { id: t.id, title: t.title, durationMs: wav.durationMs, envelopeSource: t.instrumental ? 'none' : t.vocalFile ? 'vocal' : 'mix', ...(t.instrumental ? { instrumental: true } : {}), ...(t.description ? { description: t.description } : {}), ...(lyrics !== undefined ? { lyrics } : {}), ...(t.aiGenerated === true ? { aiGenerated: true } : {}) };
       this.cache.set(t.id, { stamp, track });
       result.push(this.copyTrack(track));
     }
@@ -181,7 +183,8 @@ export class MusicLibrary {
     if (Math.abs(vocal.durationMs - wav.durationMs) > 100) throw new Error('vocalFile 必须与歌曲同步且时长相差不超过 100ms');
     const lyricsAsset = t.lyricsFile !== undefined ? await this.lyricsAsset(root, t.lyricsFile) : undefined;
     const lyrics = lyricsAsset ? await this.lyrics(lyricsAsset.path, wav.durationMs) : undefined;
-    const track: MusicTrack = { id: t.id, title: t.title, durationMs: wav.durationMs, envelopeSource: t.vocalFile ? 'vocal' : 'mix', ...(t.description ? { description: t.description } : {}), ...(lyrics !== undefined ? { lyrics } : {}), ...(t.aiGenerated === true ? { aiGenerated: true } : {}) };
-    return { track, audio: { text: '', wav: bytes, durationMs: wav.durationMs, envelope: extractEnvelope(vocal) } };
+    const track: MusicTrack = { id: t.id, title: t.title, durationMs: wav.durationMs, envelopeSource: t.instrumental ? 'none' : t.vocalFile ? 'vocal' : 'mix', ...(t.instrumental ? { instrumental: true } : {}), ...(t.description ? { description: t.description } : {}), ...(lyrics !== undefined ? { lyrics } : {}), ...(t.aiGenerated === true ? { aiGenerated: true } : {}) };
+    return { track, audio: { text: '', wav: bytes, durationMs: wav.durationMs,
+      envelope: t.instrumental ? { hopMs: 20, at: () => 0 } : extractEnvelope(vocal) } };
   }
 }
