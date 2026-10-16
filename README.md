@@ -24,6 +24,9 @@ World 内部的分层、演出包格式、台本记号与 Live2D 适配写在 [`
 [`docs/model-performance.md`](docs/model-performance.md)。情绪跟随实际语音开播，显式演出指令优先；
 不需要摄像头，旧模型档案继续兼容。
 
+远程语音支持[服务端音色库](docs/server-voice-catalog.md)：参考音频保留在服务端，
+在语音面板选择并保存音色后，下一次合成生效。现有单音色配置继续兼容。
+
 ## 与 Cortico 的关系
 
 ### 绘画创作请求（源码模块，尚未注册运行时工具）

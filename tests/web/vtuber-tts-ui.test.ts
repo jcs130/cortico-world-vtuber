@@ -40,6 +40,40 @@ afterEach(() => {
 });
 
 describe('selected speech backend UI', () => {
+  it('selects a named remote voice and saves it hot without restarting the external service', async () => {
+    const st: Any = { kind: 'external', phase: 'running', ownership: 'external', reachable: true,
+      health: { voice: 'cormi-F6' }, voices: [],
+      transport: { protocol: 'openai-chunked', voice: 'cormi-F6', speed: 1 },
+      speech: { ...TTS_SPEECH_DEFAULTS, enabled: true, voice: 'cormi-F6' },
+      speechVoices: ['cormi-F6', 'cormi-Q3', 'cormi-Q5'],
+      remoteVoiceCatalog: [{ id: 'cormi-Q3', label: 'Q3 傲娇小魔导师' }, { id: 'cormi-Q5', label: 'Q5 灵动冒险少女' }] };
+    const writes: Any[] = [], operations: string[] = [];
+    vi.stubGlobal('fetch', async (input: Any, init?: Any) => {
+      const url=String(input);
+      if (url==='/api/config') {
+        const body=JSON.parse(init.body);writes.push(body);
+        st.speech=Object.fromEntries(Object.entries(body.values).map(([key,value])=>[key.split('.').at(-1),value]));
+        st.transport.voice=st.speech.voice;
+        return json({ result: body.group });
+      }
+      if (/\/(start|stop)$/.test(url)) operations.push(url);
+      return json(url.endsWith('/runtime') ? { kind: st.kind, service: st } : st);
+    });
+    const root=mount();await flush();
+    expect(root.textContent).toContain('服务端音色库');
+    const voice=root.querySelector('[aria-label="音色"]');
+    expect(voice.textContent).toContain('Q5 灵动冒险少女');
+    expect(root.querySelector('[aria-label="语速"]').closest('[hidden]')).not.toBeNull();
+    voice.value='cormi-Q5';voice.dispatchEvent(new Event('input'));
+    await vi.advanceTimersByTimeAsync(2000);await flush();
+    expect(voice.value).toBe('cormi-Q5');
+    button(root,'保存声线配置').click();await flush();
+    expect(writes).toHaveLength(1);
+    expect(writes[0].values).toMatchObject({ 'worlds.vtuber.ttsSpeech.enabled':true,
+      'worlds.vtuber.ttsSpeech.voice':'cormi-Q5','worlds.vtuber.ttsSpeech.speed':1 });
+    expect(operations).toEqual([]);
+  });
+
   it('saves edited settings through the framework config API and retains edits while polling', async () => {
     const st: Any = { kind: 'indextts', phase: 'running', ownership: 'owned', reachable: true,
       health: { voice: 'fixture-a' }, voices: [], speech: { ...TTS_SPEECH_DEFAULTS },

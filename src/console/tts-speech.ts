@@ -1,4 +1,4 @@
-/** 语音服务启停与已声明的 IndexTTS 声线配置。保存经框架配置面持久化并热更新。 */
+/** Service-owned voice selection, persisted and hot-applied at the next synthesis. */
 import type { ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
 import { TTS_SPEECH_DEFAULTS, type TtsSpeechPreferences } from '../tts-speech.ts';
 import { dimLine, errText, numField, setMsg, type TtsPanelState } from './client.ts';
@@ -31,10 +31,12 @@ export function speechControls(ctx: ConsolePanelContext, refresh: () => Promise<
   confidence.setAttribute('aria-label', '语气置信度');
   for (const input of [speed, mix, confidence]) input.addEventListener('input', dirty, { signal: ctx.signal });
   const fields = ui.rowbar(); fields.classList.add('vt-wrap');
-  fields.append(ui.field('音色', voice), ui.field('语速', speed), ui.field('语气强度', mix), ui.field('语气置信度', confidence));
+  const speedField = ui.field('语速', speed), mixField = ui.field('语气强度', mix), confidenceField = ui.field('语气置信度', confidence);
+  fields.append(ui.field('音色', voice), speedField, mixField, confidenceField);
   const save = ui.button('保存声线配置', { variant: 'primary', onClick: () => void savePreferences() });
-  prefs.append(ui.section('IndexTTS 声线'), enabled.el, fields,
-    dimLine(ctx, '保存后下一次合成生效。语气强度设为 0 时沿用参考语气。'), save);
+  const title = ui.section('IndexTTS 声线');
+  const hint = dimLine(ctx, '保存后下一次合成生效。语气强度设为 0 时沿用参考语气。');
+  prefs.append(title, enabled.el, fields, hint, save);
   box.append(prefs, msg);
   let state: TtsPanelState | null = null;
   let saved: TtsSpeechPreferences | null = null;
@@ -42,6 +44,10 @@ export function speechControls(ctx: ConsolePanelContext, refresh: () => Promise<
   let polling = false;
 
   function form(): TtsSpeechPreferences {
+    if (state?.transport?.protocol === 'openai-chunked') return {
+      ...(saved ?? TTS_SPEECH_DEFAULTS), enabled: true, voice: voice.value,
+      speed: state.transport.speed,
+    };
     return { enabled: enabled.checked, voice: voice.value, speed: Number(speed.value),
       emotionMix: Number(mix.value), emotionMinConfidence: Number(confidence.value) };
   }
@@ -62,13 +68,21 @@ export function speechControls(ctx: ConsolePanelContext, refresh: () => Promise<
     const keep = isDirty(); state = next;
     status.textContent = ({ running: '运行中', stopped: '已停止', starting: '启动中', stopping: '停止中', error: '异常' } as Record<string, string>)[next.phase] ?? next.phase;
     detail.textContent = [next.kind, next.ownership === 'owned' ? '由 Corti 管理' : next.ownership === 'external' ? '外部服务' : '', next.url, next.pid ? `进程 ${next.pid}` : '', next.detail].filter(Boolean).join(' · ');
-    prefs.hidden = next.kind !== 'indextts';
+    const remote = next.transport?.protocol === 'openai-chunked';
+    prefs.hidden = !remote && next.kind !== 'indextts';
+    title.textContent = remote ? '服务端音色库' : 'IndexTTS 声线';
+    enabled.el.hidden = remote;
+    speedField.hidden = mixField.hidden = confidenceField.hidden = remote;
+    hint.textContent = remote ? '保存后下一次合成生效，正在播放的语音保持原音色。'
+      : '保存后下一次合成生效。语气强度设为 0 时沿用参考语气。';
     if (!keep) {
       saved = { ...TTS_SPEECH_DEFAULTS, ...next.speech };
       enabled.setChecked(saved.enabled);
       const voices = [...new Set(['', ...(next.speechVoices ?? []), saved.voice].filter((v, i) => i === 0 || !!v))];
       voice.replaceChildren(...voices.map(value => {
-        const option = ui.h('option', null, value || `沿用适配器（${String(next.health?.voice ?? '默认')}）`);
+        const named = next.remoteVoiceCatalog?.find(v => v.id === value);
+        const option = ui.h('option', null, named?.label || value || `沿用默认（${String(next.health?.voice ?? '默认')}）`);
+        if (named?.description) option.title = named.description;
         option.value = value; return option;
       }));
       voice.value = saved.voice; speed.value = String(saved.speed);
@@ -95,7 +109,7 @@ export function speechControls(ctx: ConsolePanelContext, refresh: () => Promise<
   }
   async function savePreferences(): Promise<void> {
     if (busy || !isDirty()) return;
-    if ([speed, mix, confidence].some(input => !input.reportValidity())) return;
+    if (state?.transport?.protocol !== 'openai-chunked' && [speed, mix, confidence].some(input => !input.reportValidity())) return;
     busy = true; actions();
     const value = form();
     try {

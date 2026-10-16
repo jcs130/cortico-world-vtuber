@@ -1,4 +1,4 @@
-"""Official VoxCPM2 Hi-Fi HTTP service with one configured reference and cached prompt features."""
+"""VoxCPM2 Hi-Fi HTTP service with server-owned references and one inference worker."""
 from __future__ import annotations
 
 import argparse
@@ -19,6 +19,7 @@ import time
 import uuid
 import wave
 from contextlib import nullcontext
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
@@ -30,8 +31,9 @@ from spoken_text import normalize_spoken_text
 from inference_worker import InferenceWorker
 from pronunciation_bridge import native_phonemes
 from pronunciation import initialize_pronunciation, normalize_pronunciation, pronunciation_health
+from voice_catalog import VoiceCatalog
 
-VERSION = '1.4.1'
+VERSION = '1.5.0'
 MAX_BODY = 2 * 1024 * 1024
 CUE_RULES = [(re.compile(r'(?:开心|温柔|惊讶|害怕|生气|难过|平静|严肃|得意|委屈|happy|gentle|calm|serious)', re.I), 'style')]
 _NUMBER_TOKEN = r'[-+]?\d+(?:\.\d+)?'
@@ -145,9 +147,13 @@ class VoiceEngine:
         self.default_instructions = prepare_instructions(
             config.get('default_instructions'), bool(config.get('enable_style_instructions', False)))
         self.voice = config['voice']
-        self.reference_sha256 = hashlib.sha256(Path(config['reference_file']).read_bytes()).hexdigest()
-        if self.reference_sha256 != config['reference_sha256']:
-            raise ValueError('Configured reference audio hash mismatch')
+        self.voices = VoiceCatalog(config)
+        self.reference_sha256 = self.voices.resolve().reference_sha256
+        self._prompt_caches = OrderedDict()
+        self.cached_voice_ids = ()
+        self.max_cached_voices = config.get('max_cached_voices', 16)
+        if isinstance(self.max_cached_voices, bool) or not isinstance(self.max_cached_voices, int) or not 2 <= self.max_cached_voices <= 64:
+            raise ValueError('max_cached_voices must be an integer from 2 to 64')
         self.contextual_pronunciation = bool(config.get('pronunciation_model_dir'))
         if self.contextual_pronunciation:
             if not config.get('pronunciation_tokenizer_dir'):
@@ -211,6 +217,8 @@ class VoiceEngine:
                     reference_wav_path=config['reference_file'])
                 if self.style_cache['mode'] != 'reference':
                     raise ValueError('Style instructions require reference-only cloning')
+            self._prompt_caches[self.voice] = (self.prompt_cache, self.style_cache)
+            self.cached_voice_ids = (self.voice,)
         if optimize:
             if not hasattr(self.model.tts_model.base_lm.forward_step, '_torchdynamo_orig_callable'):
                 raise RuntimeError('Requested torch.compile optimization was not enabled')
@@ -234,16 +242,42 @@ class VoiceEngine:
     def _stream_context(self):
         return self.torch.cuda.stream(self.cuda_stream) if self.cuda_stream is not None else nullcontext()
 
-    def generate(self, text: str, seed: int, instructions: str | None = None, *, observe=None, on_start=None, on_finish=None):
+    def generate(self, text: str, seed: int, instructions: str | None = None, *, voice=None, observe=None, on_start=None, on_finish=None):
         options = {'instructions': instructions} if instructions else {}
+        if voice is not None:
+            options['voice'] = self.voices.resolve(voice).id
         yield from self.worker.generate(text, seed, observe=observe, on_start=on_start, on_finish=on_finish, **options)
 
-    def _generate(self, text: str, seed: int, instructions: str | None = None):
-        cache = self.prompt_cache
+    def _voice_caches(self, voice: str):
+        """Called only on the owning worker; no cache mutation from HTTP threads."""
+        reference = self.voices.resolve(voice)
+        if reference.id not in self._prompt_caches:
+            with self._stream_context():
+                prompt = self.model.tts_model.build_prompt_cache(
+                    reference_wav_path=reference.reference_file, prompt_wav_path=reference.reference_file,
+                    prompt_text=reference.reference_text)
+                if prompt['mode'] != 'ref_continuation':
+                    raise ValueError('Full reference plus continuation mode is required')
+                style = None
+                if self.config.get('enable_style_instructions', False):
+                    style = self.model.tts_model.build_prompt_cache(reference_wav_path=reference.reference_file)
+                    if style['mode'] != 'reference':
+                        raise ValueError('Style instructions require reference-only cloning')
+                self._prompt_caches[reference.id] = (prompt, style)
+        self._prompt_caches.move_to_end(reference.id)
+        while len(self._prompt_caches) > self.max_cached_voices:
+            # The legacy default attributes still own F6; keep it in the accounting.
+            discard = next(vid for vid in self._prompt_caches if vid != self.voice)
+            del self._prompt_caches[discard]
+        self.cached_voice_ids = tuple(self._prompt_caches)
+        return self._prompt_caches[reference.id]
+
+    def _generate(self, text: str, seed: int, instructions: str | None = None, voice: str | None = None):
+        cache, style_cache = self._voice_caches(voice) if voice is not None else (self.prompt_cache, self.style_cache)
         if instructions:
-            if self.style_cache is None:
+            if style_cache is None:
                 raise ValueError('Style instructions are not enabled')
-            cache = self.style_cache
+            cache = style_cache
             text = f'({instructions}){text}'
         with self._stream_context():
             self.torch.manual_seed(seed)
@@ -266,7 +300,9 @@ class VoiceEngine:
     def health(self):
         return {'status': 'ok', 'backend': self.config.get('backend', 'voxcpm2-official-hifi'), 'version': VERSION,
                 'streaming': True, 'streaming_granularity': 'latent-patches',
-                'voice': self.voice, 'voice_policy': 'configured-reference-only',
+                'voice': self.voice, 'voice_policy': 'configured-voice-catalog' if len(self.voices.references) > 1 else 'configured-reference-only',
+                'available_voices': self.voices.public()['catalog'],
+                'cached_voices': list(self.cached_voice_ids),
                 'reference_sha256': self.reference_sha256,
                 'prompt_mode': 'reference' if self.default_instructions else 'ref_continuation',
                 'default_instructions': self.default_instructions,
@@ -323,8 +359,8 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, json.dumps(self.server.engine.metrics.snapshot(self.server.engine.worker.thread.is_alive())).encode())
         elif self.path.rstrip('/') in ('/health', '/v1/health'):
             self.reply(200, json.dumps(self.server.engine.health()).encode())
-        elif self.path.rstrip('/') == '/voices':
-            self.reply(200, json.dumps({'voices': [self.server.engine.voice]}).encode())
+        elif self.path.rstrip('/') in ('/voices', '/v1/audio/voices'):
+            self.reply(200, json.dumps(self.server.engine.voices.public(), ensure_ascii=False).encode())
         else:
             self.reply(404, b'{"error":"not found"}')
 
@@ -342,15 +378,14 @@ class Handler(BaseHTTPRequestHandler):
             text = body.get('input', body.get('text', ''))
             if not isinstance(text, str) or not text.strip() or len(text) > 1200:
                 raise ValueError('Input must contain 1 to 1200 characters')
-            if body.get('voice', 'default') not in ('', 'default', engine.voice):
-                raise ValueError('Only the configured reference voice is available')
+            voice = engine.voices.resolve(body.get('voice', 'default'))
             if not math.isclose(float(body.get('speed', 1.0)), 1.0):
                 raise ValueError('This Hi-Fi service uses the reference speaking pace; speed must be 1')
             if body.get('reference_audio'):
                 reference = base64.b64decode(body['reference_audio'], validate=True)
-                if hashlib.sha256(reference).hexdigest() != engine.reference_sha256:
+                if hashlib.sha256(reference).hexdigest() != voice.reference_sha256:
                     raise ValueError('Request reference differs from the configured voice')
-            if body.get('prompt_text') and body['prompt_text'] != engine.config['reference_text']:
+            if body.get('prompt_text') and body['prompt_text'] != voice.reference_text:
                 raise ValueError('Request transcript differs from the configured reference')
             instructions = prepare_instructions(
                 body.get('instructions', engine.config.get('default_instructions')),
@@ -394,7 +429,7 @@ class Handler(BaseHTTPRequestHandler):
                   'input_chars': len(text), 'spoken_chars': len(clean), 'seed': seed,
                   'segment_chars': limit, 'segment_lengths': [len(segment) for segment in texts],
                   'spoken_text_sha256': hashlib.sha256(clean.encode()).hexdigest(),
-                  'reference_sha256': engine.reference_sha256,
+                  'voice': voice.id, 'reference_sha256': voice.reference_sha256,
                   'pronunciation_ms': pronunciation_ms,
                   'phoneme_count': len(re.findall(r'\{[^{}]+\}', clean)),
                   'mode': 'reference' if instructions else 'ref_continuation',
@@ -422,7 +457,7 @@ class Handler(BaseHTTPRequestHandler):
             for segment in texts:
                 if self.disconnected():
                     raise ConnectionAbortedError('Client disconnected between segments')
-                iterator = engine.generate(segment, seed, instructions=instructions,
+                iterator = engine.generate(segment, seed, instructions=instructions, voice=voice.id,
                     observe=lambda seconds: engine.metrics.work(request_id, seconds),
                     on_start=lambda: engine.metrics.rendering(request_id, True),
                     on_finish=lambda: engine.metrics.rendering(request_id, False))
@@ -508,7 +543,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Transfer-Encoding', 'chunked')
         self.send_header('Connection', 'close')
         self.send_header('X-TTS-Backend', engine.config.get('backend', 'voxcpm2-official-hifi'))
-        self.send_header('X-TTS-Reference-SHA256', engine.reference_sha256)
+        self.send_header('X-TTS-Reference-SHA256', record['reference_sha256'])
+        self.send_header('X-TTS-Voice', record['voice'])
         self.send_header('X-TTS-Prompt-Mode', record['mode'])
         self.send_header('X-TTS-Request-Id', record['id'])
         self.send_header('X-TTS-Request-First-Audio-Ms', str(record['first_output_ms']))

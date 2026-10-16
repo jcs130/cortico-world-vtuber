@@ -260,12 +260,14 @@ export const ttsPanel: ConsolePanel = {
         reachable = !!st.reachable;
         if (!reachable) say('语音服务不可达，可在上方启动。');
         controls.render(st);
-        const usesProfile = !st.kind || st.kind === 'voxcpm2';
+        const usesProfile = st.transport?.protocol !== 'openai-chunked' && (!st.kind || st.kind === 'voxcpm2');
         profileElements.forEach(el => { (el as HTMLElement).hidden = !usesProfile; });
         if (usesProfile) renderProfile(st.profile, st.voices);
         else {
           activeChip.textContent = String(st.speech?.enabled && st.speech.voice ? st.speech.voice : st.health?.voice ?? st.kind);
-          backendNote.textContent = st.speech?.enabled ? '使用已保存的网页声线配置。' : '沿用适配器声线偏好。';
+          backendNote.textContent = st.transport?.protocol === 'openai-chunked'
+            ? '参考音色由服务端管理，可从上方音色库选择。'
+            : st.speech?.enabled ? '使用已保存的网页声线配置。' : '沿用适配器声线偏好。';
         }
       } catch (err) {
         if (ctx.signal.aborted) return;

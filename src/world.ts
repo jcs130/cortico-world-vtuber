@@ -457,12 +457,12 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
         description: '一次手动启动或扩展加载期间的恢复上限；0 关闭自动恢复。',
       },
       'worlds.vtuber.ttsSpeech.enabled': {
-        type: 'boolean', title: '由 Corti 配置 IndexTTS 声线', 'x-hot': true,
-        description: '开启后每次合成使用下面的配置；关闭后沿用适配器偏好文件。',
+        type: 'boolean', title: '使用选定的服务端音色', 'x-hot': true,
+        description: '开启后每次合成使用所选音色；远程服务只传音色 ID，参考音频由服务端保管。',
       },
       'worlds.vtuber.ttsSpeech.voice': {
-        type: 'string', title: 'IndexTTS 音色', 'x-hot': true,
-        description: '模型服务中的音色名称；留空沿用适配器当前音色。',
+        type: 'string', title: '服务端音色 ID', 'x-hot': true,
+        description: '从语音面板的服务端音色库选择；下一次合成生效，留空沿用配置的默认音色。',
       },
       'worlds.vtuber.ttsSpeech.speed': {
         type: 'number', minimum: 0.5, maximum: 2, title: 'IndexTTS 语速', 'x-hot': true,
@@ -2900,14 +2900,15 @@ export class VtuberWorld implements World {
         ...this.ttsServer.state(),
         reachable: await this.ttsServer.probe(),
         profile: { ...this.ttsProfile },
-        transport: { ...this.ttsClient.transport },
+        transport: { ...this.ttsClient.transport, voice: this.ttsClient.remoteVoice },
+        remoteVoiceCatalog: await this.ttsClient.listRemoteVoices(),
         voices: this.listVoices(),
         voicesDir: this.voicesDir(),
         speech: this.ttsClient.transport.protocol === 'openai-chunked'
-          ? { ...TTS_SPEECH_DEFAULTS, enabled: true, voice: this.ttsClient.transport.voice, speed: this.ttsClient.transport.speed }
+          ? { ...TTS_SPEECH_DEFAULTS, ...this.ttsSpeechOpt?.(), enabled: true, voice: this.ttsClient.remoteVoice, speed: this.ttsClient.transport.speed }
           : { ...(this.ttsSpeechOpt?.() ?? TTS_SPEECH_DEFAULTS) },
         speechVoices: this.ttsClient.transport.protocol === 'openai-chunked'
-          ? [this.ttsClient.transport.voice] : await this.ttsServer.listVoices(),
+          ? (await this.ttsClient.listRemoteVoices()).map(v => v.id) : await this.ttsServer.listVoices(),
       }),
       runtime: () => ({ kind: this.ttsServer.state().kind, service: this.ttsServer.state(), ...this.ttsRuntimeState(), models: this.ttsModelStates() }),
       installRuntime: () => this.installTtsRuntime(),
@@ -2958,7 +2959,7 @@ export class VtuberWorld implements World {
         if (this.performer) this.performer.enqueuePreparedSpeech(piece);
         else void this.audio.play(piece).then(({ ended }) => ended).catch(() => {});
         const speech = this.ttsSpeechOpt?.();
-        const voice = this.ttsClient.transport.protocol === 'openai-chunked' ? this.ttsClient.transport.voice : this.ttsServer.state().kind === 'indextts'
+        const voice = this.ttsClient.transport.protocol === 'openai-chunked' ? piece.requestTrace?.voice ?? this.ttsClient.remoteVoice : this.ttsServer.state().kind === 'indextts'
           ? (speech?.enabled && speech.voice.trim() ? speech.voice.trim() : this.ttsServer.state().health?.voice)
           : audition?.refAudio ?? this.ttsProfile.refAudio;
         return {
@@ -3105,7 +3106,10 @@ export class VtuberWorld implements World {
 
   /** 组装一次合成的请求档案;参考音频按文件名缓存 base64 */
   private synthProfileOf(p: TtsProfile): TtsSynthProfile {
-    if (this.ttsClient.transport.protocol === 'openai-chunked') return {};
+    if (this.ttsClient.transport.protocol === 'openai-chunked') {
+      const speech = this.ttsSpeechOpt?.();
+      return speech?.enabled ? { speech } : {};
+    }
     if (this.ttsServer.state().kind === 'indextts') {
       const speech = this.ttsSpeechOpt?.();
       return speech?.enabled ? { speech } : {};

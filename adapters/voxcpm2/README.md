@@ -13,9 +13,12 @@ actions, so pending_items is not a count of audio chunks.
 Run the model-free counter and worker tests with
 `python -m unittest discover -s adapters/voxcpm2 -p test_synthesis_metrics.py`.
 
-The service loads the official VoxCPM2 Python model once and caches a combined
-reference plus continuation prompt. Each request uses the configured reference
-audio and its transcript. The SHA256 in the configuration must match the file.
+The service loads the VoxCPM2 Python model once and caches combined reference plus
+continuation prompts. An optional hash-pinned server catalog lets each request
+select its configured reference by voice ID without reloading the model. See
+[service-owned voice catalogs](../../docs/server-voice-catalog.md) for the schema,
+gateway contract, console selection and queue/cancellation behavior. The original
+single-reference configuration remains supported.
 The adapter normalizes a trailing expressive `~`, `～` or `〜` to a sentence
 stop in synthesis text, preserving closing quotes, native vocal tags and an
 existing question/exclamation mark. This is a checkpoint fallback: NVVSpeech

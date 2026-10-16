@@ -16,6 +16,35 @@ export const TTS_TRANSPORT_DEFAULTS: TtsTransportConfig = {
 };
 export const TTS_API_KEY_SECRET = 'CORTICO_TTS_API_KEY';
 
+/** Public server catalog. Reference files and credentials stay on the service host. */
+export interface TtsRemoteVoice {
+  id: string;
+  label: string;
+  description?: string;
+  reference_sha256?: string;
+  reference_seconds?: number | null;
+}
+
+export function parseVoiceCatalog(body: unknown): TtsRemoteVoice[] {
+  if (!body || typeof body !== 'object') return [];
+  const b = body as { catalog?: unknown; voices?: unknown };
+  const rows = Array.isArray(b.catalog) ? b.catalog : Array.isArray(b.voices) ? b.voices : [];
+  const seen = new Set<string>();
+  return rows.flatMap(value => {
+    const row = typeof value === 'string' ? { id: value, label: value } : value;
+    if (!row || typeof row !== 'object') return [];
+    const r = row as Record<string, unknown>;
+    if (typeof r.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/.test(r.id) || seen.has(r.id)) return [];
+    seen.add(r.id);
+    return [{ id: r.id, label: typeof r.label === 'string' ? r.label : r.id,
+      ...(typeof r.description === 'string' ? { description: r.description } : {}),
+      ...(typeof r.reference_sha256 === 'string' && /^[0-9a-f]{64}$/.test(r.reference_sha256)
+        ? { reference_sha256: r.reference_sha256 } : {}),
+      ...(typeof r.reference_seconds === 'number' && Number.isFinite(r.reference_seconds)
+        ? { reference_seconds: r.reference_seconds } : {}) }];
+  });
+}
+
 export interface TtsRequestTrace {
   phase: 'headers' | 'playable' | 'received' | 'aborted' | 'error' | 'metadata';
   callId: string | null;
@@ -24,6 +53,8 @@ export interface TtsRequestTrace {
   elapsedMs: number;
   pcmBytes: number;
   status?: number;
+  voice?: string;
+  referenceSha256?: string | null;
   server?: Record<string, unknown> | null;
 }
 
@@ -38,7 +69,7 @@ export function requestMetadata(status: Record<string, unknown>, trace: TtsReque
   const record = row as Record<string, unknown>;
   return Object.fromEntries(['request_id', 'native_request_id', 'session_id', 'model', 'http_status',
     'gateway_duration_ms', 'first_audio_ms', 'gateway_sent_audio_seconds', 'execution_ms', 'queue_ms',
-    'gateway_outcome'].filter(key => key in record).map(key => [key, record[key]]));
+    'gateway_outcome', 'voice', 'reference_sha256'].filter(key => key in record).map(key => [key, record[key]]));
 }
 
 /** Accepts split RIFF headers, optional chunks, and a streaming data-size placeholder. */
@@ -122,7 +153,7 @@ export async function receiveSpeech(options: {
   const timer = setTimeout(() => controller.abort(new Error('TTS request timed out')), config.timeoutMs);
   const started = Date.now();
   const trace: TtsRequestTrace = { phase: 'headers', callId: null, requestId: null,
-    sessionId: config.sessionId, elapsedMs: 0, pcmBytes: 0 };
+    sessionId: config.sessionId, voice: config.voice, elapsedMs: 0, pcmBytes: 0 };
   const emit = (phase: TtsRequestTrace['phase']) => {
     trace.phase = phase; trace.elapsedMs = Date.now() - started;
     options.trace?.({ ...trace });
@@ -146,11 +177,17 @@ export async function receiveSpeech(options: {
     trace.status = response.status;
     trace.callId = response.headers.get('x-litellm-call-id');
     trace.requestId = response.headers.get('x-tts-request-id');
+    trace.referenceSha256 = response.headers.get('x-tts-reference-sha256');
     trace.sessionId = response.headers.get('x-litellm-session-id') || config.sessionId;
     emit('headers');
     if (!response.ok || !response.body) {
       await response.body?.cancel();
       throw new Error(`TTS speech request returned HTTP ${response.status}`);
+    }
+    const actualVoice = response.headers.get('x-tts-voice');
+    if (actualVoice && config.voice !== 'default' && actualVoice !== config.voice) {
+      await response.body.cancel();
+      throw new Error('TTS response voice differs from requested voice');
     }
     reader = response.body.getReader();
     // Cancels a blocked read as well as the underlying HTTP connection.

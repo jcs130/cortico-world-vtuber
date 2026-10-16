@@ -15,7 +15,7 @@
 import type { AlignedUnit } from './align.ts';
 import type { TtsSpeechPreferences } from './tts-speech.ts';
 import { SilenceScanner, scanSilence, type SilenceReport } from './silence-scan.ts';
-import { receiveSpeech, requestMetadata, ttsHeaders, TTS_TRANSPORT_DEFAULTS, type TtsTransportConfig, type TtsRequestTrace } from './tts-transport.ts';
+import { parseVoiceCatalog, receiveSpeech, requestMetadata, ttsHeaders, TTS_TRANSPORT_DEFAULTS, type TtsTransportConfig, type TtsRequestTrace, type TtsRemoteVoice } from './tts-transport.ts';
 
 /** 整段包络与流式增量包络共用的只读接口。 */
 export interface EnvelopeLike {
@@ -318,6 +318,8 @@ export class TtsClient {
   private readonly fetchImpl: typeof fetch;
   private readonly profile?: () => TtsSynthProfile;
   private styleCapability: { at: number; supported: boolean } | null = null;
+  private remoteCatalog: { at: number; voices: TtsRemoteVoice[] } | null = null;
+  private catalogPending: Promise<TtsRemoteVoice[]> | null = null;
 
   constructor(opts: TtsClientOptions) {
     this.transport = { ...TTS_TRANSPORT_DEFAULTS, ...opts.transport };
@@ -329,9 +331,36 @@ export class TtsClient {
     this.profile = opts.profile;
   }
 
-  private async synthRemote(text: string, sink: TtsStreamSink, signal?: AbortSignal): Promise<TtsPiece> {
+  get remoteVoice(): string {
+    const speech = this.profile?.()?.speech;
+    return speech?.enabled && speech.voice ? speech.voice : this.transport.voice;
+  }
+
+  async listRemoteVoices(): Promise<TtsRemoteVoice[]> {
+    if (this.transport.protocol !== 'openai-chunked') return [];
+    if (this.remoteCatalog && Date.now() - this.remoteCatalog.at < 30_000) return this.remoteCatalog.voices;
+    if (this.catalogPending) return this.catalogPending;
+    this.catalogPending = (async () => {
+      let voices: TtsRemoteVoice[] = [];
+      try {
+        const r = await this.fetchImpl(`${this.url}/v1/audio/voices`, {
+          headers: ttsHeaders(this.apiKey, this.transport.sessionId), signal: AbortSignal.timeout(2000),
+        });
+        if (r.ok) voices = parseVoiceCatalog(await r.json());
+        else await r.body?.cancel();
+      } catch { /* Older endpoints can synthesize without exposing a catalog. */ }
+      this.remoteCatalog = { at: Date.now(), voices };
+      return voices;
+    })().finally(() => { this.catalogPending = null; });
+    return this.catalogPending;
+  }
+
+  private async synthRemote(text: string, sink: TtsStreamSink, signal?: AbortSignal, override?: TtsSynthProfile): Promise<TtsPiece> {
+    // Snapshot once: a saved selection affects the next request, never an active stream.
+    const speech = (override ?? this.profile?.())?.speech;
+    const config = { ...this.transport, voice: speech?.enabled && speech.voice ? speech.voice : this.transport.voice };
     let envelope: StreamingEnvelope | undefined;
-    const received = await receiveSpeech({ url: this.url, config: this.transport, apiKey: this.apiKey,
+    const received = await receiveSpeech({ url: this.url, config, apiKey: this.apiKey,
       text, signal, fetchImpl: this.fetchImpl, abort: sink.abort,
       trace: trace => {
         this.requestTrace?.(trace);
@@ -385,7 +414,7 @@ export class TtsClient {
 
   /** override 给控制台试听用:按面板上的档案合成一次,不动当前生效的那份 */
   async synth(text: string, override?: TtsSynthProfile, signal?: AbortSignal): Promise<TtsPiece> {
-    if (this.transport.protocol === 'openai-chunked') return this.synthRemote(text, { pcm: () => {} }, signal);
+    if (this.transport.protocol === 'openai-chunked') return this.synthRemote(text, { pcm: () => {} }, signal, override);
     const p = override ?? this.profile?.() ?? {};
     await this.requireStyleCapability(p.instructions, signal);
     const body: Record<string, unknown> = {
@@ -453,7 +482,7 @@ export class TtsClient {
     sink: TtsStreamSink,
     opts: { override?: TtsSynthProfile; signal?: AbortSignal; maxDurationMs?: number; segmentText?: boolean } = {},
   ): Promise<TtsPiece> {
-    if (this.transport.protocol === 'openai-chunked') return this.synthRemote(text, sink, opts.signal);
+    if (this.transport.protocol === 'openai-chunked') return this.synthRemote(text, sink, opts.signal, opts.override);
     const p = opts.override ?? this.profile?.() ?? {};
     await this.requireStyleCapability(p.instructions, opts.signal);
     const body: Record<string, unknown> = {

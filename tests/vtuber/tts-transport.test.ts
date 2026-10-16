@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { TtsClient, pcm16ToWav } from '../../src/tts.ts';
-import { PcmWavStream, requestMetadata, TTS_TRANSPORT_DEFAULTS, type TtsRequestTrace } from '../../src/tts-transport.ts';
+import { parseVoiceCatalog, PcmWavStream, requestMetadata, TTS_TRANSPORT_DEFAULTS, type TtsRequestTrace } from '../../src/tts-transport.ts';
+import { TTS_SPEECH_DEFAULTS } from '../../src/tts-speech.ts';
 
 const config = { ...TTS_TRANSPORT_DEFAULTS, protocol: 'openai-chunked' as const,
   model: 'test-speech', voice: 'test-voice', sessionId: 'stable-session' };
@@ -28,6 +29,51 @@ function fixture() {
 }
 
 describe('OpenAI chunked WAV', () => {
+  it('reads an authenticated server catalog, caches it, and snapshots the selected voice for each request', async () => {
+    const requests: { url: string; body?: Record<string, unknown> }[] = [];
+    let speech = { ...TTS_SPEECH_DEFAULTS, enabled: true, voice: 'cormi-Q5' };
+    let first!: ReadableStreamDefaultController<Uint8Array>;
+    let calls = 0;
+    const wav = pcm16ToWav([pcm(100)], 48000);
+    const client = new TtsClient({ url: 'http://fixture.invalid', transport: config, apiKey: 'fixture-secret',
+      profile: () => ({ speech, referenceAudioB64: 'must-not-leave-client' }),
+      fetchImpl: (async (url, init) => {
+        expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fixture-secret');
+        expect(new Headers(init?.headers).get('x-litellm-session-id')).toBe(config.sessionId);
+        const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+        requests.push({ url: String(url), body });
+        if (String(url).endsWith('/voices')) return Response.json({ catalog: [
+          { id: 'cormi-Q3', label: 'Q3 傲娇小魔导师', private_path: '/private/reference.wav' },
+          { id: 'cormi-Q5', label: 'Q5 灵动冒险少女' },
+        ] });
+        const stream = ++calls === 1 ? new ReadableStream<Uint8Array>({ start(c) { first = c; } }) : new Uint8Array(wav).buffer;
+        return new Response(stream, { headers: { 'x-tts-voice': String(body.voice) } });
+      }) as typeof fetch });
+    const voices = await client.listRemoteVoices();
+    expect(voices.map(v => v.id)).toEqual(['cormi-Q3', 'cormi-Q5']);
+    expect(JSON.stringify(voices)).not.toContain('private');
+    await client.listRemoteVoices();
+    const active = client.synthStream('first', { pcm() {} });
+    speech = { ...speech, voice: 'cormi-Q3' };
+    await client.synthStream('second', { pcm() {} });
+    first.enqueue(wav); first.close(); await active;
+    expect(requests.map(r => r.url)).toEqual(['http://fixture.invalid/v1/audio/voices',
+      'http://fixture.invalid/v1/audio/speech', 'http://fixture.invalid/v1/audio/speech']);
+    expect(requests.slice(1).map(r => r.body?.voice)).toEqual(['cormi-Q5', 'cormi-Q3']);
+    expect(JSON.stringify(requests)).not.toContain('must-not-leave-client');
+    expect(client.remoteVoice).toBe('cormi-Q3');
+  });
+
+  it('rejects a response using another voice before playing it, without falling back', async () => {
+    let calls = 0, played = 0;
+    const client = new TtsClient({ url: 'http://fixture.invalid', transport: config,
+      fetchImpl: (async () => { calls++; return new Response(new Uint8Array(pcm16ToWav([pcm(100)], 48000)).buffer,
+        { headers: { 'x-tts-voice': 'wrong-voice' } }); }) as typeof fetch });
+    await expect(client.synthStream('test', { pcm() { played++; } })).rejects.toThrow('voice differs');
+    expect(calls).toBe(1); expect(played).toBe(0);
+    expect(parseVoiceCatalog({ voices: ['valid', '../private', 'valid'] })).toEqual([{ id: 'valid', label: 'valid' }]);
+  });
+
   it('finds terminal metadata by request ID without attributing another utterance to this session', () => {
     const trace: TtsRequestTrace = { phase: 'received', callId: 'call-1', requestId: 'native-1',
       sessionId: 'same-session', pcmBytes: 0, elapsedMs: 1 };
