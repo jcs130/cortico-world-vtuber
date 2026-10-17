@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import threading
 import time
+import tempfile
 import unittest
 import urllib.error
 import urllib.request
@@ -16,6 +17,7 @@ import wave
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'adapters/voxcpm2'))
 from voxcpm2_server import VoiceEngine, VoiceServer, prepare_text, normalize_terminal_wave
 from synthesis_metrics import SynthesisMetrics
+from voice_catalog import VoiceCatalog
 from unittest.mock import patch
 
 
@@ -24,7 +26,13 @@ class AudioEngine:
         self.rate = 48000
         self.voice = 'reference-speaker'
         self.reference_sha256 = hashlib.sha256(b'reference').hexdigest()
-        self.config = {'reference_text': 'Reference transcript.', 'segment_chars': 80}
+        self.reference_temp = tempfile.TemporaryDirectory()
+        self.reference_file = Path(self.reference_temp.name) / 'reference.wav'
+        self.reference_file.write_bytes(b'reference')
+        self.config = {'reference_text': 'Reference transcript.', 'segment_chars': 80,
+                       'voice': self.voice, 'reference_file': str(self.reference_file),
+                       'reference_sha256': self.reference_sha256}
+        self.voices = VoiceCatalog(self.config)
         self.metrics = SynthesisMetrics()
         self.lock = threading.Lock()
         self.completed = self.failed = self.cancelled = 0
@@ -38,7 +46,7 @@ class AudioEngine:
     def health(self):
         return {'status': 'ok', 'cancelled': self.cancelled}
 
-    def generate(self, text, seed, instructions=None, *, observe=None, on_start=None, on_finish=None):
+    def generate(self, text, seed, instructions=None, *, voice=None, observe=None, on_start=None, on_finish=None):
         self.texts.append(text)
         self.instructions.append(instructions)
         try:
@@ -68,6 +76,7 @@ class ServiceTest(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(2)
+        self.engine.reference_temp.cleanup()
 
     def request(self, text='测试台词。', streaming=False, **kwargs):
         request = urllib.request.Request(
@@ -243,13 +252,31 @@ class ServiceTest(unittest.TestCase):
 
     def test_english_player_names_reach_the_bilingual_model_intact(self):
         original = 'Neko，谢谢你！玩家 neko_42 和 Alex 在河边，魔力12。'
-        expected = 'Neko，谢谢你！玩家 neko_42 和 Alex 在河边，魔力十二。'
+        expected = 'Neko，谢谢你！玩家 neko 四二 和 Alex 在河边，魔力十二。'
         for streaming in (False, True):
             with self.subTest(streaming=streaming):
                 with self.request(original, streaming=streaming) as response:
                     self.assertGreater(len(response.read()), 44)
                 self.assertEqual(''.join(self.engine.texts), expected)
                 self.engine.texts.clear()
+
+    def test_capital_word_rules_apply_to_both_routes_and_preserve_raw_evidence(self):
+        original = 'NEKO 和 NANA_042 来了，AI 和 CPU 仍是缩写。'
+        expected = 'Neko 和 Nana 零四二 来了，AI 和 CPU 仍是缩写。'
+        for streaming in (False, True):
+            with self.request(original, streaming=streaming) as response:
+                self.assertGreater(len(response.read()), 44)
+            self.assertEqual(''.join(self.engine.texts), expected)
+            self.assertEqual(self.engine.last_request['input_sha256'], hashlib.sha256(original.encode()).hexdigest())
+            self.assertEqual(self.engine.last_request['spoken_text_sha256'], hashlib.sha256(expected.encode()).hexdigest())
+            self.assertEqual(self.engine.voices.resolve().reference_text, 'Reference transcript.')
+            self.engine.texts.clear()
+
+    def test_word_normalization_can_be_disabled_without_a_player_alias(self):
+        self.engine.config['latin_word_reading'] = False
+        with self.request('NEKO 和 NANA_042 来了。') as response:
+            response.read()
+        self.assertEqual(''.join(self.engine.texts), 'NEKO 和 NANA_042 来了。')
 
     def test_explicit_pinyin_controls_only_its_word_and_keeps_invalid_metadata_unspoken(self):
         self.assertEqual(prepare_text('火还<烧着|SHAO1 ZHE5>，木炭终于<烧着|shao1 zhao2>了。'),
@@ -310,7 +337,7 @@ class ServiceTest(unittest.TestCase):
         self.engine.config['pronunciation_aliases'] = {'A+B': 'Mira'}
         with self.request('A+B 和 AAAB。', prompt_text='Reference transcript.') as response:
             response.read()
-        self.assertEqual(self.engine.texts[-1], 'Mira 和 AAAB。')
+        self.assertEqual(self.engine.texts[-1], 'Mira 和 Aaab。')
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.request('A+B。', prompt_text='Changed reference transcript.')
         self.assertEqual(caught.exception.code, 400)

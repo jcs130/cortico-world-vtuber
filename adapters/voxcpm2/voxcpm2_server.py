@@ -32,8 +32,9 @@ from inference_worker import InferenceWorker
 from pronunciation_bridge import native_phonemes
 from pronunciation import initialize_pronunciation, normalize_pronunciation, pronunciation_health
 from voice_catalog import VoiceCatalog
+from latin_speech import normalize_latin_speech, POLICY as LATIN_SPEECH_POLICY
 
-VERSION = '1.5.0'
+VERSION = '1.5.1'
 MAX_BODY = 2 * 1024 * 1024
 CUE_RULES = [(re.compile(r'(?:开心|温柔|惊讶|害怕|生气|难过|平静|严肃|得意|委屈|happy|gentle|calm|serious)', re.I), 'style')]
 _NUMBER_TOKEN = r'[-+]?\d+(?:\.\d+)?'
@@ -78,7 +79,7 @@ def prepare_instructions(value, enabled: bool) -> str | None:
 
 
 def prepare_text(text: str, aliases: dict[str, str] | None = None, *, contextual: bool = False,
-                 acoustic_tag_aliases: dict[str, str] | None = None) -> str:
+                 acoustic_tag_aliases: dict[str, str] | None = None, latin_words: bool = True) -> str:
     if aliases is not None and (
         not isinstance(aliases, dict)
         or any(not isinstance(key, str) or not key or not isinstance(value, str) or not value
@@ -115,6 +116,8 @@ def prepare_text(text: str, aliases: dict[str, str] | None = None, *, contextual
     clean = re.sub(r'，(?:[ \t]*，)+', '，', clean)
     clean = re.sub(r'，([。！？；])', r'\1', clean).strip('， \t')
     clean = normalize_spoken_text(clean).replace('——', '，')
+    if latin_words:
+        clean = normalize_latin_speech(clean)
     clean = _DRY_SOIL.sub(lambda match: match['context'] + '{gan1}', clean)
     clean = _UTENSILS.sub('家伙事儿', clean)
     clean = _SHORT_UTENSILS.sub('家{shi5}', clean)
@@ -316,6 +319,8 @@ class VoiceEngine:
                 'terminal_wave_policy': 'sentence-stop',
                 'reference_encoder_device': self.config.get('reference_encoder_device', self.config.get('device', 'cuda')),
                 'pronunciation_fallbacks': ['soil-dryness-gan1', 'utensils-colloquial', 'short-utensils-shi5'],
+                'latin_word_reading': {'enabled': self.config.get('latin_word_reading', True),
+                                      'policy': LATIN_SPEECH_POLICY, 'player_specific_dictionary': False},
                 'pronunciation': pronunciation_health() if self.contextual_pronunciation else {'context_ready': False, 'policy': 'native-model'},
                 'explicit_pinyin_supported': True,
                 'device': self.config.get('device', 'cuda'), 'model_revision': self.config.get('model_revision'),
@@ -396,7 +401,8 @@ class Handler(BaseHTTPRequestHandler):
             preparation_started = time.monotonic()
             clean = prepare_text(text, engine.config.get('pronunciation_aliases'),
                                  contextual=bool(engine.config.get('pronunciation_model_dir')),
-                                 acoustic_tag_aliases=engine.config.get('acoustic_tag_aliases'))
+                                 acoustic_tag_aliases=engine.config.get('acoustic_tag_aliases'),
+                                 latin_words=bool(engine.config.get('latin_word_reading', True)))
             pronunciation_ms = round((time.monotonic() - preparation_started) * 1000, 2)
             limit = int(engine.config.get('segment_chars', 80))
             texts = punctuation_segments(clean, max_chars=limit)

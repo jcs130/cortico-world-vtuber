@@ -46,6 +46,27 @@ cue cleanup; reference audio, reference transcript and client subtitles retain
 their original text. Add full bilingual names as aliases to avoid speaking the
 same name twice. Synthesis records include the final `spoken_text_sha256`.
 
+### Latin words, capitals and identifiers (1.5.1)
+
+The generic `latin_speech.py` stage runs on synthesis input after numeric text
+normalization. It uses no player-name dictionary and makes no additional model
+request. Pronounceable all-capital tokens become word case, so a name such as
+`NEKO` reaches the bilingual decoder as `Neko`, just as unseen `NANA` and `KIKO`
+become `Nana` and `Kiko`. Conventional letter abbreviations such as `AI`, `CPU`,
+`API`, `TTS`, `MCP` and `YSM`, and vowelless tokens retain their spelling.
+
+Underscores become word separators and numeric identifier suffixes are read as
+individual digits: `NANA_042` becomes `Nana 零四二`. All name components remain;
+the normalizer does not drop account prefixes, invent Chinese nicknames, or add
+phonetic controls to Latin names. Code, commands, URLs, email addresses, explicit
+pronunciation controls and version strings are protected. This conservative
+orthographic rule cannot infer every ambiguous proper name or initialism.
+
+Original script, subtitles, identity matching, reference audio and its transcript
+stay unchanged. Health reports `latin_word_reading.policy` and
+`player_specific_dictionary:false`. Set `latin_word_reading:false` to disable
+this stage for rollback. Both HTTP response modes apply the same rule.
+
 Deploy the adapter's shared `indextts` text modules alongside this server. Its
 `corti_speech_style.py` must support the `preserve_acoustic_cues` argument.
 
