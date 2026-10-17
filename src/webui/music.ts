@@ -1,5 +1,5 @@
 /** 曲库播放面板；播放发生在直播音频出口，进度来自服务端开播时间。 */
-import type { ConsolePanel, ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
+import type { WebUiPanel, WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
 import { errText, setMsg } from './client.ts';
 
 export interface MusicTrack {
@@ -35,8 +35,8 @@ function timeText(ms: number): string {
   return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
 }
 
-export const musicPanel: ConsolePanel = {
-  mount(ctx: ConsolePanelContext) {
+export const musicPanel: WebUiPanel = {
+  mount(ctx: WebUiPanelContext) {
     const { ui } = ctx;
     const card = ui.sheet({ title: '歌曲播放', en: 'music' });
     const status = ui.h('div', 'vt-music-status');

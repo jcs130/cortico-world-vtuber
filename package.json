@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-vtuber",
-  "version": "0.1.1-music.4",
+  "version": "0.1.1-dev.20261017.1",
   "type": "module",
   "description": "Cortico World: Live2D VTuber performance — VTube Studio wiring, streaming TTS, forced alignment, subtitle overlay",
   "license": "AGPL-3.0-or-later",
@@ -19,9 +19,18 @@
   "main": "./src/index.ts",
   "cortico": {
     "kind": "world",
-    "api": 5,
-    "consoleClient": "dist/console.js",
-    "consoleStyle": "dist/console.css"
+    "api": 6,
+    "webUiClient": "dist/webui.js",
+    "webUiStyle": "dist/webui.css",
+    "describe": "describe.json",
+    "tags": [
+      "streaming",
+      "voice",
+      "creative",
+      "local",
+      "external-setup",
+      "experimental"
+    ]
   },
   "files": [
     "src",
@@ -33,10 +42,12 @@
     "adapters/voxcpm2",
     "adapters/acoustic",
     "README.md",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "describe.json",
+    "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "node scripts/build-console.mjs",
+    "build": "node scripts/build-webui.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -50,7 +61,7 @@
     "@types/node": "^22.10.0",
     "@types/tar-stream": "^3.1.4",
     "@types/ws": "^8.5.13",
-    "cortico": "^0.1.5",
+    "cortico": "0.2.2",
     "esbuild": "^0.28.2",
     "jsdom": "^30.0.1",
     "tsx": "^4.19.2",

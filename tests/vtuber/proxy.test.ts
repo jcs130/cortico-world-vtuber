@@ -189,9 +189,9 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     expect(proxy.streamUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+/);
     expect(proxy.overlayUrl).toContain('/overlay');
     await waitFor(() => proxy.statusLine() !== null);
-    expect(proxy.console().badges?.length).toBeGreaterThan(0);
+    expect(proxy.webUi().badges?.length).toBeGreaterThan(0);
     // 灯与徽标同批跨界:子进程报上来之后,代理不再点自己那颗"引擎启动中"
-    expect(proxy.console().lamps?.[0]?.label).not.toBe('引擎');
+    expect(proxy.webUi().lamps?.[0]?.label).not.toBe('引擎');
   });
 
   it('overlay 连上 SSE 后状态推送把 live 置真,断开后回落', async () => {
@@ -283,7 +283,7 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     const requests: Array<{ url?: string; auth?: string; session?: string; body: Record<string, unknown> }> = [];
     let disconnected = false;
     const server = createServer((req, res) => {
-      if (req.url === '/metrics/tts') {
+      if (req.method === 'GET') {
         res.end(JSON.stringify({ schema: 'tts-status-v1', status: 'ok' })); return;
       }
       const chunks: Buffer[] = [];
@@ -402,7 +402,7 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
 
   it('面板调用前同步刚写入的外置资源路径', async () => {
     live2dDir = join(serverDir, 'live2d');
-    const state = await proxy.console().invoke!('model', 'state', []) as { live2dDir: string };
+    const state = await proxy.webUi().invoke!('model', 'state', []) as { live2dDir: string };
     expect(state.live2dDir).toBe(live2dDir);
   });
 
@@ -446,7 +446,7 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     writeFileSync(join(serverDir, 'lyrics.json'), JSON.stringify({ version: 1, lines: lyrics }));
     writeFileSync(join(serverDir, 'song.wav'), makeWav(new Array(160_000).fill(0.2)));
     ttsInputs.length = 0;
-    const invoke = proxy.console().invoke!;
+    const invoke = proxy.webUi().invoke!;
     const state = await invoke('music', 'state', []) as { tracks: Array<{ id: string; durationMs: number }>; volume: number };
     expect(state.tracks).toEqual([{ id: 'song', title: 'Example', durationMs: 10_000, envelopeSource: 'mix', lyrics }]);
     expect(state.volume).toBe(0.4);
@@ -494,7 +494,7 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     await waitFor(() => isolated.statusLine()?.includes('正在说话') === true);
 
     const stopping = isolated.stop();
-    const invoke = isolated.console().invoke;
+    const invoke = isolated.webUi().invoke;
     if (!invoke) throw new Error('missing console invoke');
     try {
       await expect(invoke('log', 'entries', [])).rejects.toThrow('演出引擎正在停机');

@@ -14,7 +14,7 @@ import type { StreamEvent } from 'cortico/protocol/open-responses/index.ts';
  */
 import type { LogNote } from 'cortico/core/ipc-logger.ts';
 import type { EventEnvelope, LLMUsage, PushOptions, RunPhase } from 'cortico/core/types.ts';
-import type { WorldConsoleDecl } from 'cortico/core/types.ts';
+import type { WorldWebUiDecl } from 'cortico/core/types.ts';
 import type { OverlayConfig, TtsProfile, VtuberDecaySec } from './world.ts';
 
 /**
@@ -123,7 +123,7 @@ export type EngineCast =
 export type EngineNote =
   | LogNote
   | { kind: 'usage'; usage: LLMUsage; opts?: Parameters<import('cortico/core/types.ts').WorldHost['reportUsage']>[1] }
-  | { kind: 'status'; line: string | null; live: boolean; decl: Pick<WorldConsoleDecl, 'lamps' | 'badges' | 'links'> }
+  | { kind: 'status'; line: string | null; live: boolean; decl: Pick<WorldWebUiDecl, 'lamps' | 'badges' | 'links'> }
   | { kind: 'tts-profile'; profile: TtsProfile }
   | { kind: 'overlay-config'; config: OverlayConfig }
   | { kind: 'vts-token'; token: string };

@@ -27,7 +27,7 @@ const receiptText = (value: unknown): string => typeof value === 'string'
 
 /** 面板声明里的局部 id(新式对象声明;字符串形态这个 World 已经不用了) */
 function panelIds(m: VtuberWorld): string[] {
-  return (m.console().panels ?? []).map((p) => (typeof p === 'string' ? p : p.id));
+  return (m.webUi().panels ?? []).map((p) => (typeof p === 'string' ? p : p.id));
 }
 
 class FakeHost implements WorldHost {

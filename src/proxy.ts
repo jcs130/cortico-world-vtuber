@@ -20,9 +20,8 @@ import { fileURLToPath } from 'node:url';
 import type {
   World,
   WorldHost,
-  WorldRequestFacts,
   Logger,
-  WorldConsoleDecl,
+  WorldWebUiDecl,
   OutputTap,
   ToolDef,
   ToolOutcome,
@@ -140,7 +139,7 @@ export class VtuberWorldProxy implements World {
   private statusArmedAt: number | null = null;
   /** 上一份状态行实际进上下文的时刻;STATUS_GAP_MS 节流的基准 */
   private lastStatusRenderAt = 0;
-  private declCache: Pick<WorldConsoleDecl, 'lamps' | 'badges' | 'links'> = {};
+  private declCache: Pick<WorldWebUiDecl, 'lamps' | 'badges' | 'links'> = {};
   private lastConfigJson = '';
   private lastForwardedCursor = -1;
   private configTimer: ReturnType<typeof setInterval> | null = null;
@@ -161,7 +160,7 @@ export class VtuberWorldProxy implements World {
     return { 'vtuber.vocab': vocabTableRows(this.pack) };
   }
 
-  console(): WorldConsoleDecl {
+  webUi(): WorldWebUiDecl {
     return {
       // 子进程报上来之前只有一件事是确定的:引擎在不在。真 World 那排灯一到就盖掉这颗。
       lamps: this.declCache.lamps ?? [this.child
@@ -374,7 +373,7 @@ export class VtuberWorldProxy implements World {
   onRunPhase(phase: RunPhase): void { this.cast({ kind: 'run-phase', phase }); }
 
   /** 完整演出状态取自本连接已收到的通知；读取不更新观察时刻。 */
-  requestFacts(): WorldRequestFacts | null {
+  requestFacts(): { text: string; snapshotTypes: string[] } | null {
     if (!this.ready || this.stopping || !this.child?.connected
       || !this.statusCache || !this.statusObservedAt) return null;
     return {

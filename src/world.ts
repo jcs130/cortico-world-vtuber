@@ -20,7 +20,7 @@ import type {
   World,
   WorldHost,
   Logger,
-  WorldConsoleDecl,
+  WorldWebUiDecl,
   WorldPanelDecl,
   OutputTap,
   ToolDef,
@@ -1778,7 +1778,7 @@ export class VtuberWorld implements World {
     return { 'vtuber.vocab': vocabTableRows(this.pack) };
   }
 
-  console(): WorldConsoleDecl {
+  webUi(): WorldWebUiDecl {
     const vtsTone = this.vtsOk === true ? 'on' : this.vtsOk === false ? 'off' : 'plain';
     const ttsTone = this.ttsOk === true ? 'on' : this.ttsOk === false ? 'off' : 'plain';
     // 三条链路各一颗:形象(VTS)、声音(TTS)、画面(演出流)。三条各坏各的——

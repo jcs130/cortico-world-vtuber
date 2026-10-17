@@ -51,7 +51,7 @@ describe('环境提示词模板契约', () => {
     const mod: World = {
       id: 'nullprompt',
       envPromptVars: () => null,
-      console: () => ({
+      webUi: () => ({
         promptDocs: [
           { key: 'worlds.nullprompt.envPrompt', title: 'nullprompt · 环境提示词', description: '测试模板', path, role: 'envPrompt' },
         ],

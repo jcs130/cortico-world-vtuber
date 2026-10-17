@@ -1,6 +1,6 @@
 {
   // 一份配置同时 check Node 侧(模组、子进程、TTS/VTS 客户端)与浏览器侧
-  // (`src/console/**` 的面板插件),所以 lib 里 DOM 与 ES2022 都在,types 只留 node。
+  // (`src/webui/**` 的面板插件),所以 lib 里 DOM 与 ES2022 都在,types 只留 node。
   // 框架仓库把两侧拆成两份配置,是因为那边有大量只碰 Node 的代码需要 DOM 全局
   // 缺席才能发现误用;本包的 Node 侧代码不长,不值得为此维护第二份。
   "compilerOptions": {
@@ -18,7 +18,7 @@
     "resolveJsonModule": true,
     "noEmit": true,
     "paths": {
-      "cortico/*": ["../BOT/src/*"]
+      "cortico/*": ["./node_modules/cortico/src/*"]
     }
   },
   "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"],

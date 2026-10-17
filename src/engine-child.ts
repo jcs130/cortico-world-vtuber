@@ -240,7 +240,7 @@ async function handleInit(init: EngineInit): Promise<EngineReady> {
 /** 状态行与徽标推给主进程缓存(心跳与控制台读缓存,不跨进程拉) */
 function pushStatus(): void {
   if (!mod) return;
-  const decl = mod.console();
+  const decl = mod.webUi();
   const note = {
     kind: 'status' as const,
     line: mod.statusLine(),

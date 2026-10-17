@@ -1,11 +1,12 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { WorldDefinition } from 'cortico/world.ts';
+import { describeTools, type WorldDefinition } from 'cortico/world.ts';
 import {
   OVERLAY_CONFIG_DEFAULTS,
   TTS_PROFILE_DEFAULTS,
   VTUBER_DEFAULTS,
   VTUBER_SECRET,
+  VTUBER_TOOL_DECLS,
   type OverlayConfig,
   type TtsProfile,
 } from './world.ts';
@@ -68,6 +69,22 @@ export interface VtuberConfigSection {
 export const VTUBER: WorldDefinition<VtuberConfigSection> = {
   id: 'vtuber',
   label: 'VTuber 演出',
+  describe: {
+    tools: describeTools(VTUBER_TOOL_DECLS, {
+      vtuber_act: { zh: '将台词和演出提示送入语音与动作队列。', en: 'Queues speech and performance cues.' },
+      vtuber_interrupt: { zh: '在自然停顿处结束当前演出及排队语音。', en: 'Stops performance and queued speech at a natural pause.' },
+      vtuber_music: { zh: '检索、播放和停止音乐，提交或取消异步创作。', en: 'Lists, plays and stops music and submits or cancels asynchronous composition.' },
+    }),
+    events: [
+      { type: 'worlds.note', description: { zh: '演出生命周期、交接或服务状态通知。', en: 'Performance lifecycle, handoff or service status.' } },
+      { type: 'vtuber.status', description: { zh: '当前演出队列与播放状态。', en: 'Current performance queue and playback state.' } },
+      { type: 'vtuber.composition', description: { zh: '异步音乐创作的审核、生成或失败结果。', en: 'Review, generation or failure result of an asynchronous composition.' } },
+      { type: 'vtuber.music', description: { zh: '实际音乐播放或停止的反馈。', en: 'Actual music playback or stop feedback.' } },
+      { type: 'vtuber.waiting', description: { zh: '等待媒体的实际播放反馈。', en: 'Actual waiting-media playback feedback.' } },
+      { type: 'vtuber.act.outcome', description: { zh: '台词与演出实际完成、取消或失败的回执。', en: 'Actual completion, cancellation or failure receipt for speech and performance.' } },
+      { type: 'vtuber.danmaku', description: { zh: '演出收到的观众弹幕。', en: 'Audience comments received by the performance.' } },
+    ],
+  },
   defaults: () => ({
     ...structuredClone(VTUBER_DEFAULTS as unknown as VtuberConfigSection),
     ttsProfile: { ...TTS_PROFILE_DEFAULTS },

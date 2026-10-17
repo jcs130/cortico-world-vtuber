@@ -11,8 +11,8 @@
  */
 
 import type {
-  ConsolePanelContext,
-  ConsolePanel,
+  WebUiPanelContext,
+  WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
 import { toDisposable } from './disposable.ts';
 import {
@@ -31,8 +31,8 @@ const WEIGHTS = [
   { value: '900', label: '特粗' },
 ];
 
-export const overlayPanel: ConsolePanel = {
-  mount(ctx: ConsolePanelContext) {
+export const overlayPanel: WebUiPanel = {
+  mount(ctx: WebUiPanelContext) {
     const { ui } = ctx;
     const card = ui.sheet({
       title: 'Overlay 画面',

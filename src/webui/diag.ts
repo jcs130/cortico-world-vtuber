@@ -12,8 +12,8 @@
  */
 
 import type {
-  ConsolePanelContext,
-  ConsolePanel,
+  WebUiPanelContext,
+  WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
 import {
   delay,
@@ -33,8 +33,8 @@ interface Preset {
   script: string;
 }
 
-export const diagPanel: ConsolePanel = {
-  mount(ctx: ConsolePanelContext) {
+export const diagPanel: WebUiPanel = {
+  mount(ctx: WebUiPanelContext) {
     const { ui } = ctx;
     const card = ui.sheet({
       title: '演出诊断',

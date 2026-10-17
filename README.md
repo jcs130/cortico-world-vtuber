@@ -55,7 +55,7 @@ World 内部的分层、演出包格式、台本记号与 Live2D 适配写在 [`
 这是一个**扩展包**,不是 Cortico 的一部分。它按 Cortico 的扩展契约声明自己:
 
 ```jsonc
-"cortico": { "kind": "world", "api": 4, "consoleClient": "dist/console.js", "consoleStyle": "dist/console.css" }
+"cortico": { "kind": "world", "api": 4, "webUiClient": "dist/webui.js", "webUiStyle": "dist/webui.css" }
 ```
 
 运行时它以 `cortico/<框架 src 下的路径>` import 框架(`cortico/world.ts`、
@@ -64,7 +64,7 @@ World 内部的分层、演出包格式、台本记号与 Live2D 适配写在 [`
 日志锚点。因此包必须是 `"type": "module"`:CommonJS 包经 require 会拿到框架源码的
 第二份副本。
 
-浏览器侧(`src/console/**`)对 `cortico/*` **只 `import type`**:框架的前端代码不随本包
+浏览器侧(`src/webui/**`)对 `cortico/*` **只 `import type`**:框架的前端代码不随本包
 发布,面板 bundle 也不该把它打进来。要用到的运行时值在包内自带(`console/disposable.ts`
 的 `toDisposable`,`console/model.ts` 里那枚目录图标)。
 
@@ -93,7 +93,7 @@ corepack pnpm build
 ```bash
 corepack pnpm typecheck   # tsc --noEmit,Node 侧与浏览器侧一份配置一起 check
 corepack pnpm test        # vitest run
-corepack pnpm build       # esbuild → dist/console.{js,css}
+corepack pnpm build       # esbuild → dist/webui.{js,css}
 ```
 
 测试全程 mock:不连 VTube Studio、不起真 TTS server、不开声卡。构建脚本**不给

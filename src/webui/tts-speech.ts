@@ -1,9 +1,9 @@
 /** Service-owned voice selection, persisted and hot-applied at the next synthesis. */
-import type { ConsolePanelContext } from 'cortico/web/shared/client-panel.ts';
+import type { WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
 import { TTS_SPEECH_DEFAULTS, type TtsSpeechPreferences } from '../tts-speech.ts';
 import { dimLine, errText, numField, setMsg, type TtsPanelState } from './client.ts';
 
-export function speechControls(ctx: ConsolePanelContext, refresh: () => Promise<void>): {
+export function speechControls(ctx: WebUiPanelContext, refresh: () => Promise<void>): {
   el: HTMLElement; render(state: TtsPanelState): void; unavailable(): void;
 } {
   const { ui } = ctx;

@@ -1,3 +1,5 @@
+minimumReleaseAgeExclude:
+  - cortico@0.2.2
 allowBuilds:
   audify: true
   esbuild: true

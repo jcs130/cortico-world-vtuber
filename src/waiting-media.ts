@@ -1,6 +1,6 @@
 /** Optional media fallback while a main model request is pending. Assets are prepared before selection. */
 import type { RunPhase } from 'cortico/core/types.ts';
-import { parseTypedChoice } from 'cortico/protocol/typed-decision.ts';
+import { parseMediaChoice } from './media-choice.ts';
 
 export interface WaitingMediaConfig {
   enabled: boolean;
@@ -183,7 +183,7 @@ export class WaitingMedia {
       if (timedOut) { this.d.report({ status: 'timeout', requestKey: key, elapsedMs: this.now() - began }); return; }
       if (controller.signal.aborted || key !== this.requestKey || assetKey !== this.key
         || configKey !== JSON.stringify(this.d.config()) || !this.eligible(false)) return;
-      const choice = parseTypedChoice(raw?.answers?.media, ['quiet', ...candidates.map(asset => asset.id)]);
+      const choice = parseMediaChoice(raw?.answers?.media, ['quiet', ...candidates.map(asset => asset.id)]);
       const asset = choice && choice.choiceProbability >= cfg.minConfidence
         ? candidates.find(asset => asset.id === choice.choice) : undefined;
       this.d.report({ status: asset ? 'selected' : 'quiet', elapsedMs: this.now() - began,
