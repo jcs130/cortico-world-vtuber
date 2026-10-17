@@ -74,6 +74,7 @@ import {
 } from './tts.ts';
 import { TtsService, TTS_SERVICE_DEFAULTS, type TtsServiceConfig, type TtsServiceState } from './tts-service.ts';
 import { TTS_SPEECH_DEFAULTS, type TtsSpeechPreferences } from './tts-speech.ts';
+import { TtsAudioHistory } from './tts-audio-history.ts';
 import type { TtsServerEvent } from './tts-server.ts';
 
 import { modelsRoot, runtimesRoot } from 'cortico/paths.ts';
@@ -1683,8 +1684,10 @@ export class VtuberWorld implements World {
     this.ttsUrl = ttsUrl;
     this.ttsProfile = this.clampProfile({ ...TTS_PROFILE_DEFAULTS, ...opts.ttsProfile });
     this.onTtsProfile = opts.onTtsProfile;
+    const audioHistory = opts.diagDir ? new TtsAudioHistory(opts.diagDir) : undefined;
     this.ttsClient = new TtsClient({ url: ttsUrl, transport: opts.ttsTransport, apiKey: opts.ttsApiKey,
       profile: () => this.synthProfileOf(this.ttsProfile),
+      capture: audioHistory?.capture,
       trace: trace => this.tracePerf('TTS HTTP', trace.phase, { event: `tts-http-${trace.phase}`, data: { ...trace } }),
     });
     // 对齐器与 TTS 同进程同端口:一个 llama-tts-server 同时驮着 VoxCPM2 和对齐模型

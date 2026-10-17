@@ -15,7 +15,7 @@
 import type { AlignedUnit } from './align.ts';
 import type { TtsSpeechPreferences } from './tts-speech.ts';
 import { SilenceScanner, scanSilence, type SilenceReport } from './silence-scan.ts';
-import { parseVoiceCatalog, receiveSpeech, requestMetadata, ttsHeaders, TTS_TRANSPORT_DEFAULTS, type TtsTransportConfig, type TtsRequestTrace, type TtsRemoteVoice } from './tts-transport.ts';
+import { parseVoiceCatalog, receiveSpeech, requestMetadata, ttsHeaders, TTS_TRANSPORT_DEFAULTS, type TtsTransportConfig, type TtsRequestTrace, type TtsRemoteVoice, type TtsReceivedAudio } from './tts-transport.ts';
 
 /** 整段包络与流式增量包络共用的只读接口。 */
 export interface EnvelopeLike {
@@ -270,6 +270,8 @@ export interface TtsClientOptions {
   transport?: Partial<TtsTransportConfig>;
   apiKey?: string;
   trace?: (trace: TtsRequestTrace) => void;
+  /** Optional local incident recorder; never called with credentials or request headers. */
+  capture?: (audio: TtsReceivedAudio) => void;
   /** 单片合成超时;VoxCPM2 本机 CUDA 合成短句通常秒级 */
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
@@ -313,6 +315,7 @@ export class TtsClient {
   readonly transport: TtsTransportConfig;
   private readonly apiKey: string;
   private readonly requestTrace?: (trace: TtsRequestTrace) => void;
+  private readonly capture?: (audio: TtsReceivedAudio) => void;
   private readonly url: string;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
@@ -325,6 +328,7 @@ export class TtsClient {
     this.transport = { ...TTS_TRANSPORT_DEFAULTS, ...opts.transport };
     this.apiKey = opts.apiKey ?? '';
     this.requestTrace = opts.trace;
+    this.capture = opts.capture;
     this.url = opts.url.replace(/\/$/, '');
     this.timeoutMs = opts.timeoutMs ?? 60_000;
     this.fetchImpl = opts.fetchImpl ?? fetch;
@@ -362,6 +366,7 @@ export class TtsClient {
     let envelope: StreamingEnvelope | undefined;
     const received = await receiveSpeech({ url: this.url, config, apiKey: this.apiKey,
       text, signal, fetchImpl: this.fetchImpl, abort: sink.abort,
+      capture: this.capture,
       trace: trace => {
         this.requestTrace?.(trace);
         if (this.requestTrace && ['received', 'aborted', 'error'].includes(trace.phase)
@@ -633,7 +638,7 @@ export function samplesToPcm16Wav(samples: Float32Array, sampleRate: number): Ui
 }
 
 /** PCM16LE 单声道分块 → 完整 wav 字节(流式重组与前缀对齐都用) */
-export function pcm16ToWav(parts: Uint8Array[], sampleRate: number): Uint8Array {
+export function pcm16ToWav(parts: readonly Uint8Array[], sampleRate: number): Uint8Array {
   let pcmBytes = 0;
   for (const p of parts) pcmBytes += p.length;
   const wav = new Uint8Array(44 + pcmBytes);

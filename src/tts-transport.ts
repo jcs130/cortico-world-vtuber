@@ -58,6 +58,14 @@ export interface TtsRequestTrace {
   server?: Record<string, unknown> | null;
 }
 
+/** Local diagnostic data only. This is received audio, not proof of physical playback. */
+export interface TtsReceivedAudio {
+  text: string;
+  parts: readonly Uint8Array[];
+  sampleRate: number;
+  trace: TtsRequestTrace;
+}
+
 /** Correlate by request IDs; a session's latest request may belong to another utterance. */
 export function requestMetadata(status: Record<string, unknown>, trace: TtsRequestTrace): Record<string, unknown> | null {
   const rows = [status.gateway_last, ...(Array.isArray(status.gateway_recent) ? status.gateway_recent : []),
@@ -142,6 +150,7 @@ export async function receiveSpeech(options: {
   fetchImpl: typeof fetch; signal?: AbortSignal;
   begin: (sampleRate: number) => void; pcm: (chunk: Uint8Array) => void;
   abort?: () => void; trace?: (trace: TtsRequestTrace) => void;
+  capture?: (audio: TtsReceivedAudio) => void;
 }): Promise<{ parts: Uint8Array[]; sampleRate: number; trace: TtsRequestTrace }> {
   const { config } = options;
   if (!config.model || !config.voice || !config.sessionId) throw new Error('TTS model, voice and stable session ID are required');
@@ -220,6 +229,10 @@ export async function receiveSpeech(options: {
     emit(controller.signal.aborted ? 'aborted' : 'error');
     throw error;
   } finally {
+    // Never delay playback or turn a diagnostic failure into a synthesis failure.
+    if (parts.length && wav.sampleRate) {
+      try { options.capture?.({ text: options.text, parts, sampleRate: wav.sampleRate, trace: { ...trace } }); } catch { /* diagnostic only */ }
+    }
     clearTimeout(timer);
     options.signal?.removeEventListener('abort', onAbort);
     await reader?.cancel().catch(() => {});
