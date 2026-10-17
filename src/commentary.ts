@@ -7,10 +7,11 @@ export interface CommentaryConfig {
   factAgeSec: number;
   sources: string;
   style: string;
+  hostStatusUrl: string;
 }
 
 export const COMMENTARY_DEFAULTS: Readonly<CommentaryConfig> = Object.freeze({
-  enabled: false, idleSec: 20, retrySec: 20, factAgeSec: 120, sources: '', style: '',
+  enabled: false, idleSec: 20, retrySec: 20, factAgeSec: 120, sources: '', style: '', hostStatusUrl: '',
 });
 
 export interface SpeechAvailability {
@@ -147,21 +148,23 @@ export class CommentaryLane {
     this.state = 'drafting';
     const epoch = this.epoch, idleSince = this.ports.availability().speech!.idleSinceMs;
     const c = this.ports.config(), now = this.now(), serial = ++this.serial;
-    const facts = [...this.evidence.values()].filter(e => now - Date.parse(e.ts) <= Math.max(1, c.factAgeSec) * 1000).slice(-6);
+    const sources = new Set(c.sources.split(/[\s,]+/).filter(Boolean));
+    const facts = [...this.evidence.values()].filter(e => sources.has(e.source)
+      && now - Date.parse(e.ts) <= Math.max(1, c.factAgeSec) * 1000).slice(-6);
     const brief = commentaryBrief(facts, this.recent, c.style);
     this.ports.log('commentary-request', { requestId: serial, idleSinceMs: idleSince, taskChars: brief.length, evidence: facts.map(e => e.cursor), context: 'task', tools: [] });
-    void this.run(brief, facts, epoch, idleSince, serial, now).finally(() => {
+    void this.run(brief, facts, epoch, idleSince, serial, now, c.sources).finally(() => {
       this.inFlight = false;
       this.nextAt = this.now() + Math.max(1, this.ports.config().retrySec) * 1000;
     });
   }
 
-  private async run(brief: string, facts: Evidence[], epoch: number, idleSince: number | null, serial: number, startedAt: number): Promise<void> {
+  private async run(brief: string, facts: Evidence[], epoch: number, idleSince: number | null, serial: number, startedAt: number, sources: string): Promise<void> {
     try {
       const result = await this.ports.request(brief);
       // No stale draft can enter TTS after foreground speech, pause/stop, a
       // drained/new queue episode, missing engine heartbeat or a long generation.
-      if (epoch !== this.epoch || !this.eligible() || this.ports.availability().speech!.idleSinceMs !== idleSince
+      if (epoch !== this.epoch || sources !== this.ports.config().sources || !this.eligible() || this.ports.availability().speech!.idleSinceMs !== idleSince
         || this.now() - startedAt > Math.max(1, this.ports.config().factAgeSec) * 1000) {
         this.state = 'stale'; this.ports.log('commentary-stale', { requestId: serial }); return;
       }

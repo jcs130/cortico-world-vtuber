@@ -765,6 +765,10 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
         type: 'string', title: '解说口吻参考', 'x-hot': true,
         description: '简短表达偏好；角色私有设定保存在部署配置，口吻参考不产生游戏事实。',
       },
+      'worlds.vtuber.commentary.hostStatusUrl': {
+        type: 'string', title: '宿主运行状态地址', 'x-hot': true,
+        description: '可选 Cortico /api/status 地址，只读 running/paused，不使用凭据。配置后正常等待也可解说；暂停、无法验证或状态过期时停止起草。空值仅在主线程活动阶段起草。',
+      },
       'worlds.vtuber.obsDelaySec': {
         type: 'number',
         title: 'OBS 播出延迟(秒)',

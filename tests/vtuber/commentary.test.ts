@@ -120,6 +120,8 @@ describe('bounded commentary cognition lane', () => {
     g.lane.tick(); g.resolve(); await g.settle();
     expect(g.lane.facts()).toContain('failed');
     expect(g.log.mock.calls.some(([event]) => event === 'commentary-submitted')).toBe(false);
+    const h = fixture(); h.lane.tick(); h.configure({ sources: 'audience' });
+    h.resolve(); await h.settle(); expect(h.perform).not.toHaveBeenCalled();
   });
 });
 

@@ -253,6 +253,29 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     expect(ttsInputs).toHaveLength(before);
   });
 
+  it('verified running status allows commentary while the main loop waits; explicit pause prevents the next draft', async () => {
+    let paused=false;
+    const statusServer=createServer((_req,res)=>{ res.setHeader('Content-Type','application/json');res.end(JSON.stringify({loop:{running:true,paused}})); });
+    await new Promise<void>(resolve=>statusServer.listen(0,'127.0.0.1',resolve));
+    const request=vi.fn(async()=>({text:JSON.stringify({script:'雨声听着有点舒服，先看看眼前这条路。',kind:'thought',evidence:[]})}));
+    host.cognition={request};
+    let response:Response|undefined;
+    try {
+      await freshProxy({commentary:()=>({...COMMENTARY_DEFAULTS,enabled:true,idleSec:1,retrySec:1,
+        hostStatusUrl:`http://127.0.0.1:${(statusServer.address() as {port:number}).port}/api/status`})});
+      response=await fetch(proxy.streamUrl,{headers:{Accept:'text/event-stream'}});
+      await waitFor(()=>proxy.live);
+      proxy.onRunPhase({state:'idle',running:[],enteredAt:new Date().toISOString()});
+      await waitFor(()=>request.mock.calls.length===1);
+      paused=true;
+      await new Promise(resolve=>setTimeout(resolve,4300));
+      expect(request).toHaveBeenCalledOnce();
+    } finally {
+      await response?.body?.cancel();host.cognition=undefined;await freshProxy();
+      await new Promise<void>(resolve=>statusServer.close(()=>resolve()));
+    }
+  },20_000);
+
   it('代理工具表声明台词、打断与歌曲', () => {
     expect(proxy.tools().map((tool) => tool.name)).toEqual(['vtuber_act', 'vtuber_interrupt', 'vtuber_music']);
   });

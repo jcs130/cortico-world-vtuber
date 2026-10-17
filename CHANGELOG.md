@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1-dev.20261017.3
+
+- Add an optional read-only host status adapter to distinguish normal foreground waiting from operator pause. Unknown or stale status denies new drafts.
+- Keep a single status read in flight, with a timeout and lifecycle protection against late responses. The adapter has no default endpoint or credentials.
+- Strip performance markers from commentary text and recent speech instead of either reading them aloud or discarding an otherwise usable line.
+- Clarify that utterances and text parameters do not verify the events they describe.
+
 ## 0.1.1-dev.20261017.2
 
 - Add opt-in, bounded commentary drafting through host cognition while foreground activity continues.

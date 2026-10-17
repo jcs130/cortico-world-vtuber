@@ -67,6 +67,7 @@ import { invalidActScriptShapeReceipt, normalizeExternalActScript } from './act-
 import { TTS_SERVICE_DEFAULTS } from './tts-service.ts';
 import { randomUUID } from 'node:crypto';
 import { CommentaryLane, COMMENTARY_DEFAULTS, type SpeechAvailability } from './commentary.ts';
+import { CommentaryRuntimeGate } from './commentary-runtime.ts';
 
 const ENV_PROMPT_FILE = fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url));
 const CHILD_ENTRY = fileURLToPath(new URL('./engine-child.ts', import.meta.url));
@@ -150,6 +151,7 @@ export class VtuberWorldProxy implements World {
   private speechCache: SpeechAvailability | null = null;
   private commentaryActive = false;
   private readonly commentary: CommentaryLane;
+  private readonly commentaryRuntime: CommentaryRuntimeGate;
 
   /**
    * 演出包在主进程也读一份:环境提示词由主进程渲染,词表段从这里出。
@@ -159,10 +161,19 @@ export class VtuberWorldProxy implements World {
 
   constructor(private readonly opts: VtuberWorldOptions = {}) {
     this.pack = loadPack(opts.packDir?.trim() || EXAMPLE_PACK_DIR);
+    this.commentaryRuntime = new CommentaryRuntimeGate({
+      url: () => this.opts.commentary?.().enabled ? this.opts.commentary().hostStatusUrl ?? '' : '',
+      get: async url => {
+        const response = await fetch(url, { signal: AbortSignal.timeout(2000), redirect: 'error' });
+        if (!response.ok) throw new Error(`Host status ${response.status}`);
+        return response.json();
+      },
+      invalidate: () => this.commentary?.foregroundSpeech(),
+    });
     this.commentary = new CommentaryLane({
       config: () => ({ ...COMMENTARY_DEFAULTS, ...this.opts.commentary?.() }),
       availability: () => ({ live: this.live && !this.stopping && !!this.child?.connected,
-        active: this.commentaryActive, speech: this.speechCache }),
+        active: this.commentaryRuntime.active(this.commentaryActive), speech: this.speechCache }),
       request: brief => {
         // Context/kind are additive advisory hints understood by supporting
         // Personas. Hosts still own provider, context, usage and cancellation;
@@ -499,6 +510,7 @@ export class VtuberWorldProxy implements World {
     this.host = host;
     this.stopping = false;
     this.commentary.resume();
+    this.commentaryRuntime.resume();
     // 地板扫描只关心启动之后的事件;历史信封不补
     this.lastForwardedCursor = host.store.latestCursor();
     for (let cursor = Math.max(1, this.lastForwardedCursor - 128); cursor <= this.lastForwardedCursor; cursor++) {
@@ -514,7 +526,7 @@ export class VtuberWorldProxy implements World {
       await this.stop();
       throw error;
     }
-    this.configTimer = setInterval(() => { this.pushConfigIfChanged(); this.commentary.tick(); }, CONFIG_SAMPLE_MS);
+    this.configTimer = setInterval(() => { this.pushConfigIfChanged(); this.commentaryRuntime.tick(); this.commentary.tick(); }, CONFIG_SAMPLE_MS);
     this.configTimer.unref?.();
     this.eventTimer = setInterval(() => this.forwardEvents(), EVENT_FORWARD_MS);
     this.eventTimer.unref?.();
@@ -524,6 +536,7 @@ export class VtuberWorldProxy implements World {
     this.stopping = true;
     this.commentaryActive = false;
     this.commentary.stop();
+    this.commentaryRuntime.stop();
     this.statusObservedAt = null;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     this.restartTimer = null;
