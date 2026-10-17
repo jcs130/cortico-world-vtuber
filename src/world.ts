@@ -55,6 +55,7 @@ import { MusicLibrary, musicVolume, type MusicPlayback, type MusicPlayOptions, t
 import { MusicGenerationClient, type MusicGenerationJob, type MusicGenerationRequest } from './music-generation.ts';
 import { WaitingMedia, WAITING_MEDIA_DEFAULTS, type WaitingMediaConfig, type WaitingMediaAsset } from './waiting-media.ts';
 import { describeSilence, silenceData } from './silence-scan.ts';
+import { COMMENTARY_DEFAULTS, type CommentaryConfig, type SpeechAvailability } from './commentary.ts';
 import { DEFAULT_TIMEOUT_RANGE_MS, type StateChannel } from './states.ts';
 import { computeSubtitleCues } from './subtitle-cues.ts';
 import { DeviceAudioSink } from './device-audio.ts';
@@ -218,6 +219,8 @@ export const VTUBER_DEFAULTS = {
   silenceLine1: '',
   silenceLine2: '',
   silenceLine3: '',
+  /** Explicit opt-in: task-only host cognition drafts speech while foreground is busy. */
+  commentary: { ...COMMENTARY_DEFAULTS },
   /**
    * 播出延迟:OBS 对游戏画面设固定延迟 N 秒后,演出反应不得早于观众
    * 看到的画面。0=未标定不设地板。哪些 World 的画面被延迟见 delayedSources。
@@ -738,6 +741,30 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
         'x-hot': true,
         description: '同上;最后一级提醒，仍由人格结合当前事实决定是否接话。',
       },
+      'worlds.vtuber.commentary.enabled': {
+        type: 'boolean', title: '独立解说起草', 'x-hot': true,
+        description: '演出空闲且前台仍在活动时，通过宿主任务认知起草短句；只读已选来源，不能操作游戏。默认关闭。',
+      },
+      'worlds.vtuber.commentary.idleSec': {
+        type: 'number', title: '解说空闲目标(秒)', minimum: 1, 'x-hot': true,
+        description: '本地语音队列见底后，安静达到该时长才起草；主线程开口或现场改变会作废草稿。',
+      },
+      'worlds.vtuber.commentary.retrySec': {
+        type: 'number', title: '解说重评间隔(秒)', minimum: 1, 'x-hot': true,
+        description: '一次起草完成后到下一次重评的间隔；不累积请求或待播台词。',
+      },
+      'worlds.vtuber.commentary.factAgeSec': {
+        type: 'number', title: '解说材料有效期(秒)', minimum: 1, 'x-hot': true,
+        description: '旧材料不冒充当前现场；读取保留来源、原时间和截断标记。',
+      },
+      'worlds.vtuber.commentary.sources': {
+        type: 'string', title: '解说材料来源', 'x-hot': true,
+        description: '允许读取的World id，以空格或逗号分隔；空值不读取其他World事件。',
+      },
+      'worlds.vtuber.commentary.style': {
+        type: 'string', title: '解说口吻参考', 'x-hot': true,
+        description: '简短表达偏好；角色私有设定保存在部署配置，口吻参考不产生游戏事实。',
+      },
       'worlds.vtuber.obsDelaySec': {
         type: 'number',
         title: 'OBS 播出延迟(秒)',
@@ -897,6 +924,7 @@ export const VTUBER_PANEL_DECLS: readonly WorldPanelDecl[] = [
 ];
 
 export interface VtuberWorldOptions {
+  commentary?: () => CommentaryConfig;
   timezone?: string;
   botName?: string;
   vtsWsUrl?: string;
@@ -3377,6 +3405,15 @@ export class VtuberWorld implements World {
     if (!idle) this.audioIdleStartedAtMs = null;
     return performer.statusLine() + (idle && this.audioIdleStartedAtMs !== null
       ? `；本地音频队列空闲起点 ${new Date(this.audioIdleStartedAtMs).toISOString()}` : '');
+  }
+
+  /** Structured engine heartbeat; queue admission and actual playback remain distinct. */
+  speechAvailability(): SpeechAvailability {
+    const status = this.performer?.status();
+    const busy = !status || status.playing || status.queuedBeats > 0 || (this.performer?.audioBacklogMs() ?? 0) > 0;
+    if (busy) this.audioIdleStartedAtMs = null;
+    return { observedAtMs: Date.now(), idleSinceMs: busy ? null : this.audioIdleStartedAtMs,
+      busy, ttsReady: this.ttsOk !== false };
   }
 
   /**

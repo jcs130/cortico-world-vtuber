@@ -65,6 +65,8 @@ import type {
 } from './engine-ipc.ts';
 import { invalidActScriptShapeReceipt, normalizeExternalActScript } from './act-script.ts';
 import { TTS_SERVICE_DEFAULTS } from './tts-service.ts';
+import { randomUUID } from 'node:crypto';
+import { CommentaryLane, COMMENTARY_DEFAULTS, type SpeechAvailability } from './commentary.ts';
 
 const ENV_PROMPT_FILE = fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url));
 const CHILD_ENTRY = fileURLToPath(new URL('./engine-child.ts', import.meta.url));
@@ -145,6 +147,9 @@ export class VtuberWorldProxy implements World {
   private configTimer: ReturnType<typeof setInterval> | null = null;
   private eventTimer: ReturnType<typeof setInterval> | null = null;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private speechCache: SpeechAvailability | null = null;
+  private commentaryActive = false;
+  private readonly commentary: CommentaryLane;
 
   /**
    * 演出包在主进程也读一份:环境提示词由主进程渲染,词表段从这里出。
@@ -154,6 +159,38 @@ export class VtuberWorldProxy implements World {
 
   constructor(private readonly opts: VtuberWorldOptions = {}) {
     this.pack = loadPack(opts.packDir?.trim() || EXAMPLE_PACK_DIR);
+    this.commentary = new CommentaryLane({
+      config: () => ({ ...COMMENTARY_DEFAULTS, ...this.opts.commentary?.() }),
+      availability: () => ({ live: this.live && !this.stopping && !!this.child?.connected,
+        active: this.commentaryActive, speech: this.speechCache }),
+      request: brief => {
+        // Context/kind are additive advisory hints understood by supporting
+        // Personas. Hosts still own provider, context, usage and cancellation;
+        // enabling this optional lane requires checking their actual requests.
+        const request = { brief, tools: [], hint: { kind: 'vtuber-commentary', context: 'task' as const, rounds: 1 } };
+        return this.host?.cognition?.request(request)
+          ?? Promise.resolve({ error: '宿主未提供任务认知接口；解说起草不可用' });
+      },
+      perform: async (script, requestId, evidence) => {
+        const callId = `commentary-${randomUUID()}`;
+        const idleSince = this.speechCache?.idleSinceMs;
+        if (idleSince == null) return '[vtuber_act 过期] 本次未提交';
+        const result = await this.rpc({ kind: 'tool', name: 'vtuber_act', args: { script },
+          role: 'commentary', callId, round: null, ifIdleSinceMs: idleSince }, RPC_TIMEOUT_MS);
+        const receipt = typeof result === 'string' ? result : JSON.stringify(result);
+        if (/已开演|已排入演出/.test(receipt)) this.recordSpeechSubmission(script, callId, 'commentary', evidence, requestId);
+        return receipt;
+      },
+      log: (event, data) => this.host?.log.child('commentary').emit('info', event, { event, data }),
+    });
+  }
+
+  private recordSpeechSubmission(script: string, callId: string | null, role: string, evidence: number[] = [], requestId?: number): void {
+    void this.host?.pushEvent({ ts: nowIso(this.opts.timezone ?? 'Asia/Shanghai'), source: this.id,
+      type: 'vtuber.speech.submitted', origin: 'internal', ephemeral: true,
+      text: `[最近提交演出；不是待播稿，不证明观众端已接收] ${script}`,
+      meta: { callId, role, script, evidence, ...(requestId === undefined ? {} : { requestId }) },
+    }, { trigger: 'piggyback' }).catch(e => this.host?.log.warn('台词提交记录失败', { err: String(e) }));
   }
 
   envPromptVars(): Record<string, string> {
@@ -327,6 +364,7 @@ export class VtuberWorldProxy implements World {
     return {
       ...decl,
       handler: async (args, ctx) => {
+        if (['vtuber_act', 'vtuber_interrupt', 'vtuber_music'].includes(decl.name)) this.commentary.foregroundSpeech();
         if (decl.name === 'vtuber_act' && typeof args.script === 'string') {
           const normalization = normalizeExternalActScript(args.script);
           if (!normalization.ok) {
@@ -338,11 +376,17 @@ export class VtuberWorldProxy implements World {
           }
         }
         try {
-          return (await this.rpc(
+          const result = (await this.rpc(
             { kind: 'tool', name: decl.name, args, role: ctx.role, callId: ctx.callId ?? null, round: ctx.round ?? null },
             RPC_TIMEOUT_MS,
             ctx.signal,
           )) as string | ToolOutcome;
+          if (decl.name === 'vtuber_act' && typeof args.script === 'string'
+            && typeof result === 'string' && /已开演|已排入演出/.test(result)) {
+            this.commentary.foregroundSpeech(args.script);
+            this.recordSpeechSubmission(args.script, ctx.callId ?? null, ctx.role);
+          }
+          return result;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return `[${decl.name} 失败] 演出引擎进程不可用:${msg}`;
@@ -359,7 +403,11 @@ export class VtuberWorldProxy implements World {
     return {
       externalizes: event => event.type === 'response.output_item.added' && event.item?.type === 'function_call'
         && event.item.name === 'vtuber_act',
-      onEvent: event => { this.cast({ kind: 'tap', event }); },
+      onEvent: event => {
+        if (event.type === 'response.output_item.added' && event.item?.type === 'function_call'
+          && ['vtuber_act', 'vtuber_interrupt', 'vtuber_music'].includes(event.item.name)) this.commentary.foregroundSpeech();
+        this.cast({ kind: 'tap', event });
+      },
       onRoundEnd: () => this.cast({ kind: 'tap-round-end' }),
       onAbort: (reason) => this.cast({ kind: 'tap-abort', reason }),
     };
@@ -370,14 +418,21 @@ export class VtuberWorldProxy implements World {
     return this.ready ? this.statusCache : null;
   }
 
-  onRunPhase(phase: RunPhase): void { this.cast({ kind: 'run-phase', phase }); }
+  onRunPhase(phase: RunPhase): void {
+    // Idle/backoff cannot authorize another model call, including operator pause.
+    this.commentaryActive = ['delivering', 'model', 'tools', 'handoff'].includes(phase.state);
+    this.cast({ kind: 'run-phase', phase });
+  }
 
   /** 完整演出状态取自本连接已收到的通知；读取不更新观察时刻。 */
   requestFacts(): { text: string; snapshotTypes: string[] } | null {
     if (!this.ready || this.stopping || !this.child?.connected
       || !this.statusCache || !this.statusObservedAt) return null;
+    const speech = this.speechCache;
+    const clock = speech && Date.now() - speech.observedAtMs <= 5000 && speech.idleSinceMs !== null
+      ? `本地音频队列已空闲 ${Math.max(0, Math.floor((Date.now() - speech.idleSinceMs) / 1000))} 秒；这是当前状态，不是待播台词。` : '';
     return {
-      text: `[演出当前读数；观察 ${this.statusObservedAt}]\n${this.statusCache}`,
+      text: `[演出当前读数；观察 ${this.statusObservedAt}]\n${this.statusCache}\n${clock}\n${this.commentary.facts()}`,
       snapshotTypes: ['vtuber.status'],
     };
   }
@@ -443,8 +498,15 @@ export class VtuberWorldProxy implements World {
   async start(host: WorldHost): Promise<void> {
     this.host = host;
     this.stopping = false;
+    this.commentary.resume();
     // 地板扫描只关心启动之后的事件;历史信封不补
     this.lastForwardedCursor = host.store.latestCursor();
+    for (let cursor = Math.max(1, this.lastForwardedCursor - 128); cursor <= this.lastForwardedCursor; cursor++) {
+      const e = host.store.get(cursor);
+      if (e?.source === this.id && e.type === 'vtuber.speech.submitted' && typeof e.meta?.script === 'string') {
+        this.commentary.foregroundSpeech(e.meta.script);
+      }
+    }
     try {
       await this.spawn();
     } catch (error) {
@@ -452,7 +514,7 @@ export class VtuberWorldProxy implements World {
       await this.stop();
       throw error;
     }
-    this.configTimer = setInterval(() => this.pushConfigIfChanged(), CONFIG_SAMPLE_MS);
+    this.configTimer = setInterval(() => { this.pushConfigIfChanged(); this.commentary.tick(); }, CONFIG_SAMPLE_MS);
     this.configTimer.unref?.();
     this.eventTimer = setInterval(() => this.forwardEvents(), EVENT_FORWARD_MS);
     this.eventTimer.unref?.();
@@ -460,6 +522,8 @@ export class VtuberWorldProxy implements World {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.commentaryActive = false;
+    this.commentary.stop();
     this.statusObservedAt = null;
     if (this.restartTimer) clearTimeout(this.restartTimer);
     this.restartTimer = null;
@@ -607,6 +671,7 @@ export class VtuberWorldProxy implements World {
     this.ready = false;
     this.urls = null;
     this.statusCache = null;
+    this.speechCache = null;
     this.statusObservedAt = null;
     this.liveCache = false;
     this.statusArmedAt = null;
@@ -720,6 +785,7 @@ export class VtuberWorldProxy implements World {
       case 'status':
         if (this.stopping || !this.child?.connected) return;
         this.statusCache = note.line;
+        this.speechCache = note.speech ?? null;
         this.statusObservedAt = nowIso(this.opts.timezone ?? 'Asia/Shanghai');
         this.liveCache = note.live;
         this.declCache = note.decl;
@@ -885,6 +951,7 @@ export class VtuberWorldProxy implements World {
     const events: SlimEvent[] = [];
     for (let c = this.lastForwardedCursor + 1; c <= latest; c++) {
       const e = store.get(c);
+      if (e) this.commentary.observe(e);
       // 只转外部事件:防先知穿帮问的是"观众从延迟画面里看到了什么",内部项不经画面
       if (e && e.origin === 'external') events.push({ cursor: e.cursor, ts: e.ts, source: e.source });
     }

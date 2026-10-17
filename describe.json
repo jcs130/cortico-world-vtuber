@@ -168,6 +168,13 @@
       }
     },
     {
+      "type": "vtuber.speech.submitted",
+      "description": {
+        "zh": "主线程或解说通道已提交的台词及来源；不证明播放完成或观众端接收。",
+        "en": "Speech admitted from the foreground or commentary lane, with provenance; not proof of completed playback or audience reception."
+      }
+    },
+    {
       "type": "vtuber.danmaku",
       "description": {
         "zh": "演出收到的观众弹幕。",

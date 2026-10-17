@@ -14,6 +14,7 @@ import { VtuberWorldProxy } from './proxy.ts';
 import { playbackConfigOptions } from './device-audio.ts';
 import { createHash } from 'node:crypto';
 import { TTS_API_KEY_SECRET, TTS_TRANSPORT_DEFAULTS, type TtsTransportConfig } from './tts-transport.ts';
+import type { CommentaryConfig } from './commentary.ts';
 
 /** config.json 的 `worlds.vtuber` 节。 */
 export interface VtuberConfigSection {
@@ -54,6 +55,7 @@ export interface VtuberConfigSection {
   silenceLine1: string;
   silenceLine2: string;
   silenceLine3: string;
+  commentary: CommentaryConfig;
   obsDelaySec: number;
   delayedSources: string[];
   yieldWindowMs: number;
@@ -82,6 +84,7 @@ export const VTUBER: WorldDefinition<VtuberConfigSection> = {
       { type: 'vtuber.music', description: { zh: '实际音乐播放或停止的反馈。', en: 'Actual music playback or stop feedback.' } },
       { type: 'vtuber.waiting', description: { zh: '等待媒体的实际播放反馈。', en: 'Actual waiting-media playback feedback.' } },
       { type: 'vtuber.act.outcome', description: { zh: '台词与演出实际完成、取消或失败的回执。', en: 'Actual completion, cancellation or failure receipt for speech and performance.' } },
+      { type: 'vtuber.speech.submitted', description: { zh: '主线程或解说通道已提交的台词及来源；不证明播放完成或观众端接收。', en: 'Speech admitted from the foreground or commentary lane, with provenance; not proof of completed playback or audience reception.' } },
       { type: 'vtuber.danmaku', description: { zh: '演出收到的观众弹幕。', en: 'Audience comments received by the performance.' } },
     ],
   },
@@ -128,6 +131,7 @@ export const VTUBER: WorldDefinition<VtuberConfigSection> = {
       musicVolume: () => cfg.musicVolume ?? VTUBER_DEFAULTS.musicVolume,
       musicGenerationUrl: () => cfg.musicGenerationUrl ?? VTUBER_DEFAULTS.musicGenerationUrl,
       waitingMedia: () => ({ ...VTUBER_DEFAULTS.waitingMedia, ...cfg.waitingMedia }),
+      commentary: () => ({ ...VTUBER_DEFAULTS.commentary, ...cfg.commentary }),
       alignEnabled: () => cfg.alignEnabled,
       streamEnabled: () => cfg.streamEnabled,
       incrementalSpeech: () => cfg.incrementalSpeech,

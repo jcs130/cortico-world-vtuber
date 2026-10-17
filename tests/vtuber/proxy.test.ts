@@ -12,8 +12,10 @@ import { WAITING_MEDIA_DEFAULTS } from '../../src/waiting-media.ts';
 import { pcm16ToWav } from '../../src/tts.ts';
 import { attachStdio, VtuberWorldProxy } from '../../src/proxy.ts';
 import { makeWav, recordingLogger, type LogLine } from './helpers.ts';
+import { COMMENTARY_DEFAULTS } from '../../src/commentary.ts';
 
 class FakeHost implements WorldHost {
+  cognition?: WorldHost['cognition'];
   events: Array<{ e: EventEnvelope; opts?: PushOptions }> = [];
   deferred: Array<{
     type: string;
@@ -205,6 +207,50 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
       await res.body?.cancel();
     }
     await waitFor(() => !proxy.live);
+  });
+
+  it('opt-in task cognition submits through the real engine and TTS; idle foreground cannot keep generating', async () => {
+    const originalStore = host.store;
+    host.store = { ...originalStore,
+      latestCursor: () => host.events.length,
+      get: (cursor: number) => host.events[cursor - 1]?.e,
+    } as WorldHost['store'];
+    const line = '这条路暂时走不通，我先看看两边有没有台阶。';
+    let evidenceCursor = 0;
+    const request = vi.fn(async (_req: Parameters<NonNullable<WorldHost['cognition']>['request']>[0]) => ({ text: JSON.stringify({ script: line, kind: 'observation', evidence: [evidenceCursor] }) }));
+    host.cognition = { request };
+    let response: Response | undefined;
+    try {
+      await freshProxy({ commentary: () => ({ ...COMMENTARY_DEFAULTS, enabled: true, sources: 'game', idleSec: 1, retrySec: 1 }) });
+      const e = await host.pushEvent({ source: 'game', type: 'game.snapshot', origin: 'external', ts: new Date().toISOString(),
+        text: '路被石壁挡住，尚未抵达。' } as Omit<EventEnvelope, 'cursor'>);
+      evidenceCursor = e.cursor;
+      response = await fetch(proxy.streamUrl, { headers: { Accept: 'text/event-stream' } });
+      await waitFor(() => proxy.live);
+      proxy.onRunPhase({ state: 'model', round: 1, running: [], enteredAt: new Date().toISOString() });
+      await waitFor(() => ttsInputs.includes(line));
+      await waitFor(() => host.events.some(row => row.e.type === 'vtuber.speech.submitted' && row.e.meta?.script === line));
+      expect(request).toHaveBeenCalledOnce();
+      expect(request.mock.calls[0]?.[0]).toMatchObject({ tools: [], hint: { context: 'task', kind: 'vtuber-commentary', rounds: 1 } });
+      expect(proxy.requestFacts()?.text).toContain('不是待播稿');
+      proxy.onRunPhase({ state: 'idle', running: [], enteredAt: new Date().toISOString() });
+      await new Promise(resolve => setTimeout(resolve, 4300));
+      expect(request).toHaveBeenCalledOnce();
+    } finally {
+      await response?.body?.cancel();
+      host.cognition = undefined; host.store = originalStore;
+      await freshProxy();
+    }
+  }, 20_000);
+
+  it('engine rejects a commentary request whose idle episode changed before admission', async () => {
+    const before = ttsInputs.length;
+    const receipt = await (proxy as unknown as {
+      rpc(req: import('../../src/engine-ipc.ts').EngineRequest, timeoutMs: number): Promise<unknown>;
+    }).rpc({ kind: 'tool', name: 'vtuber_act', args: { script: '不应进入合成的旧草稿。' },
+      role: 'commentary', callId: 'stale-commentary-fixture', round: null, ifIdleSinceMs: -1 }, 3000);
+    expect(receipt).toContain('过期');
+    expect(ttsInputs).toHaveLength(before);
   });
 
   it('代理工具表声明台词、打断与歌曲', () => {

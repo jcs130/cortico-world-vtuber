@@ -245,13 +245,18 @@ function pushStatus(): void {
     kind: 'status' as const,
     line: mod.statusLine(),
     live: mod.live,
+    speech: mod.speechAvailability(),
     decl: { lamps: decl.lamps, badges: decl.badges, links: decl.links },
   };
-  const key = JSON.stringify(note);
-  if (key === lastStatus) return;
+  const key = JSON.stringify({ ...note, speech: { ...note.speech, observedAtMs: 0 } });
+  const now = Date.now();
+  if (key === lastStatus && now - lastSpeechHeartbeatAt < 1000) return;
   lastStatus = key;
+  lastSpeechHeartbeatAt = now;
   send({ t: 'note', note });
 }
+
+let lastSpeechHeartbeatAt = 0;
 
 async function handleRequest(req: EngineRequest, signal: AbortSignal): Promise<unknown> {
   if (shuttingDown) throw new Error('演出引擎正在停机');
@@ -272,6 +277,12 @@ async function handleRequest(req: EngineRequest, signal: AbortSignal): Promise<u
   }
   if (!mod) throw new Error('演出引擎还没 init');
   if (req.kind === 'tool') {
+    if (req.ifIdleSinceMs !== undefined) {
+      const speech = mod.speechAvailability();
+      if (req.name !== 'vtuber_act' || !mod.live || speech.busy || speech.idleSinceMs !== req.ifIdleSinceMs) {
+        return '[vtuber_act 过期] 演出状态已变化，本次未提交';
+      }
+    }
     const tool = tools.get(req.name);
     if (!tool) throw new Error(`未知工具「${req.name}」`);
     return withAnchors({ sess: req.role, ...(req.callId ? { call: req.callId } : {}), ...(req.round !== null ? { round: req.round } : {}) }, () => tool.handler(req.args, {
