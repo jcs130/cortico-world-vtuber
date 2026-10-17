@@ -126,6 +126,27 @@ describe('bounded commentary cognition lane', () => {
 });
 
 describe('commentary result contract', () => {
+  it('normalizes quoted decimal cursors from actual provider responses without weakening attribution', () => {
+    const result = { script: '刚才那场战斗已经结束了。', kind: 'observation', evidence: ['1040788', 1040789, '1040788'] };
+    expect(parseCommentary(JSON.stringify(result), new Set([1040788, 1040789])))
+      .toEqual({ script: result.script, evidence: [1040788, 1040789] });
+  });
+
+  it.each(['12x', '012', '1.2e1', '12.0', ' 12 ', '战斗回执12', '-12', '9007199254740993', null, true, {}])(
+    'rejects an ambiguous or noncanonical evidence reference %j', reference => {
+      expect(parseCommentary(JSON.stringify({ script: '刚才的回执到了。', kind: 'observation', evidence: [reference] }), new Set([12])))
+        .toBeNull();
+    },
+  );
+
+  it('does not admit quoted unknown references, and a quoted known reference reaches the performance boundary', async () => {
+    expect(parseCommentary('{"script":"到家了","kind":"observation","evidence":["99"]}', new Set([12]))).toBeNull();
+    const f = fixture(); f.lane.tick();
+    f.resolve({ text: JSON.stringify({ script: '这段路还没走通。', kind: 'observation', evidence: ['12'] }) });
+    await f.settle();
+    expect(f.perform).toHaveBeenCalledWith('这段路还没走通。', 1, [12]);
+  });
+
   it('rejects missing/unknown evidence, internal tags, non-JSON and a fabricated result shape', () => {
     const allowed = new Set([12]);
     expect(parseCommentary('让我先想想', allowed)).toBeNull();

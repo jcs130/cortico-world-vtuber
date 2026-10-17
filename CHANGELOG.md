@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1-dev.20261017.4
+
+- Accept quoted decimal evidence cursors from model responses after lossless normalization and exact membership checks against supplied facts.
+- Keep rejecting prose references, unknown identifiers, unsafe integers and ambiguous number formats. Clarify the requested evidence shape.
+- Add coverage from live numeric-string failures and verify that accepted references remain numeric at the speech admission boundary.
+
 ## 0.1.1-dev.20261017.3
 
 - Add an optional read-only host status adapter to distinguish normal foreground waiting from operator pause. Unknown or stale status denies new drafts.
