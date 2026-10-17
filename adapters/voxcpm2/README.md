@@ -54,6 +54,7 @@ request. Pronounceable all-capital tokens become word case, so a name such as
 `NEKO` reaches the bilingual decoder as `Neko`, just as unseen `NANA` and `KIKO`
 become `Nana` and `Kiko`. Conventional letter abbreviations such as `AI`, `CPU`,
 `API`, `TTS`, `MCP` and `YSM`, and vowelless tokens retain their spelling.
+Short one/two-letter tokens and Roman numerals retain their spelling as well.
 
 Underscores become word separators and numeric identifier suffixes are read as
 individual digits: `NANA_042` becomes `Nana 零四二`. All name components remain;

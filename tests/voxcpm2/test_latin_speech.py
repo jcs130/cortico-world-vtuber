@@ -15,9 +15,13 @@ class LatinSpeechTest(unittest.TestCase):
         self.assertEqual(normalize_latin_speech('neko、Neko、Jojo、Alex、CorMy。'), 'neko、Neko、Jojo、Alex、CorMy。')
 
     def test_real_initialisms_and_vowelless_names_are_not_invented_words(self):
-        text = 'AI、API、CPU、GPU、TTS、MCP、YSM、QA、NPC、QQ、HTTP、ID、XQC、KK。'
+        text = 'AI、API、CPU、GPU、TTS、MCP、YSM、QA、NPC、QQ、HTTP、ID、XQC、KK、ASR、OBS、AFK、AOE、MMO、SOS。'
         self.assertEqual(normalize_latin_speech(text), text)
         self.assertEqual(normalize_latin_speech('NASA 使用 LAN 和 RAM。'), 'Nasa 使用 Lan 和 Ram。')
+
+    def test_short_initials_and_roman_numerals_remain_unambiguous_literals(self):
+        text = 'BO、TA、III、IV、VII、VIII、XIV、CXXIV。'
+        self.assertEqual(normalize_latin_speech(text), text)
 
     def test_separators_and_numeric_suffixes_preserve_all_identity_components(self):
         self.assertEqual(normalize_latin_speech('ag_NEKO、NANA_042、Alex123、ag_AuthQA。'),

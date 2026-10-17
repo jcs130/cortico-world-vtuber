@@ -7,9 +7,9 @@ POLICY = 'latin-words-and-initialisms-v1'
 # These are conventional letter-by-letter abbreviations, not names of players.
 # Pronounceable acronyms such as NASA, LAN and RAM deliberately follow word rules.
 INITIALISMS = frozenset('''
-AI API ASCII CEO CFO CLI COO CPU CTO DNA DNS FPS GPU GUI HDMI HP HTML HTTP HTTPS
-ID IO IP JSON LLM MCP MRI NPC OCR OS PC PDF PNG QA QQ QR RGB RNA RPC SDK SQL SSD
-TCP TLS TTS UDP UI URL USB UTF UUID VR XML XSS YSM
+AFK AI AOE API ASCII ASR CEO CFO CLI COO CPU CTO DNA DNS FPS GPU GUI HDMI HP HTML HTTP HTTPS
+ID IO IP JSON LLM MCP MMO MMORPG MRI NPC OBS OCR OS PC PDF PNG PVE QA QQ QR RGB RNA RPC SDK SOS SQL SSD
+STT TCP TLS TTS UDP UI URL USB UTF UUID VR XML XSS YSM
 '''.split())
 _DIGITS = '零一二三四五六七八九'
 _PROTECTED = re.compile(
@@ -27,7 +27,8 @@ _SUFFIX = re.compile(r'(?P<word>[A-Za-z]+)(?P<digits>\d*)$')
 
 def _word(word: str) -> str:
     # A word's capitalization is not an instruction to spell every letter.
-    if (len(word) >= 2 and word.isupper() and word not in INITIALISMS
+    if (len(word) >= 3 and word.isupper() and word not in INITIALISMS
+            and not re.fullmatch('[IVXLCDM]+', word)
             and re.search('[AEIOU]|(?<!^)Y', word)):
         return word.capitalize()
     return word
