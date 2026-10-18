@@ -1,7 +1,7 @@
 import { legacyTap } from '../helpers/fixture-stream.ts';
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, copyFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EventEnvelope, WorldHost, PushOptions } from 'cortico/core/types.ts';
@@ -13,6 +13,7 @@ import { pcm16ToWav } from '../../src/tts.ts';
 import { attachStdio, VtuberWorldProxy } from '../../src/proxy.ts';
 import { makeWav, recordingLogger, type LogLine } from './helpers.ts';
 import { COMMENTARY_DEFAULTS } from '../../src/commentary.ts';
+import { EXAMPLE_PACK_DIR } from '../../src/pack.ts';
 
 class FakeHost implements WorldHost {
   cognition?: WorldHost['cognition'];
@@ -229,6 +230,23 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
       expect(JSON.stringify(args)).toBe(original);
       expect(ttsInputs.slice(before)).not.toContain(args.script);
       expect(ttsBodies.slice(before).every(body => !('terms' in body))).toBe(true);
+    } finally { await freshProxy(); }
+  }, 20_000);
+
+  it('uses an explicitly selected pack vocabulary with unchanged legacy host IPC fields', async () => {
+    const packDir = join(serverDir, 'speech-pack');
+    mkdirSync(packDir, { recursive: true });
+    for (const file of ['params.json', 'vocab.json', 'clips.json']) copyFileSync(join(EXAMPLE_PACK_DIR, file), join(packDir, file));
+    const vocab = JSON.parse(readFileSync(join(packDir, 'vocab.json'), 'utf8'));
+    vocab.speechVocabularyFile = '../speech-terms.json';
+    writeFileSync(join(packDir, 'vocab.json'), JSON.stringify(vocab));
+    writeFileSync(join(serverDir, 'speech-terms.json'), JSON.stringify({ schema: 'speech-vocabulary-v1', terms: { sculk: '幽匿块' } }));
+    const before = ttsInputs.length;
+    try {
+      await freshProxy({ packDir });
+      await proxy.tools().find(tool => tool.name === 'vtuber_act')!.handler({ script: '找到sculk啦。' },
+        { role: 'main', log: host.log, callId: 'pack-vocabulary' });
+      await waitFor(() => ttsInputs.slice(before).includes('找到幽匿块啦。'));
     } finally { await freshProxy(); }
   }, 20_000);
 

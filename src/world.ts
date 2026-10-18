@@ -13,7 +13,7 @@ import { loadSpeechVocabulary, type SpeechTextRenderer } from './speech-vocabula
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type {
   ConfigGroup,
@@ -395,7 +395,7 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
       },
       'worlds.vtuber.speechVocabularyFile': {
         type: 'string', title: 'Agent 口播词表文件', 'x-hot': false,
-        description: '可选本机 speech-vocabulary-v1 JSON。仅作表达兜底，在字幕、对齐和 TTS 请求前转换；不上传词表，不改变工具参数。留空关闭。',
+        description: '可选本机 speech-vocabulary-v1 JSON。仅作表达兜底，不上传词表，不改变工具参数。留空沿用演出包显式配置；两处未配置则关闭。',
       },
       'worlds.vtuber.ttsTransport.protocol': {
         type: 'string', enum: ['legacy', 'openai-chunked'], title: '语音接口协议', 'x-hot': false,
@@ -1694,16 +1694,6 @@ export class VtuberWorld implements World {
   /** 杂谈/游戏模式的弹幕攒批(听弹幕模式逐条即时,不进这里) */
 
   constructor(opts: VtuberWorldOptions = {}) {
-    if (opts.speechVocabularyFile?.trim()) {
-      const { vocabulary, sha256 } = loadSpeechVocabulary(opts.speechVocabularyFile);
-      this.renderSpeech = original => {
-        const rendered = vocabulary.render(original);
-        if (rendered.text !== original) this.tracePerf('口播本地化', 'Agent 词表兜底，原始台词保留', {
-          event: 'speech-rendered', data: { original, rendered: rendered.text, vocabularySha256: sha256 },
-        });
-        return rendered;
-      };
-    }
     this.waitingMedia = new WaitingMedia({
       config: () => ({ ...WAITING_MEDIA_DEFAULTS, ...opts.waitingMedia?.() }),
       assetKey: () => JSON.stringify([this.speechProfileKey(), this.ttsSpeechOpt?.(), this.ttsServer.state().kind,
@@ -1813,6 +1803,18 @@ export class VtuberWorld implements World {
     this.modelProfileOpt = opts.modelProfile;
     this.packDir = opts.packDir?.trim() || EXAMPLE_PACK_DIR;
     this.pack = loadPack(this.packDir);
+    const vocabularyFile = opts.speechVocabularyFile?.trim()
+      || (this.pack.data.speechVocabularyFile ? resolve(this.packDir, this.pack.data.speechVocabularyFile) : '');
+    if (vocabularyFile) {
+      const { vocabulary, sha256 } = loadSpeechVocabulary(vocabularyFile);
+      this.renderSpeech = original => {
+        const rendered = vocabulary.render(original);
+        if (rendered.text !== original) this.tracePerf('口播本地化', 'Agent 词表兜底，原始台词保留', {
+          event: 'speech-rendered', data: { original, rendered: rendered.text, vocabularySha256: sha256 },
+        });
+        return rendered;
+      };
+    }
     this.registry = loadProfiles(this.live2dDirOpt?.() ?? VTUBER_DEFAULTS.live2dDir, { paramIds: this.pack.paramIds, fxIds: this.pack.fxIds });
     // 眼睑所有权按模型档案定:idle 不眨眼的模型由混音台全程接管(见 Mixer.applyBlink)
     this.mixer = new Mixer({ pack: () => this.pack, idleBlinks: () => this.resolvedProfile().profile.idleBlinks ?? false });

@@ -44,6 +44,8 @@ export interface ParamSpec {
 }
 
 export interface PackData {
+  /** Explicit Agent-local speech vocabulary supplied by this performance pack. */
+  speechVocabularyFile?: string;
   params: Record<string, ParamSpec>;
   entries: VocabEntry[];
   /** 解析期归一化:别名 → 词表里的词 */
@@ -323,7 +325,12 @@ export function parsePack(paramsRaw: unknown, vocabRaw: unknown, clipsRaw: unkno
       const d = CHANNEL_DICT[e.channel];
       if (d && !dicts[d][e.clipId]) throw new PackError(`词「${e.word}」对应的 clip「${e.clipId}」不在 clips.${d} 里`);
     }
-    return { params, entries, aliases, pulse, sustain, gaze };
+    const speechVocabularyFile = vocabRaw.speechVocabularyFile;
+    if (speechVocabularyFile !== undefined && (typeof speechVocabularyFile !== 'string'
+      || /[\r\n]/.test(speechVocabularyFile) || /^(?:https?|data|file):/i.test(speechVocabularyFile)))
+      throw new PackError('vocab.speechVocabularyFile 必须是本机文件路径');
+    return { params, entries, aliases, pulse, sustain, gaze,
+      ...(speechVocabularyFile?.trim() ? { speechVocabularyFile: speechVocabularyFile.trim() } : {}) };
   } catch (err) {
     if (err instanceof PackError) throw new Error(`${source}: ${err.message}`);
     throw err;
