@@ -17,6 +17,7 @@
  */
 import type { PerformancePack, TagCommand } from './pack.ts';
 import { resolveVoiceTag } from './voice-tags.ts';
+import type { SpeechTextRenderer } from './speech-vocabulary.ts';
 
 /** beat 携带的指令 */
 export type BeatCommand = TagCommand;
@@ -119,8 +120,6 @@ export interface Beat {
   /** 指令块独占一行(其后紧跟换行):演出先行,speech_onset 不打折 */
   aloneOnLine: boolean;
 }
-
-import type { SpeechTextRenderer } from './speech-vocabulary.ts';
 
 export interface ParserSink {
   /** beat 开始,标签已解析(文本随后经 onSpeech 到达) */

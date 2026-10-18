@@ -80,6 +80,12 @@ function waitFor(cond: () => boolean, timeoutMs = 8000): Promise<void> {
 }
 
 describe('传给子进程的一次性载荷', () => {
+  it('keeps an explicit local speech vocabulary path across IPC without putting terms in transport', () => {
+    const proxy = new VtuberWorldProxy({ speechVocabularyFile: 'D:/agent/terms.json' });
+    const init = (proxy as unknown as { buildInit(): import('../../src/engine-ipc.ts').EngineInit }).buildInit();
+    expect(init.speechVocabularyFile).toBe('D:/agent/terms.json');
+    expect(init.ttsTransport).not.toHaveProperty('terms');
+  });
   it('语音服务选择和本地适配器配置保留到引擎载荷', () => {
     const proxy = new VtuberWorldProxy({ ttsService: {
       kind: 'indextts', autoStart: true, pythonFile: 'D:/runtime/python.exe',
@@ -208,6 +214,23 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     }
     await waitFor(() => !proxy.live);
   });
+
+  it('localizes narration in the actual Agent child before sending ordinary speech, preserving tool arguments', async () => {
+    const path = join(serverDir, 'speech-vocabulary.json');
+    writeFileSync(path, JSON.stringify({ schema: 'speech-vocabulary-v1', terms: { iron_pickaxe: '铁镐', sculk: '幽匿块' } }));
+    const args = { script: 'NEKO，拿iron_pickaxe去找sculk。' };
+    const original = JSON.stringify(args);
+    const before = ttsInputs.length;
+    try {
+      await freshProxy({ speechVocabularyFile: path, incrementalSpeech: () => false });
+      const act = proxy.tools().find(tool => tool.name === 'vtuber_act')!;
+      await act.handler(args, { role: 'main', log: host.log, callId: 'local-vocabulary' });
+      await waitFor(() => ttsInputs.slice(before).includes('NEKO，拿铁镐去找幽匿块。'));
+      expect(JSON.stringify(args)).toBe(original);
+      expect(ttsInputs.slice(before)).not.toContain(args.script);
+      expect(ttsBodies.slice(before).every(body => !('terms' in body))).toBe(true);
+    } finally { await freshProxy(); }
+  }, 20_000);
 
   it('opt-in task cognition submits through the real engine and TTS; idle foreground cannot keep generating', async () => {
     const originalStore = host.store;

@@ -1,6 +1,8 @@
 <!-- Owner: src/world.ts, src/perform-stream.ts, src/overlay/app.js -->
 # cortico-world-vtuber
 
+口播本地化：优先由 Agent 提示词组织本地化名称，可选本机词表在字幕和语音合成前兜底。远程 TTS 保持通用，见 [Agent 口播词表](docs/agent-speech-vocabulary.md)。
+
 `GET /identity` 返回当前 bot 的 `sourceId`，供游戏 viewer 选择同一 bot 的演出流。`/overlay` 和 `/stream` 的可选 `source` 参数必须匹配该身份；省略时保留独立 OBS 用法。嵌入游戏的字幕页仅接受同主机父页面，回环地址视作同一主机；缺少来源时不订阅。
 
 演出空闲时，状态行保留本地音频队列空闲起点，排队与播放期间撤下，见底后更新。

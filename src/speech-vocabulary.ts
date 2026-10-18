@@ -18,7 +18,7 @@ export interface SpeechTextRendering {
 export type SpeechTextRenderer = (text: string) => SpeechTextRendering;
 
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const protectedText = /```[\s\S]*?```|`[^`\n]*`|<[^<>\n]*>|\{[^{}\n]*\}|\[[^\[\]\n]*\]|https?:\/\/[^\s<>，。！？；、]+|[A-Za-z0-9_.+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}|[A-Za-z]:[\\/][^\s，。！？；、]+|(?<![A-Za-z0-9_])\/[A-Za-z][^\r\n，。！？；、]*|@[A-Za-z0-9_]+|(?:玩家|账号|用户名|昵称|ID|id|名叫|我叫|叫作|叫做)\s*[:：]?\s*["“‘]?[A-Za-z0-9_]+(?![A-Za-z0-9_])/gu;
+const protectedText = /```[\s\S]*?```|`[^`\n]*`|<[^<>\n]*>|\{[^{}\n]*\}|\[[^\[\]\n]*\]|https?:\/\/[^\s<>，。！？；、]+|[A-Za-z0-9_.+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}|[A-Za-z]:[\\/][^\s，。！？；、]+|(?<![A-Za-z0-9_])\/[A-Za-z][^\r\n，。！？；、]*|@[A-Za-z0-9_]+|(?:玩家|账号|用户名|昵称|(?<![A-Za-z0-9_])(?:ID|id)(?![A-Za-z0-9_])|名叫|我叫|叫作|叫做)\s*[:：]?\s*["“‘]?[A-Za-z0-9_]+(?![A-Za-z0-9_])/gu;
 
 /** No default vocabulary, model, game dependency, or network lookup. */
 export class SpeechVocabulary {

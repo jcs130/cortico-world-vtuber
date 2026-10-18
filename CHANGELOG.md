@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Use stable Agent prompt guidance for localized narration; retain exact IDs in tools and original calls in session evidence.
+- Add an opt-in Agent-local vocabulary fallback before subtitles, alignment and synthesis, including inline anchor remapping and versioned local source hashes. No extra model call or remote vocabulary upload.
+- Export an optional Minecraft vocabulary through the independent core public naming API. Keep the speech service generic; withdraw the unshipped per-voice game vocabulary implementation while preserving approved voice/pronunciation fixes.
+
 ## 0.1.1-dev.20261018.2
 
 - Keep speech admission backpressure local to speech instead of ending the host decision turn.

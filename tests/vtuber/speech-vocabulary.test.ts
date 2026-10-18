@@ -37,6 +37,13 @@ describe('Agent speech vocabulary fallback', () => {
     expect(JSON.stringify(args)).toBe(saved);
     expect(vocabulary.render(chinese).text).toBe(chinese);
   });
+  it('does not mistake letters inside item names for a player ID prefix', () => {
+    const items = new SpeechVocabulary({ schema: 'speech-vocabulary-v1', terms: {
+      cave_spider_spawn_egg: '洞穴蜘蛛刷怪蛋', 'crying obsidian': '哭泣的黑曜石', stone: '石头',
+    } });
+    expect(items.render('cave_spider_spawn_egg和crying obsidian，ID: stone').text)
+      .toBe('洞穴蜘蛛刷怪蛋和哭泣的黑曜石，ID: stone');
+  });
   it('renders fragmented scripts before subtitle/audio splitting and remaps inline action anchors', () => {
     const source = '(语气：温柔)拿iron_pickaxe<微笑>去找sculk。';
     const result: SpeechPiece[] = [];
