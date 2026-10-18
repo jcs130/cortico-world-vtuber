@@ -56,6 +56,7 @@ export interface EngineConfigSnapshot {
 
 /** 子进程里构造真 World 的一次性载荷 */
 export interface EngineInit {
+  speechVocabularyFile?: string;
   timezone: string;
   botName: string;
   vtsWsUrl: string;

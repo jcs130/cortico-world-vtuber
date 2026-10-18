@@ -16,6 +16,7 @@ import { TTS_API_KEY_SECRET, TTS_TRANSPORT_DEFAULTS, type TtsTransportConfig } f
 
 /** config.json 的 `worlds.vtuber` 节。 */
 export interface VtuberConfigSection {
+  speechVocabularyFile: string;
   enabled: boolean;
   vtsWsUrl: string;
   streamPort: number;
@@ -93,6 +94,7 @@ export const VTUBER: WorldDefinition<VtuberConfigSection> = {
       ttsTransport: { ...TTS_TRANSPORT_DEFAULTS, ...cfg.ttsTransport,
         sessionId: cfg.ttsTransport?.sessionId || `vtuber-${createHash('sha256').update(ctx.dataDir).digest('hex').slice(0, 24)}` },
       ttsApiKey: ctx.secret(TTS_API_KEY_SECRET),
+      speechVocabularyFile: cfg.speechVocabularyFile ?? '',
       ttsService: cfg.ttsService,
       ttsSpeech: () => cfg.ttsSpeech ?? VTUBER_DEFAULTS.ttsSpeech,
       ttsRuntimeDir: () => cfg.ttsRuntimeDir,

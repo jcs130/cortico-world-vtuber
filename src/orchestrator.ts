@@ -228,6 +228,8 @@ export function describeSpeechRate(hint: SpeechRateHint): string {
 }
 
 export interface PerformerDeps {
+  /** Optional host vocabulary fallback, applied before synthesis, subtitles and alignment. */
+  renderSpeech?: import('./speech-vocabulary.ts').SpeechTextRenderer;
   tts: PerformerTts;
   audio: AudioSink;
   mixer: Mixer;
@@ -754,7 +756,7 @@ export class Performer {
         });
         this.gate.pulse();
       },
-    }, this.d.pack(), this.d.incrementalSpeech?.() ?? this.d.streamEnabled?.() ?? true);
+    }, this.d.pack(), this.d.incrementalSpeech?.() ?? this.d.streamEnabled?.() ?? true, this.d.renderSpeech);
     return {
       feed: (text) => parser.feed(text),
       end: () => parser.end(),
@@ -851,7 +853,7 @@ export class Performer {
       round.beats.push({ round, beat: { index, commands: [], atLineStart: false, aloneOnLine: false }, pieces: [p], open: false, cuesFired: false });
     };
     const companion = (text: string): PerfPiece => ({
-      round, beatIndex: 0, text, endsWithEllipsis: /(?:…|\.\.\.)$/u.test(text), anchors: [], preCommands: [],
+      round, beatIndex: 0, text: this.d.renderSpeech?.(text).text ?? text, endsWithEllipsis: /(?:…|\.\.\.)$/u.test(text), anchors: [], preCommands: [],
       tts: null, synthing: false, failed: false, played: false, segs: null, musicCompanion: true,
     });
     // Construct all three beats before publishing the round: concurrent speech can only follow it.
@@ -938,7 +940,7 @@ export class Performer {
         if (beat) beat.pieces.push(piece);
       },
       onEnd: () => {},
-    }, this.d.pack());
+    }, this.d.pack(), true, this.d.renderSpeech);
     parser.feed(script);
     parser.end();
 
@@ -1411,7 +1413,7 @@ export class Performer {
         if (piece.text) total += this.estimateSpeechMs(piece.text);
       },
       onEnd: () => {},
-    }, this.d.pack());
+    }, this.d.pack(), true, this.d.renderSpeech);
     parser.feed(script);
     parser.end();
     return Math.round(total);

@@ -1,4 +1,5 @@
 import type { StreamEvent } from 'cortico/protocol/open-responses/index.ts';
+import { loadSpeechVocabulary, type SpeechTextRenderer } from './speech-vocabulary.ts';
 /**
  * VtuberWorld — 直播演出 World。
  *
@@ -157,6 +158,7 @@ export const VTUBER_DEFAULTS = {
   ttsTransport: { ...TTS_TRANSPORT_DEFAULTS },
   ttsService: { ...TTS_SERVICE_DEFAULTS },
   ttsSpeech: { ...TTS_SPEECH_DEFAULTS },
+  speechVocabularyFile: '',
   /** 自备运行时目录;空 = 走面板的托管下载 */
   ttsRuntimeDir: '',
   /** 运行时版本;空 = 包里钉住的那个 */
@@ -385,6 +387,10 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
       'worlds.vtuber.ttsService.kind': {
         type: 'string', enum: ['voxcpm2', 'indextts', 'external'], title: '语音服务类型', 'x-hot': false,
         description: 'VoxCPM2、本地 IndexTTS 适配器，或只连接外部服务。',
+      },
+      'worlds.vtuber.speechVocabularyFile': {
+        type: 'string', title: 'Agent 口播词表文件', 'x-hot': false,
+        description: '可选本机 speech-vocabulary-v1 JSON。仅作表达兜底，在字幕、对齐和 TTS 请求前转换；不上传词表，不改变工具参数。留空关闭。',
       },
       'worlds.vtuber.ttsTransport.protocol': {
         type: 'string', enum: ['legacy', 'openai-chunked'], title: '语音接口协议', 'x-hot': false,
@@ -905,6 +911,7 @@ export const VTUBER_PANEL_DECLS: readonly WorldPanelDecl[] = [
 ];
 
 export interface VtuberWorldOptions {
+  speechVocabularyFile?: string;
   timezone?: string;
   botName?: string;
   vtsWsUrl?: string;
@@ -1512,6 +1519,7 @@ export function composeAiredScript(o: RoundOutcome): { script: string; note: str
 }
 
 export class VtuberWorld implements World {
+  private readonly renderSpeech?: SpeechTextRenderer;
   readonly id = 'vtuber';
 
   private host: WorldHost | null = null;
@@ -1643,6 +1651,16 @@ export class VtuberWorld implements World {
   /** 杂谈/游戏模式的弹幕攒批(听弹幕模式逐条即时,不进这里) */
 
   constructor(opts: VtuberWorldOptions = {}) {
+    if (opts.speechVocabularyFile?.trim()) {
+      const { vocabulary, sha256 } = loadSpeechVocabulary(opts.speechVocabularyFile);
+      this.renderSpeech = original => {
+        const rendered = vocabulary.render(original);
+        if (rendered.text !== original) this.tracePerf('口播本地化', 'Agent 词表兜底，原始台词保留', {
+          event: 'speech-rendered', data: { original, rendered: rendered.text, vocabularySha256: sha256 },
+        });
+        return rendered;
+      };
+    }
     this.waitingMedia = new WaitingMedia({
       config: () => ({ ...WAITING_MEDIA_DEFAULTS, ...opts.waitingMedia?.() }),
       assetKey: () => JSON.stringify([this.speechProfileKey(), this.ttsSpeechOpt?.(), this.ttsServer.state().kind,
@@ -3189,6 +3207,7 @@ export class VtuberWorld implements World {
     await this.musicGeneration.start();
     void this.probeStreaming();
     this.performer = new Performer({
+      renderSpeech: this.renderSpeech,
       pack: () => this.pack,
       tts: {
         synth: async (text, signal, instructions) => {

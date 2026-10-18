@@ -120,6 +120,8 @@ export interface Beat {
   aloneOnLine: boolean;
 }
 
+import type { SpeechTextRenderer } from './speech-vocabulary.ts';
+
 export interface ParserSink {
   /** beat 开始,标签已解析(文本随后经 onSpeech 到达) */
   onBeat(beat: Beat): void;
@@ -161,6 +163,7 @@ export class ScriptParser {
     private readonly pack: PerformancePack,
     /** 关闭时收齐每拍正文再合成；显式演出标签仍保留拍边界。 */
     private readonly incrementalSpeech = true,
+    private readonly renderSpeech?: SpeechTextRenderer,
   ) {}
 
   feed(text: string): void {
@@ -415,8 +418,10 @@ export class ScriptParser {
       this.sink.onBeat({ index: this.beatIndex, commands: [], atLineStart: true, aloneOnLine: false });
     }
     this.emitPendingBeat();
+    const rendered = this.renderSpeech?.(spoken);
+    if (rendered) for (const anchor of anchors) anchor.charOffset = rendered.mapOffset(anchor.charOffset);
     this.sink.onSpeech(this.beatIndex, {
-      text: spoken,
+      text: rendered?.text ?? spoken,
       ...(this.instructions ? { instructions: this.instructions } : {}),
       endsWithEllipsis: /(……|…|\.\.\.)$/.test(spoken),
       anchors,

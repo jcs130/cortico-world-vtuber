@@ -13,5 +13,7 @@ export { VTUBER };
 export type { VtuberConfigSection } from './definition.ts';
 export type { OverlayConfig, TtsProfile } from './world.ts';
 export type { TtsTransportConfig, TtsRequestTrace } from './tts-transport.ts';
+export { SpeechVocabulary, loadSpeechVocabulary } from './speech-vocabulary.ts';
+export type { SpeechVocabularyDocument, SpeechTextRenderer, SpeechTextRendering } from './speech-vocabulary.ts';
 export { ART_PLANNER_SYSTEM, PHOTO_CAPTURE_MAX_SKEW_MS, prepareArtContext, validateArtRequest, validateArtPlan } from './art-brief.ts';
 export type { ArtMode, ArtFact, ArtImage, ArtRequest, ArtPlan, ArtContextBudget } from './art-brief.ts';

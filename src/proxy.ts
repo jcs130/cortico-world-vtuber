@@ -807,6 +807,7 @@ export class VtuberWorldProxy implements World {
       streamPort: o.streamPort ?? VTUBER_DEFAULTS.streamPort,
       ttsUrl: o.ttsUrl ?? VTUBER_DEFAULTS.ttsUrl,
       ttsTransport: structuredClone(o.ttsTransport ?? VTUBER_DEFAULTS.ttsTransport),
+      speechVocabularyFile: o.speechVocabularyFile ?? '',
       ttsApiKey: o.ttsApiKey,
       ttsService: structuredClone(o.ttsService ?? VTUBER_DEFAULTS.ttsService),
       ttsRuntimeDir: o.ttsRuntimeDir?.() ?? '',

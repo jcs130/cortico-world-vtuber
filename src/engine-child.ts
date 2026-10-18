@@ -203,6 +203,7 @@ async function handleInit(init: EngineInit): Promise<EngineReady> {
     ttsUrl: init.ttsUrl,
     ttsTransport: init.ttsTransport,
     ttsApiKey: init.ttsApiKey,
+    speechVocabularyFile: init.speechVocabularyFile,
     ttsService: init.ttsService,
     ttsRuntimeDir: () => init.ttsRuntimeDir,
     ttsRuntimeRelease: () => init.ttsRuntimeRelease,
