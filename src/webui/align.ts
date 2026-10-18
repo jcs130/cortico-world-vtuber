@@ -6,8 +6,8 @@
  */
 
 import type {
-  ConsolePanelContext,
-  ConsolePanel,
+  WebUiPanelContext,
+  WebUiPanel,
   Disposable,
 } from 'cortico/web/shared/client-panel.ts';
 import { toDisposable } from './disposable.ts';
@@ -36,8 +36,8 @@ const ENVELOPE_COLS = 2048;
 const UNITS_TICK_MS = 300;
 const DEFAULT_TEXT = '我觉得我没想到嘿嘿这个确实';
 
-export const alignPanel: ConsolePanel = {
-  mount(ctx: ConsolePanelContext) {
+export const alignPanel: WebUiPanel = {
+  mount(ctx: WebUiPanelContext) {
     const { ui } = ctx;
     const view = ctx.root.ownerDocument.defaultView;
     const card = ui.sheet({ title: '时间点标注', en: 'Qwen3-ForcedAligner', desc: DESC });

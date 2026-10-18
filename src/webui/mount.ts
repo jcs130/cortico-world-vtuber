@@ -4,8 +4,8 @@
  */
 
 import type {
-  ConsolePanelContext,
-  ConsolePanel,
+  WebUiPanelContext,
+  WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
 import { errText, setMsg, type MountState, type TtsState, type VtsState } from './client.ts';
 
@@ -36,8 +36,8 @@ interface MountRow {
   set(tone: RowTone, word: string, note?: string): void;
 }
 
-export const mountPanel: ConsolePanel = {
-  mount(ctx: ConsolePanelContext) {
+export const mountPanel: WebUiPanel = {
+  mount(ctx: WebUiPanelContext) {
     const { ui } = ctx;
     const card = ui.sheet({
       title: '挂载',
@@ -294,7 +294,7 @@ export const mountPanel: ConsolePanel = {
  * 样式在本 provider 的 `style.css` 里(`vt-` 前缀)。`ctx.ui` 没有对应原语:
  * 这是一张"若干条链路各自的启停"的表,`kv` 放不下按钮列,`table` 又要表头。
  */
-function mountRow(ctx: ConsolePanelContext, parent: HTMLElement, name: string): MountRow {
+function mountRow(ctx: WebUiPanelContext, parent: HTMLElement, name: string): MountRow {
   const { ui } = ctx;
   const el = ui.h('div', 'vt-mountrow');
   const dot = ui.h('span', 'vt-dot');

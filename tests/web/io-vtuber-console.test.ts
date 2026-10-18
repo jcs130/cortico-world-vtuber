@@ -19,8 +19,8 @@ import { fixtureProfileJson, writeProfileDir } from '../vtuber/helpers.ts';
  * specifier 存进变量,免得根 tsconfig 把它拉进 Node 那份检查——
  * 与 worlds-qq-console.test.ts 同一个理由。
  */
-const VT_BUNDLE_ENTRY = '../../src/console/client.ts';
-const CONSOLE_DIR = '../../src/console';
+const VT_BUNDLE_ENTRY = '../../src/webui/client.ts';
+const CONSOLE_DIR = '../../src/webui';
 
 const PANEL_IDS = ['mount', 'model', 'overlay', 'clips', 'tts', 'align', 'music', 'log', 'diag'];
 
@@ -35,7 +35,7 @@ const contribution = (p: VtuberWorldProxy) =>
 
 describe('VTuber 的面板声明', () => {
   it('面板都是局部 id + 真标题,不带 World 名前缀', () => {
-    const panels = (proxy().console().panels ?? []) as WorldPanelDecl[];
+    const panels = (proxy().webUi().panels ?? []) as WorldPanelDecl[];
     expect(panels.every((p) => typeof p === 'object')).toBe(true);
     expect(panels.map((p) => p.id)).toEqual(PANEL_IDS);
     expect(panels.map((p) => p.title)).toEqual([
@@ -47,11 +47,11 @@ describe('VTuber 的面板声明', () => {
 
 
   it('主进程代理报的面板就是 World 那份常量(两处不会各说各话)', () => {
-    expect(proxy().console().panels).toEqual([...VTUBER_PANEL_DECLS]);
+    expect(proxy().webUi().panels).toEqual([...VTUBER_PANEL_DECLS]);
   });
 
   it('每个面板都显式声明无副作用的 GET 方法', () => {
-    const panels = (proxy().console().panels ?? []) as WorldPanelDecl[];
+    const panels = (proxy().webUi().panels ?? []) as WorldPanelDecl[];
     expect(panels.every((panel) => Object.prototype.hasOwnProperty.call(panel, 'getMethods'))).toBe(true);
     expect(Object.fromEntries(panels.map((panel) => [panel.id, panel.getMethods]))).toEqual({
       mount: ['state', 'vtsState', 'ttsState'],
@@ -76,7 +76,7 @@ describe('VTuber 的面板声明', () => {
 
   it('环境提示词只有 vtuber.vocab 一个洞:声明、运行时值、模板三方一致,渲染后词表行进正文', () => {
     const p = proxy();
-    const docs = p.console().promptDocs ?? [];
+    const docs = p.webUi().promptDocs ?? [];
     expect(docs.map((d) => d.key)).toEqual(['worlds.vtuber.envPrompt']);
     expect(docs[0].vars?.map((v) => v.name)).toEqual(['vtuber.vocab']);
     const vars = p.envPromptVars();
@@ -176,7 +176,7 @@ describe('面板 bundle', () => {
     expect(Object.keys(bundle.panels).sort()).toEqual([...PANEL_IDS].sort());
     for (const id of PANEL_IDS) expect(typeof bundle.panels[id].mount).toBe('function');
     // 两份清单同进同退:服务端声明的每一条都得有面板,反过来也一样
-    const declared = ((proxy().console().panels ?? []) as WorldPanelDecl[]).map((p) => p.id);
+    const declared = ((proxy().webUi().panels ?? []) as WorldPanelDecl[]).map((p) => p.id);
     expect(Object.keys(bundle.panels).sort()).toEqual([...declared].sort());
   });
 

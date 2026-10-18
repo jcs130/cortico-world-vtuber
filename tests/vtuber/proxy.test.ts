@@ -12,8 +12,10 @@ import { WAITING_MEDIA_DEFAULTS } from '../../src/waiting-media.ts';
 import { pcm16ToWav } from '../../src/tts.ts';
 import { attachStdio, VtuberWorldProxy } from '../../src/proxy.ts';
 import { makeWav, recordingLogger, type LogLine } from './helpers.ts';
+import { COMMENTARY_DEFAULTS } from '../../src/commentary.ts';
 
 class FakeHost implements WorldHost {
+  cognition?: WorldHost['cognition'];
   events: Array<{ e: EventEnvelope; opts?: PushOptions }> = [];
   deferred: Array<{
     type: string;
@@ -189,9 +191,9 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     expect(proxy.streamUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+/);
     expect(proxy.overlayUrl).toContain('/overlay');
     await waitFor(() => proxy.statusLine() !== null);
-    expect(proxy.console().badges?.length).toBeGreaterThan(0);
+    expect(proxy.webUi().badges?.length).toBeGreaterThan(0);
     // 灯与徽标同批跨界:子进程报上来之后,代理不再点自己那颗"引擎启动中"
-    expect(proxy.console().lamps?.[0]?.label).not.toBe('引擎');
+    expect(proxy.webUi().lamps?.[0]?.label).not.toBe('引擎');
   });
 
   it('overlay 连上 SSE 后状态推送把 live 置真,断开后回落', async () => {
@@ -206,6 +208,73 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     }
     await waitFor(() => !proxy.live);
   });
+
+  it('opt-in task cognition submits through the real engine and TTS; idle foreground cannot keep generating', async () => {
+    const originalStore = host.store;
+    host.store = { ...originalStore,
+      latestCursor: () => host.events.length,
+      get: (cursor: number) => host.events[cursor - 1]?.e,
+    } as WorldHost['store'];
+    const line = '这条路暂时走不通，我先看看两边有没有台阶。';
+    let evidenceCursor = 0;
+    const request = vi.fn(async (_req: Parameters<NonNullable<WorldHost['cognition']>['request']>[0]) => ({ text: JSON.stringify({ script: line, kind: 'observation', evidence: [evidenceCursor] }) }));
+    host.cognition = { request };
+    let response: Response | undefined;
+    try {
+      await freshProxy({ commentary: () => ({ ...COMMENTARY_DEFAULTS, enabled: true, sources: 'game', idleSec: 1, retrySec: 1 }) });
+      const e = await host.pushEvent({ source: 'game', type: 'game.snapshot', origin: 'external', ts: new Date().toISOString(),
+        text: '路被石壁挡住，尚未抵达。' } as Omit<EventEnvelope, 'cursor'>);
+      evidenceCursor = e.cursor;
+      response = await fetch(proxy.streamUrl, { headers: { Accept: 'text/event-stream' } });
+      await waitFor(() => proxy.live);
+      proxy.onRunPhase({ state: 'model', round: 1, running: [], enteredAt: new Date().toISOString() });
+      await waitFor(() => ttsInputs.includes(line));
+      await waitFor(() => host.events.some(row => row.e.type === 'vtuber.speech.submitted' && row.e.meta?.script === line));
+      expect(request).toHaveBeenCalledOnce();
+      expect(request.mock.calls[0]?.[0]).toMatchObject({ tools: [], hint: { context: 'task', kind: 'vtuber-commentary', rounds: 1 } });
+      expect(proxy.requestFacts()?.text).toContain('不是待播稿');
+      proxy.onRunPhase({ state: 'idle', running: [], enteredAt: new Date().toISOString() });
+      await new Promise(resolve => setTimeout(resolve, 4300));
+      expect(request).toHaveBeenCalledOnce();
+    } finally {
+      await response?.body?.cancel();
+      host.cognition = undefined; host.store = originalStore;
+      await freshProxy();
+    }
+  }, 20_000);
+
+  it('engine rejects a commentary request whose idle episode changed before admission', async () => {
+    const before = ttsInputs.length;
+    const receipt = await (proxy as unknown as {
+      rpc(req: import('../../src/engine-ipc.ts').EngineRequest, timeoutMs: number): Promise<unknown>;
+    }).rpc({ kind: 'tool', name: 'vtuber_act', args: { script: '不应进入合成的旧草稿。' },
+      role: 'commentary', callId: 'stale-commentary-fixture', round: null, ifIdleSinceMs: -1 }, 3000);
+    expect(receipt).toContain('过期');
+    expect(ttsInputs).toHaveLength(before);
+  });
+
+  it('verified running status allows commentary while the main loop waits; explicit pause prevents the next draft', async () => {
+    let paused=false;
+    const statusServer=createServer((_req,res)=>{ res.setHeader('Content-Type','application/json');res.end(JSON.stringify({loop:{running:true,paused}})); });
+    await new Promise<void>(resolve=>statusServer.listen(0,'127.0.0.1',resolve));
+    const request=vi.fn(async()=>({text:JSON.stringify({script:'雨声听着有点舒服，先看看眼前这条路。',kind:'thought',evidence:[]})}));
+    host.cognition={request};
+    let response:Response|undefined;
+    try {
+      await freshProxy({commentary:()=>({...COMMENTARY_DEFAULTS,enabled:true,idleSec:1,retrySec:1,
+        hostStatusUrl:`http://127.0.0.1:${(statusServer.address() as {port:number}).port}/api/status`})});
+      response=await fetch(proxy.streamUrl,{headers:{Accept:'text/event-stream'}});
+      await waitFor(()=>proxy.live);
+      proxy.onRunPhase({state:'idle',running:[],enteredAt:new Date().toISOString()});
+      await waitFor(()=>request.mock.calls.length===1);
+      paused=true;
+      await new Promise(resolve=>setTimeout(resolve,4300));
+      expect(request).toHaveBeenCalledOnce();
+    } finally {
+      await response?.body?.cancel();host.cognition=undefined;await freshProxy();
+      await new Promise<void>(resolve=>statusServer.close(()=>resolve()));
+    }
+  },20_000);
 
   it('代理工具表声明台词、打断与歌曲', () => {
     expect(proxy.tools().map((tool) => tool.name)).toEqual(['vtuber_act', 'vtuber_interrupt', 'vtuber_music']);
@@ -283,7 +352,7 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     const requests: Array<{ url?: string; auth?: string; session?: string; body: Record<string, unknown> }> = [];
     let disconnected = false;
     const server = createServer((req, res) => {
-      if (req.url === '/metrics/tts') {
+      if (req.method === 'GET') {
         res.end(JSON.stringify({ schema: 'tts-status-v1', status: 'ok' })); return;
       }
       const chunks: Buffer[] = [];
@@ -402,7 +471,7 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
 
   it('面板调用前同步刚写入的外置资源路径', async () => {
     live2dDir = join(serverDir, 'live2d');
-    const state = await proxy.console().invoke!('model', 'state', []) as { live2dDir: string };
+    const state = await proxy.webUi().invoke!('model', 'state', []) as { live2dDir: string };
     expect(state.live2dDir).toBe(live2dDir);
   });
 
@@ -446,7 +515,7 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     writeFileSync(join(serverDir, 'lyrics.json'), JSON.stringify({ version: 1, lines: lyrics }));
     writeFileSync(join(serverDir, 'song.wav'), makeWav(new Array(160_000).fill(0.2)));
     ttsInputs.length = 0;
-    const invoke = proxy.console().invoke!;
+    const invoke = proxy.webUi().invoke!;
     const state = await invoke('music', 'state', []) as { tracks: Array<{ id: string; durationMs: number }>; volume: number };
     expect(state.tracks).toEqual([{ id: 'song', title: 'Example', durationMs: 10_000, envelopeSource: 'mix', lyrics }]);
     expect(state.volume).toBe(0.4);
@@ -494,7 +563,7 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     await waitFor(() => isolated.statusLine()?.includes('正在说话') === true);
 
     const stopping = isolated.stop();
-    const invoke = isolated.console().invoke;
+    const invoke = isolated.webUi().invoke;
     if (!invoke) throw new Error('missing console invoke');
     try {
       await expect(invoke('log', 'entries', [])).rejects.toThrow('演出引擎正在停机');

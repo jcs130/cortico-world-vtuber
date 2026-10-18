@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { TtsClient, pcm16ToWav } from '../../src/tts.ts';
-import { parseVoiceCatalog, PcmWavStream, requestMetadata, TTS_TRANSPORT_DEFAULTS, type TtsRequestTrace } from '../../src/tts-transport.ts';
+import { parseVoiceCatalog, PcmWavStream, requestMetadata, TTS_TRANSPORT_DEFAULTS, type TtsRequestTrace, type TtsTransportConfig } from '../../src/tts-transport.ts';
 import { TTS_SPEECH_DEFAULTS } from '../../src/tts-speech.ts';
 
 const config = { ...TTS_TRANSPORT_DEFAULTS, protocol: 'openai-chunked' as const,
@@ -8,13 +8,13 @@ const config = { ...TTS_TRANSPORT_DEFAULTS, protocol: 'openai-chunked' as const,
 const pcm = (ms: number) => new Uint8Array(96 * ms).fill(42);
 const turn = async () => { await new Promise(resolve => setTimeout(resolve, 5)); };
 
-function fixture() {
+function fixture(extra: Partial<TtsTransportConfig> = {}) {
   let control!: ReadableStreamDefaultController<Uint8Array>;
   let cancelled = false;
   let request: { url: string; init?: RequestInit } | undefined;
   const trace: TtsRequestTrace[] = [];
   const stream = new ReadableStream<Uint8Array>({ start(c) { control = c; }, cancel() { cancelled = true; } });
-  const client = new TtsClient({ url: 'http://fixture.invalid', transport: config, apiKey: 'fixture-key',
+  const client = new TtsClient({ url: 'http://fixture.invalid', transport: { ...config, ...extra }, apiKey: 'fixture-key',
     // Remote mode must not transmit local generation or pronunciation overrides.
     profile: () => ({ instructions: 'style', seed: 42, referenceAudioB64: 'QUJD', refText: 'reference' }),
     trace: t => trace.push(t), fetchImpl: (async (url, init) => {
@@ -70,6 +70,56 @@ describe('OpenAI chunked WAV', () => {
       fetchImpl: (async () => { called = true; throw Error('must not send'); }) as typeof fetch });
     await expect(client.synth('正文。', { instructions })).rejects.toThrow('delivery instructions');
     expect(called).toBe(false);
+  });
+
+  it('releases a gapped response as one complete PCM queue after validation', async () => {
+    let now = 1_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const f = fixture({ playbackMode: 'buffered' }), wav = pcm16ToWav([pcm(2000)], 48000), seen: Uint8Array[] = [];
+    let began = 0;
+    try {
+      const pending = f.client.synthStream('continuous', { begin: () => began++, pcm: b => seen.push(b) });
+      f.control.enqueue(wav.slice(0, 46)); await turn();
+      now += 10_000; f.control.enqueue(wav.slice(46, 44 + 96 * 1000)); await turn();
+      expect(began).toBe(0); expect(seen).toEqual([]);
+      now += 3_000; f.control.enqueue(wav.slice(44 + 96 * 1000)); await turn();
+      expect(began).toBe(0); expect(seen).toEqual([]);
+      f.control.close(); const piece = await pending;
+      expect(began).toBe(1); expect(seen).toHaveLength(1); expect(seen[0]).toEqual(wav.slice(44));
+      expect(piece.wav).toEqual(wav); expect(piece.requestTrace).toMatchObject({ playbackMode: 'buffered', pcmChunks: 3, maxPcmGapMs: 10_000 });
+      const phases = f.trace.map(t => t.phase); expect(phases.indexOf('playable')).toBeLessThan(phases.indexOf('received'));
+    } finally { clock.mockRestore(); }
+  });
+
+  it('discards complete received bytes when cancelled before EOF in buffered mode', async () => {
+    const f = fixture({ playbackMode: 'buffered' }), ac = new AbortController();
+    let began = 0, played = 0, aborted = 0;
+    const pending = f.client.synthStream('cancel', { begin: () => began++, pcm: () => played++, abort: () => aborted++ }, { signal: ac.signal });
+    const rejection = expect(pending).rejects.toBeDefined();
+    f.control.enqueue(pcm16ToWav([pcm(1000)], 48000)); await turn(); ac.abort(); await rejection;
+    expect(began).toBe(0); expect(played).toBe(0); expect(aborted).toBe(1); expect(f.cancelled()).toBe(true);
+  });
+
+  it('times out a buffered read without playing or submitting a replacement request', async () => {
+    const f = fixture({ playbackMode: 'buffered', timeoutMs: 30 }); let played = 0;
+    const pending = f.client.synthStream('timeout', { pcm: () => played++ });
+    const rejection = expect(pending).rejects.toBeDefined();
+    f.control.enqueue(pcm16ToWav([pcm(1000)], 48000)); await rejection;
+    expect(played).toBe(0); expect(f.cancelled()).toBe(true); expect(f.trace.at(-1)?.phase).toBe('aborted');
+  });
+
+  it('rejects truncated buffered audio even after more than the streaming prebuffer has arrived', async () => {
+    const f = fixture({ playbackMode: 'buffered' }); let played = 0;
+    const pending = f.client.synthStream('bad', { pcm: () => played++ });
+    const rejection = expect(pending).rejects.toThrow('Truncated');
+    f.control.enqueue(pcm16ToWav([pcm(1000)], 48000).slice(0, -2)); f.control.close(); await rejection;
+    expect(played).toBe(0); expect(f.trace.some(t => t.phase === 'playable')).toBe(false);
+  });
+
+  it('rejects an invalid playback mode before sending a request', async () => {
+    const f = fixture({ playbackMode: 'invalid' as 'buffered' });
+    await expect(f.client.synthStream('bad mode', { pcm() {} })).rejects.toThrow('Invalid TTS playback mode');
+    expect(f.request()).toBeUndefined();
   });
 
   it('reads an authenticated server catalog, caches it, and snapshots the selected voice for each request', async () => {

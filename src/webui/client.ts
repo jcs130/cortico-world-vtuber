@@ -18,8 +18,8 @@
  */
 
 import type {
-  ConsoleClientBundle,
-  ConsolePanelContext,
+  WebUiClientBundle,
+  WebUiPanelContext,
   Disposable,
 } from 'cortico/web/shared/client-panel.ts';
 import { toDisposable } from './disposable.ts';
@@ -278,7 +278,7 @@ export interface DiagJump {
 // 共享 helper
 // ---------------------------------------------------------------------------
 
-/** 错误 → 一句人话。`ConsoleInvokeError` 带的就是服务端的中文措辞。 */
+/** 错误 → 一句人话。`WebUiInvokeError` 带的就是服务端的中文措辞。 */
 export function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -298,12 +298,12 @@ export function setMsg(el: HTMLElement, text: string, bad = false): void {
 /**
  * 带上下界与步长的数字输入。
  *
- * `ConsoleInputOptions` 有 `type: 'number'` 但没有 `min` / `max` / `step` / 宽度,
+ * `WebUiInputOptions` 有 `type: 'number'` 但没有 `min` / `max` / `step` / 宽度,
  * 而这几个面板上的数字框(幅度、字号、行数、录制秒数)全都要。原语返回的是真
  * `<input>`,所以这里补设原生属性;宽度走本 provider 自己的 class。
  */
 export function numField(
-  ctx: ConsolePanelContext,
+  ctx: WebUiPanelContext,
   opts: {
     value: number;
     min: number;
@@ -328,12 +328,12 @@ export function numField(
 }
 
 /**
- * 色板输入。`ConsoleInputOptions.type` 的枚举里没有 `color`(它是个跨 provider 少见的
+ * 色板输入。`WebUiInputOptions.type` 的枚举里没有 `color`(它是个跨 provider 少见的
  * 类型),所以这里拿原语建出节点后改 `type`——这样 `field` 的皮、以及 `onChange`
  * 那条**带 `signal` 的监听**都还是原语给的,面板不必自己装监听。
  */
 export function colorField(
-  ctx: ConsolePanelContext,
+  ctx: WebUiPanelContext,
   value: string,
   onChange: (value: string) => void,
 ): HTMLInputElement {
@@ -343,7 +343,7 @@ export function colorField(
 }
 
 /** 一行灰色小注(导入提示、单元预览这类)。 */
-export function dimLine(ctx: ConsolePanelContext, text = ''): HTMLElement {
+export function dimLine(ctx: WebUiPanelContext, text = ''): HTMLElement {
   return ctx.ui.h('div', 'pagedesc vt-dim', text);
 }
 
@@ -398,7 +398,7 @@ export interface UrlSlot {
   clear(): void;
 }
 
-export function urlSlot(ctx: ConsolePanelContext): UrlSlot {
+export function urlSlot(ctx: WebUiPanelContext): UrlSlot {
   let url: string | null = null;
   const clear = (): void => {
     if (!url) return;
@@ -423,7 +423,7 @@ export function urlSlot(ctx: ConsolePanelContext): UrlSlot {
  * 还在出声——用户听得见一个已经不存在的页面在放音。所以卸载时暂停、摘 `src`、
  * 再 `load()` 一次让它真的松开那份资源(光 `pause()` 不摘 src 的话缓冲还挂着)。
  */
-export function ownedAudio(ctx: ConsolePanelContext): HTMLAudioElement {
+export function ownedAudio(ctx: WebUiPanelContext): HTMLAudioElement {
   const el = ctx.ui.h('audio');
   el.preload = 'auto';
   ctx.own(toDisposable(() => {
@@ -441,7 +441,7 @@ export function ownedAudio(ctx: ConsolePanelContext): HTMLAudioElement {
  * `ctx.interval` 登记过、卸载自动停;这里跑一拍就自己撤下。面板卸载时 promise
  * 落在 `false` 上(而不是永挂),调用方 `await` 之后照常走它的收尾。
  */
-export function delay(ctx: ConsolePanelContext, ms: number): Promise<boolean> {
+export function delay(ctx: WebUiPanelContext, ms: number): Promise<boolean> {
   if (ctx.signal.aborted) return Promise.resolve(false);
   return new Promise<boolean>((resolve) => {
     let timer: Disposable | null = null;
@@ -456,7 +456,7 @@ export function delay(ctx: ConsolePanelContext, ms: number): Promise<boolean> {
 
 // ---------------------------------------------------------------------------
 
-const bundle: ConsoleClientBundle = {
+const bundle: WebUiClientBundle = {
   /**
    * 键是**局部** panel id,与服务端 `console().panels[].id` 一一对应
    * (`src/world.ts` 的 `VTUBER_PANEL_DECLS`)。

@@ -6,13 +6,13 @@
  */
 
 import type {
-  ConsolePanelContext,
-  ConsolePanel,
+  WebUiPanelContext,
+  WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
 import { errText, numField, setMsg, type ClipsItem, type ClipsState } from './client.ts';
 
-export const clipsPanel: ConsolePanel = {
-  mount(ctx: ConsolePanelContext) {
+export const clipsPanel: WebUiPanel = {
+  mount(ctx: WebUiPanelContext) {
     const { ui } = ctx;
     const card = ui.sheet({
       title: '动作调参',

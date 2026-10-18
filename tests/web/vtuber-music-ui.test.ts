@@ -2,8 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const LIFECYCLE = 'cortico/web/client/core/lifecycle.ts';
-const PANEL_CONTEXT = 'cortico/web/client/console-pages/context.ts';
-const MUSIC_PANEL = '../../src/console/music.ts';
+const PANEL_CONTEXT = 'cortico/web/client/webui-pages/context.ts';
+const MUSIC_PANEL = '../../src/webui/music.ts';
 type Any = any;
 const { Lifecycle } = await import(LIFECYCLE) as Any;
 const { createPanelContext } = await import(PANEL_CONTEXT) as Any;

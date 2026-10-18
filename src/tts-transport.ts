@@ -5,6 +5,8 @@ export interface TtsTransportConfig {
   voice: string;
   speed: number;
   sessionId: string;
+  /** Streaming starts after the prebuffer; buffered releases only a complete validated utterance. */
+  playbackMode?: 'streaming' | 'buffered';
   prebufferMs: number;
   timeoutMs: number;
   healthPath: string;
@@ -16,7 +18,7 @@ export interface TtsTransportConfig {
 
 export const TTS_TRANSPORT_DEFAULTS: TtsTransportConfig = {
   protocol: 'legacy', model: '', voice: '', speed: 1, sessionId: '',
-  prebufferMs: 480, timeoutMs: 180_000, healthPath: '/metrics/tts',
+  playbackMode: 'streaming', prebufferMs: 480, timeoutMs: 180_000, healthPath: '/metrics/tts',
   supportsInstructions: false, defaultInstructions: '',
 };
 export const TTS_API_KEY_SECRET = 'CORTICO_TTS_API_KEY';
@@ -62,6 +64,10 @@ export interface TtsRequestTrace {
   referenceSha256?: string | null;
   promptMode?: string | null;
   server?: Record<string, unknown> | null;
+  /** Reception timing, not a measurement of physical output or device underruns. */
+  playbackMode?: 'streaming' | 'buffered';
+  pcmChunks?: number;
+  maxPcmGapMs?: number;
 }
 
 /** Local diagnostic data only. This is received audio, not proof of physical playback. */
@@ -161,6 +167,8 @@ export async function receiveSpeech(options: {
 }): Promise<{ parts: Uint8Array[]; sampleRate: number; trace: TtsRequestTrace }> {
   const { config } = options;
   if (!config.model || !config.voice || !config.sessionId) throw new Error('TTS model, voice and stable session ID are required');
+  const playbackMode = config.playbackMode ?? 'streaming';
+  if (!['streaming', 'buffered'].includes(playbackMode)) throw new Error('Invalid TTS playback mode');
   if (!Number.isFinite(config.prebufferMs) || config.prebufferMs < 0 || config.prebufferMs > 5000) throw new Error('Invalid TTS prebuffer');
   const instructions = config.supportsInstructions
     ? (options.instructions ?? config.defaultInstructions ?? '').trim() : '';
@@ -174,7 +182,8 @@ export async function receiveSpeech(options: {
   const timer = setTimeout(() => controller.abort(new Error('TTS request timed out')), config.timeoutMs);
   const started = Date.now();
   const trace: TtsRequestTrace = { phase: 'headers', callId: null, requestId: null,
-    sessionId: config.sessionId, voice: config.voice, elapsedMs: 0, pcmBytes: 0 };
+    sessionId: config.sessionId, voice: config.voice, elapsedMs: 0, pcmBytes: 0,
+    playbackMode, pcmChunks: 0, maxPcmGapMs: 0 };
   const emit = (phase: TtsRequestTrace['phase']) => {
     trace.phase = phase; trace.elapsedMs = Date.now() - started;
     options.trace?.({ ...trace });
@@ -183,10 +192,19 @@ export async function receiveSpeech(options: {
   const wav = new PcmWavStream();
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let playing = false;
+  let lastPcmAt: number | null = null;
   const flush = () => {
     controller.signal.throwIfAborted();
+    // Queue a complete utterance atomically: a device sink may pump immediately
+    // on push, so flushing tiny network fragments separately can insert silence.
+    const pending = buffered.splice(0);
+    let whole: Uint8Array | undefined;
+    if (playbackMode === 'buffered') {
+      whole = new Uint8Array(trace.pcmBytes);
+      let at = 0; for (const chunk of pending) { whole.set(chunk, at); at += chunk.length; }
+    }
     if (!playing) { options.begin(wav.sampleRate); playing = true; emit('playable'); }
-    for (const chunk of buffered.splice(0)) { controller.signal.throwIfAborted(); options.pcm(chunk); }
+    for (const chunk of whole ? [whole] : pending) { controller.signal.throwIfAborted(); options.pcm(chunk); }
   };
   try {
     controller.signal.throwIfAborted();
@@ -224,17 +242,20 @@ export async function receiveSpeech(options: {
         if (done) break;
         const pcm = wav.push(value);
         if (!pcm.length) continue;
+        const now = Date.now();
+        if (lastPcmAt !== null) trace.maxPcmGapMs = Math.max(trace.maxPcmGapMs ?? 0, now - lastPcmAt);
+        lastPcmAt = now; trace.pcmChunks = (trace.pcmChunks ?? 0) + 1;
         parts.push(pcm); trace.pcmBytes += pcm.length;
         if (playing) options.pcm(pcm);
         else {
           buffered.push(pcm);
-          if (trace.pcmBytes >= wav.sampleRate * 2 * config.prebufferMs / 1000) flush();
+          if (playbackMode === 'streaming' && trace.pcmBytes >= wav.sampleRate * 2 * config.prebufferMs / 1000) flush();
         }
       }
     } finally { controller.signal.removeEventListener('abort', cancelRead); }
     wav.finish();
     if (!trace.pcmBytes) throw new Error('TTS produced no audio');
-    if (!playing) flush(); // A valid utterance shorter than the prebuffer still plays.
+    if (!playing) flush(); // Buffered mode and valid short utterances release after validation.
     emit('received');
     return { parts, sampleRate: wav.sampleRate, trace: { ...trace } };
   } catch (error) {

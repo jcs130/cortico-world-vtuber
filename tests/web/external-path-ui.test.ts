@@ -8,8 +8,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const LIFECYCLE = 'cortico/web/client/core/lifecycle.ts';
-const PANEL_CONTEXT = 'cortico/web/client/console-pages/context.ts';
-const VTUBER_MODEL = '../../src/console/model.ts';
+const PANEL_CONTEXT = 'cortico/web/client/webui-pages/context.ts';
+const VTUBER_MODEL = '../../src/webui/model.ts';
 
 // 浏览器端源码带 DOM 类型;specifier 存进变量,免得 Node 那份 typecheck 把它们拉进源图。
 type Any = any;

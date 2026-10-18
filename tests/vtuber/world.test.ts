@@ -27,7 +27,7 @@ const receiptText = (value: unknown): string => typeof value === 'string'
 
 /** 面板声明里的局部 id(新式对象声明;字符串形态这个 World 已经不用了) */
 function panelIds(m: VtuberWorld): string[] {
-  return (m.console().panels ?? []).map((p) => (typeof p === 'string' ? p : p.id));
+  return (m.webUi().panels ?? []).map((p) => (typeof p === 'string' ? p : p.id));
 }
 
 class FakeHost implements WorldHost {
@@ -781,7 +781,9 @@ describe('VtuberWorld', () => {
     const r2 = await act.handler({ script: '第二段想插话。' }, { role: 'main', log: host.log, callId: 'g2' });
     expect(receiptText(r2)).toContain('[未排入]');
     expect(receiptText(r2)).toContain('vtuber_interrupt');
-    expect(r2).toMatchObject({ failed: true, endsTurn: true });
+    expect(r2).toMatchObject({ failed: true });
+    expect(r2).not.toHaveProperty('endsTurn');
+    expect(receiptText(r2)).toContain('思考、观察和其他任务可继续');
   });
 
   // 空调用排在闸后会拿到「你上一段话还有 N 秒没说完,这一段没有播出」——
@@ -1000,7 +1002,7 @@ describe('VtuberWorld', () => {
     expect(roundsOpened() - before).toBe(8);
     // 拒收回执要讲清是"这一轮开够了",而不是含糊的积压话术
     expect(rejected.at(-1)).toContain('vtuber_act');
-    expect(rejected.at(-1)).toContain('先结束这轮回复');
+    expect(rejected.at(-1)).toContain('思考、观察和其他任务可继续');
     // 每次都是新 tool_call id,却没有一段被重演:去重键盖得住一整轮
     expect(receipts.filter((r) => r.includes('已开演(流式)')).length).toBe(8);
   });

@@ -14,8 +14,9 @@ import type { StreamEvent } from 'cortico/protocol/open-responses/index.ts';
  */
 import type { LogNote } from 'cortico/core/ipc-logger.ts';
 import type { EventEnvelope, LLMUsage, PushOptions, RunPhase } from 'cortico/core/types.ts';
-import type { WorldConsoleDecl } from 'cortico/core/types.ts';
+import type { WorldWebUiDecl } from 'cortico/core/types.ts';
 import type { OverlayConfig, TtsProfile, VtuberDecaySec } from './world.ts';
+import type { SpeechAvailability } from './commentary.ts';
 
 /**
  * x-hot 配置的取值快照。键缺席 = 装配层没提供那个 getter(子进程用 World 默认值);
@@ -88,7 +89,7 @@ export interface SlimEvent {
 /** 主 → 子:要回执的请求 */
 export type EngineRequest =
   | { kind: 'init'; init: EngineInit }
-  | { kind: 'tool'; name: string; args: Record<string, unknown>; role: string; callId: string | null; round: number | null }
+  | { kind: 'tool'; name: string; args: Record<string, unknown>; role: string; callId: string | null; round: number | null; ifIdleSinceMs?: number }
   | { kind: 'panel'; panel: EnginePanel; method: string; args: unknown[] }
   | { kind: 'shutdown' };
 
@@ -124,7 +125,7 @@ export type EngineCast =
 export type EngineNote =
   | LogNote
   | { kind: 'usage'; usage: LLMUsage; opts?: Parameters<import('cortico/core/types.ts').WorldHost['reportUsage']>[1] }
-  | { kind: 'status'; line: string | null; live: boolean; decl: Pick<WorldConsoleDecl, 'lamps' | 'badges' | 'links'> }
+  | { kind: 'status'; line: string | null; live: boolean; speech?: SpeechAvailability; decl: Pick<WorldWebUiDecl, 'lamps' | 'badges' | 'links'> }
   | { kind: 'tts-profile'; profile: TtsProfile }
   | { kind: 'overlay-config'; config: OverlayConfig }
   | { kind: 'vts-token'; token: string };

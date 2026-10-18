@@ -5,8 +5,8 @@
  */
 
 import type {
-  ConsolePanelContext,
-  ConsolePanel,
+  WebUiPanelContext,
+  WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
 import {
   base64ToBytes,
@@ -55,8 +55,8 @@ interface TestWav {
   name: string;
 }
 
-export const ttsPanel: ConsolePanel = {
-  mount(ctx: ConsolePanelContext) {
+export const ttsPanel: WebUiPanel = {
+  mount(ctx: WebUiPanelContext) {
     const { ui } = ctx;
     const card = ui.sheet({ title: '语音试听与声线', en: 'TTS', desc: '声线设置由选定的语音后端管理。' });
     card.body.appendChild(dimLine(ctx, HIFI_NOTE));
@@ -426,7 +426,7 @@ function progressText(done: number, total: number | null): string {
   return total ? `${gb(done)} / ${gb(total)}(${Math.round((done / total) * 100)}%)` : gb(done);
 }
 
-function mountRuntimeSection(ctx: ConsolePanelContext): void {
+function mountRuntimeSection(ctx: WebUiPanelContext): void {
   const { ui } = ctx;
   const card = ui.sheet({ title: '运行时与权重', en: 'Runtime', desc: '按配置的语音服务类型显示运行状态。' });
 

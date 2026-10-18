@@ -2,8 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TTS_SPEECH_DEFAULTS } from '../../src/tts-speech.ts';
 const LIFECYCLE = 'cortico/web/client/core/lifecycle.ts';
-const PANEL_CONTEXT = 'cortico/web/client/console-pages/context.ts';
-const TTS_PANEL = '../../src/console/tts.ts';
+const PANEL_CONTEXT = 'cortico/web/client/webui-pages/context.ts';
+const TTS_PANEL = '../../src/webui/tts.ts';
 type Any = any;
 const { Lifecycle } = await import(LIFECYCLE) as Any;
 const { createPanelContext } = await import(PANEL_CONTEXT) as Any;

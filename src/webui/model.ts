@@ -4,8 +4,8 @@
  */
 
 import type {
-  ConsolePanelContext,
-  ConsolePanel,
+  WebUiPanelContext,
+  WebUiPanel,
 } from 'cortico/web/shared/client-panel.ts';
 import { errText, setMsg, type ModelState, type WiringReport } from './client.ts';
 
@@ -45,8 +45,8 @@ const HOW_TEXT: Record<string, string> = {
   missing: '配置指定的档案不存在',
 };
 
-export const modelPanel: ConsolePanel = {
-  mount(ctx: ConsolePanelContext) {
+export const modelPanel: WebUiPanel = {
+  mount(ctx: WebUiPanelContext) {
     const { ui } = ctx;
     const card = ui.sheet({
       title: '模型档案',
