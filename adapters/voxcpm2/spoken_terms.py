@@ -25,7 +25,7 @@ class SpokenTerms:
             raise ValueError('Spoken term catalog requires 1 to 10000 entries')
         self.terms = {}
         for key, value in terms.items():
-            if (not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 _:.-]{0,127}', key)
+            if (not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _:'.-]{0,127}", key)
                     or not isinstance(value, str) or not value.strip() or len(value) > 128
                     or re.search(r'[<>\[\]{}\r\n]', value)):
                 raise ValueError('Spoken terms must map readable ASCII tokens to plain speech text')
@@ -33,9 +33,9 @@ class SpokenTerms:
             if canonical in self.terms and self.terms[canonical] != value:
                 raise ValueError('Conflicting case-insensitive spoken term')
             self.terms[canonical] = value
-        self.pattern = re.compile(r'(?<![A-Za-z0-9_:.@/\\-])(?P<term>' + '|'.join(
+        self.pattern = re.compile(r"(?<![A-Za-z0-9_:.@/\\'-])(?P<term>" + '|'.join(
             re.escape(key) for key in sorted(self.terms, key=len, reverse=True))
-            + r')(?!(?:[A-Za-z0-9_:/\\-]|\.[A-Za-z0-9_]))(?P<classifier>[ \t]*方块)?', re.I | re.ASCII)
+            + r")(?!(?:[A-Za-z0-9_:/\\'-]|\.[A-Za-z0-9_]))(?P<classifier>[ \t]*方块)?", re.I | re.ASCII)
 
     def _replace(self, match):
         translated = self.terms[match['term'].lower()]

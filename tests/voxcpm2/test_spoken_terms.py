@@ -14,6 +14,7 @@ class SpokenTermsTest(unittest.TestCase):
             'sculk': '幽匿块', 'minecraft:sculk': '幽匿块', 'sculk_sensor': '幽匿感测体',
             'iron_pickaxe': '铁镐', 'Iron Pickaxe': '铁镐', 'Stone': '石头',
             'stone sword': '石剑', 'stone_sword': '石剑',
+            "dragon's breath": '龙息', "bottle o' enchanting": '附魔之瓶',
         }})
 
     def test_ids_display_names_namespaces_and_case_use_complete_longest_terms(self):
@@ -21,9 +22,10 @@ class SpokenTermsTest(unittest.TestCase):
                          '找幽匿块和幽匿感测体，拿铁镐，再用石剑。')
         self.assertEqual(self.catalog.normalize('minecraft:sculk, Sculk. sculk？'), '幽匿块, 幽匿块. 幽匿块？')
         self.assertEqual(self.catalog.normalize('sculk方块和sculk 方块，Stone方块。'), '幽匿块和幽匿块，石头方块。')
+        self.assertEqual(self.catalog.normalize("Dragon's Breath和Bottle o' Enchanting。"), '龙息和附魔之瓶。')
 
     def test_unknown_ids_and_word_fragments_are_not_guessed(self):
-        text = 'mod:sculk、sculk_sensor_extra、sculking、sculk.png、custom_stone、mystery_item。'
+        text = "mod:sculk、sculk_sensor_extra、sculking、sculk.png、custom_stone、mystery_item、Stone's。"
         self.assertEqual(self.catalog.normalize(text), text)
 
     def test_named_players_mentions_and_explicit_pronunciation_are_preserved(self):
