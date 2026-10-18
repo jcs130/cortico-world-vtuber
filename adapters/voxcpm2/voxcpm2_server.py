@@ -33,8 +33,9 @@ from pronunciation_bridge import native_phonemes
 from pronunciation import initialize_pronunciation, normalize_pronunciation, pronunciation_health
 from voice_catalog import VoiceCatalog
 from latin_speech import normalize_latin_speech, POLICY as LATIN_SPEECH_POLICY
+from terminal_particles import normalize_terminal_particles, validate_readings, POLICY as TERMINAL_PARTICLE_POLICY
 
-VERSION = '1.5.1'
+VERSION = '1.5.2'
 MAX_BODY = 2 * 1024 * 1024
 CUE_RULES = [(re.compile(r'(?:开心|温柔|惊讶|害怕|生气|难过|平静|严肃|得意|委屈|happy|gentle|calm|serious)', re.I), 'style')]
 _NUMBER_TOKEN = r'[-+]?\d+(?:\.\d+)?'
@@ -79,13 +80,15 @@ def prepare_instructions(value, enabled: bool) -> str | None:
 
 
 def prepare_text(text: str, aliases: dict[str, str] | None = None, *, contextual: bool = False,
-                 acoustic_tag_aliases: dict[str, str] | None = None, latin_words: bool = True) -> str:
+                 acoustic_tag_aliases: dict[str, str] | None = None, latin_words: bool = True,
+                 terminal_particles: dict[str, str] | None = None) -> str:
     if aliases is not None and (
         not isinstance(aliases, dict)
         or any(not isinstance(key, str) or not key or not isinstance(value, str) or not value
                for key, value in aliases.items())
     ):
         raise ValueError('Pronunciation aliases must map nonempty strings to nonempty strings')
+    text = normalize_terminal_particles(text, terminal_particles)
     protected = {}
     if acoustic_tag_aliases is not None:
         if (not isinstance(acoustic_tag_aliases, dict) or any(
@@ -151,6 +154,12 @@ class VoiceEngine:
             config.get('default_instructions'), bool(config.get('enable_style_instructions', False)))
         self.voice = config['voice']
         self.voices = VoiceCatalog(config)
+        particle_voices = config.get('terminal_particle_readings', {})
+        if not isinstance(particle_voices, dict):
+            raise ValueError('terminal_particle_readings must map configured voice IDs to suffix readings')
+        for voice_id, readings in particle_voices.items():
+            self.voices.resolve(voice_id)
+            validate_readings(readings)
         self.reference_sha256 = self.voices.resolve().reference_sha256
         self._prompt_caches = OrderedDict()
         self.cached_voice_ids = ()
@@ -321,6 +330,8 @@ class VoiceEngine:
                 'pronunciation_fallbacks': ['soil-dryness-gan1', 'utensils-colloquial', 'short-utensils-shi5'],
                 'latin_word_reading': {'enabled': self.config.get('latin_word_reading', True),
                                       'policy': LATIN_SPEECH_POLICY, 'player_specific_dictionary': False},
+                'terminal_particle_reading': {'policy': TERMINAL_PARTICLE_POLICY,
+                    'enabled_for_voices': sorted(self.config.get('terminal_particle_readings', {}))},
                 'pronunciation': pronunciation_health() if self.contextual_pronunciation else {'context_ready': False, 'policy': 'native-model'},
                 'explicit_pinyin_supported': True,
                 'device': self.config.get('device', 'cuda'), 'model_revision': self.config.get('model_revision'),
@@ -402,7 +413,8 @@ class Handler(BaseHTTPRequestHandler):
             clean = prepare_text(text, engine.config.get('pronunciation_aliases'),
                                  contextual=bool(engine.config.get('pronunciation_model_dir')),
                                  acoustic_tag_aliases=engine.config.get('acoustic_tag_aliases'),
-                                 latin_words=bool(engine.config.get('latin_word_reading', True)))
+                                 latin_words=bool(engine.config.get('latin_word_reading', True)),
+                                 terminal_particles=engine.config.get('terminal_particle_readings', {}).get(voice.id))
             pronunciation_ms = round((time.monotonic() - preparation_started) * 1000, 2)
             limit = int(engine.config.get('segment_chars', 80))
             texts = punctuation_segments(clean, max_chars=limit)

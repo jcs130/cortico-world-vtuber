@@ -71,6 +71,22 @@ this stage for rollback. Both HTTP response modes apply the same rule.
 Deploy the adapter's shared `indextts` text modules alongside this server. Its
 `corti_speech_style.py` must support the `preserve_acoustic_cues` argument.
 
+### Optional voice-owned final speech particles (1.5.2)
+
+`terminal_particle_readings` maps configured voice IDs to opt-in Chinese suffix
+readings, for example `{"your-voice-id":{"喵":"miao5"}}`. It is empty by default.
+Only a suffix attached directly to Chinese speech at the end of an utterance is
+annotated. Isolated calls, repetitions, explicit readings, code and URLs retain
+their original text. This conservative positional rule is not a semantic
+classifier. Readings must contain one toned pinyin syllable per Chinese character.
+Startup validates the configured voice IDs and the mappings before model loading.
+
+Both HTTP routes pass the resulting reading to the same synthesis call; there is
+no extra sound file, model request, or change of voice/prompt mode. Original input
+hashes, subtitles, references and reference transcripts are preserved. Health
+reports `terminal_particle_reading.policy` and `enabled_for_voices`. Removing the
+voice entry rolls back its readings. Deploy `terminal_particles.py` with the server.
+
 ## Optional text delivery control
 
 Set `enable_style_instructions: true` only after comparing audio on the intended

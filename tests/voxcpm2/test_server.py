@@ -278,6 +278,30 @@ class ServiceTest(unittest.TestCase):
             response.read()
         self.assertEqual(''.join(self.engine.texts), 'NEKO 和 NANA_042 来了。')
 
+    def test_final_particle_reading_is_opt_in_for_the_selected_voice_in_both_routes(self):
+        original = '顺便给NEKO带个路喵。'
+        expected = '顺便给Neko带个路{miao5}。'
+        self.engine.config['terminal_particle_readings'] = {self.engine.voice: {'喵': 'miao5'}}
+        for streaming in (False, True):
+            with self.request(original, streaming=streaming) as response:
+                self.assertGreater(len(response.read()), 44)
+            self.assertEqual(''.join(self.engine.texts), expected)
+            self.assertEqual(self.engine.last_request['input_sha256'], hashlib.sha256(original.encode()).hexdigest())
+            self.assertEqual(self.engine.last_request['spoken_text_sha256'], hashlib.sha256(expected.encode()).hexdigest())
+            self.assertEqual(self.engine.last_request['mode'], 'ref_continuation')
+            self.assertEqual(self.engine.voices.resolve().reference_text, 'Reference transcript.')
+            self.engine.texts.clear()
+        self.engine.config['terminal_particle_readings'] = {'another-voice': {'喵': 'miao5'}}
+        with self.request(original) as response:
+            response.read()
+        self.assertEqual(''.join(self.engine.texts), '顺便给Neko带个路喵。')
+
+    def test_automatic_final_reading_matches_the_explicit_approved_sample(self):
+        text = '这坡上探来探去都被山体挡住，看不见洞里头。我直接往西北坡下走，到洞口跟前再瞅，顺便给NEKO带个路喵。'
+        approved = text.replace('路喵。', '路<喵|miao5>。')
+        self.assertEqual(prepare_text(text, terminal_particles={'喵': 'miao5'}), prepare_text(approved))
+        self.assertEqual(prepare_text('喵！', terminal_particles={'喵': 'miao5'}), '喵！')
+
     def test_explicit_pinyin_controls_only_its_word_and_keeps_invalid_metadata_unspoken(self):
         self.assertEqual(prepare_text('火还<烧着|SHAO1 ZHE5>，木炭终于<烧着|shao1 zhao2>了。'),
                          '火还{shao1}{zhe5}，木炭终于{shao1}{zhao2}了。')
