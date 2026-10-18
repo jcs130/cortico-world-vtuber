@@ -34,8 +34,9 @@ from pronunciation import initialize_pronunciation, normalize_pronunciation, pro
 from voice_catalog import VoiceCatalog
 from latin_speech import normalize_latin_speech, POLICY as LATIN_SPEECH_POLICY
 from terminal_particles import normalize_terminal_particles, validate_readings, POLICY as TERMINAL_PARTICLE_POLICY
+from spoken_terms import load_catalog, POLICY as SPOKEN_TERMS_POLICY
 
-VERSION = '1.5.2'
+VERSION = '1.5.3'
 MAX_BODY = 2 * 1024 * 1024
 CUE_RULES = [(re.compile(r'(?:开心|温柔|惊讶|害怕|生气|难过|平静|严肃|得意|委屈|happy|gentle|calm|serious)', re.I), 'style')]
 _NUMBER_TOKEN = r'[-+]?\d+(?:\.\d+)?'
@@ -81,13 +82,15 @@ def prepare_instructions(value, enabled: bool) -> str | None:
 
 def prepare_text(text: str, aliases: dict[str, str] | None = None, *, contextual: bool = False,
                  acoustic_tag_aliases: dict[str, str] | None = None, latin_words: bool = True,
-                 terminal_particles: dict[str, str] | None = None) -> str:
+                 terminal_particles: dict[str, str] | None = None, spoken_terms=None) -> str:
     if aliases is not None and (
         not isinstance(aliases, dict)
         or any(not isinstance(key, str) or not key or not isinstance(value, str) or not value
                for key, value in aliases.items())
     ):
         raise ValueError('Pronunciation aliases must map nonempty strings to nonempty strings')
+    if spoken_terms is not None:
+        text = spoken_terms.normalize(text)
     text = normalize_terminal_particles(text, terminal_particles)
     protected = {}
     if acoustic_tag_aliases is not None:
@@ -154,6 +157,13 @@ class VoiceEngine:
             config.get('default_instructions'), bool(config.get('enable_style_instructions', False)))
         self.voice = config['voice']
         self.voices = VoiceCatalog(config)
+        term_files = config.get('spoken_term_catalogs', {})
+        if not isinstance(term_files, dict):
+            raise ValueError('spoken_term_catalogs must map configured voice IDs to local files')
+        self.spoken_terms, self.spoken_terms_status = {}, {}
+        for voice_id, path in term_files.items():
+            self.voices.resolve(voice_id)
+            self.spoken_terms[voice_id], self.spoken_terms_status[voice_id] = load_catalog(path)
         particle_voices = config.get('terminal_particle_readings', {})
         if not isinstance(particle_voices, dict):
             raise ValueError('terminal_particle_readings must map configured voice IDs to suffix readings')
@@ -332,6 +342,7 @@ class VoiceEngine:
                                       'policy': LATIN_SPEECH_POLICY, 'player_specific_dictionary': False},
                 'terminal_particle_reading': {'policy': TERMINAL_PARTICLE_POLICY,
                     'enabled_for_voices': sorted(self.config.get('terminal_particle_readings', {}))},
+                'spoken_terms': {'policy': SPOKEN_TERMS_POLICY, 'voices': self.spoken_terms_status},
                 'pronunciation': pronunciation_health() if self.contextual_pronunciation else {'context_ready': False, 'policy': 'native-model'},
                 'explicit_pinyin_supported': True,
                 'device': self.config.get('device', 'cuda'), 'model_revision': self.config.get('model_revision'),
@@ -414,7 +425,8 @@ class Handler(BaseHTTPRequestHandler):
                                  contextual=bool(engine.config.get('pronunciation_model_dir')),
                                  acoustic_tag_aliases=engine.config.get('acoustic_tag_aliases'),
                                  latin_words=bool(engine.config.get('latin_word_reading', True)),
-                                 terminal_particles=engine.config.get('terminal_particle_readings', {}).get(voice.id))
+                                 terminal_particles=engine.config.get('terminal_particle_readings', {}).get(voice.id),
+                                 spoken_terms=engine.spoken_terms.get(voice.id))
             pronunciation_ms = round((time.monotonic() - preparation_started) * 1000, 2)
             limit = int(engine.config.get('segment_chars', 80))
             texts = punctuation_segments(clean, max_chars=limit)
