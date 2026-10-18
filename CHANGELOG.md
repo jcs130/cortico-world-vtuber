@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1-dev.20261018.1
+
+- Add optional complete-utterance playback for uneven OpenAI WAV delivery. Keep streaming as the compatible default.
+- Validate EOF before releasing buffered audio, queue the complete PCM atomically and retain hard cancellation without retries or voice fallback.
+- Record bounded chunk-gap timing separately from physical audio playback and synthesis completion.
+
 ## 0.1.1-dev.20261017.4
 
 - Accept quoted decimal evidence cursors from model responses after lossless normalization and exact membership checks against supplied facts.

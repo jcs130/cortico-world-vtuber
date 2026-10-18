@@ -2,6 +2,24 @@
 
 HTTP success and ASR output do not establish sound quality. The OpenAI chunked transport can retain the exact PCM received from the server, including a partial response on interruption. This is reception evidence, not a microphone or physical output recording.
 
+## Uneven audio delivery
+
+`ttsTransport.playbackMode` defaults to `streaming`, retaining the existing
+`prebufferMs` behavior. For a service that delivers intermittent chunks, choose
+`buffered`: the receiver waits for HTTP EOF and a valid complete WAV before
+beginning playback. Network delivery gaps then occur before speech rather than
+inside the utterance. This does not accelerate synthesis or remove silence
+already present in the PCM. A slow request will increase the wait before speech.
+Cancellation, timeout and malformed/truncated responses release no buffered
+audio; the same request IDs and selected voice remain in use, with no retry or
+provider fallback.
+
+Request traces record `playbackMode`, `pcmChunks` and `maxPcmGapMs`. The gap is
+between received PCM chunks, excluding the wait for the first chunk and HTTP
+EOF after the last chunk. These values distinguish uneven delivery from a slow
+response close; they are not measurements of physical playback or device
+underruns. No chunk-by-chunk text, credentials or audio is added to logs.
+
 Recording is off by default. For a bounded incident window, create `tts-audio-capture.json` under the existing private VTuber `diagDir`:
 
 ```json

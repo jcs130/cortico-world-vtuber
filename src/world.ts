@@ -406,6 +406,10 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
         type: 'string', title: '语音会话标识', 'x-hot': false,
         description: '同一部署保持稳定；留空按部署目录生成。',
       },
+      'worlds.vtuber.ttsTransport.playbackMode': {
+        type: 'string', enum: ['streaming', 'buffered'], title: '语音播放方式', 'x-hot': false,
+        description: 'streaming 边合成边播放；buffered 收齐并校验整句后连续播放，避免供音间断，但起声前等待更长。',
+      },
       'worlds.vtuber.ttsTransport.prebufferMs': {
         type: 'integer', minimum: 0, maximum: 5000, title: '语音预缓冲（毫秒）', 'x-hot': false,
       },
