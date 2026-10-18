@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'adapters/voxcpm2')
 from voxcpm2_server import VoiceEngine, VoiceServer, prepare_text, normalize_terminal_wave
 from synthesis_metrics import SynthesisMetrics
 from voice_catalog import VoiceCatalog
-from spoken_terms import SpokenTerms
 from unittest.mock import patch
 
 
@@ -34,7 +33,6 @@ class AudioEngine:
                        'voice': self.voice, 'reference_file': str(self.reference_file),
                        'reference_sha256': self.reference_sha256}
         self.voices = VoiceCatalog(self.config)
-        self.spoken_terms = {}
         self.metrics = SynthesisMetrics()
         self.lock = threading.Lock()
         self.completed = self.failed = self.cancelled = 0
@@ -303,26 +301,6 @@ class ServiceTest(unittest.TestCase):
         approved = text.replace('路喵。', '路<喵|miao5>。')
         self.assertEqual(prepare_text(text, terminal_particles={'喵': 'miao5'}), prepare_text(approved))
         self.assertEqual(prepare_text('喵！', terminal_particles={'喵': 'miao5'}), '喵！')
-
-    def test_domain_terms_apply_to_both_routes_only_for_the_selected_voice_and_keep_raw_evidence(self):
-        original = 'NEKO带着iron_pickaxe，去找sculk方块喵。'
-        terms = SpokenTerms({'schema': 'tts-spoken-terms-v1', 'terms': {'iron_pickaxe': '铁镐', 'sculk': '幽匿块'}})
-        self.engine.spoken_terms[self.engine.voice] = terms
-        self.engine.config['terminal_particle_readings'] = {self.engine.voice: {'喵': 'miao5'}}
-        expected = 'Neko带着铁镐，去找幽匿块{miao5}。'
-        for streaming in (False, True):
-            with self.request(original, streaming=streaming) as response:
-                self.assertGreater(len(response.read()), 44)
-            self.assertEqual(''.join(self.engine.texts), expected)
-            self.assertEqual(self.engine.last_request['input_sha256'], hashlib.sha256(original.encode()).hexdigest())
-            self.assertEqual(self.engine.last_request['spoken_text_sha256'], hashlib.sha256(expected.encode()).hexdigest())
-            self.assertEqual(self.engine.last_request['mode'], 'ref_continuation')
-            self.assertEqual(self.engine.voices.resolve().reference_text, 'Reference transcript.')
-            self.engine.texts.clear()
-        self.engine.spoken_terms.clear()
-        with self.request('去找sculk。') as response:
-            response.read()
-        self.assertEqual(''.join(self.engine.texts), '去找sculk。')
 
     def test_explicit_pinyin_controls_only_its_word_and_keeps_invalid_metadata_unspoken(self):
         self.assertEqual(prepare_text('火还<烧着|SHAO1 ZHE5>，木炭终于<烧着|shao1 zhao2>了。'),

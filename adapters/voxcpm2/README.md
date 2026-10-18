@@ -87,27 +87,6 @@ hashes, subtitles, references and reference transcripts are preserved. Health
 reports `terminal_particle_reading.policy` and `enabled_for_voices`. Removing the
 voice entry rolls back its readings. Deploy `terminal_particles.py` with the server.
 
-## Optional spoken domain vocabulary (1.5.3)
-
-`spoken_term_catalogs` explicitly maps configured voice IDs to local JSON files.
-Each file has `schema: "tts-spoken-terms-v1"` and a `terms` object mapping readable
-ASCII IDs or English display names to plain speech text. The service loads and
-validates the files once at startup, matches longest complete terms, and applies
-them only to the selected voice. Unknown IDs are preserved. Code, commands, URLs,
-paths, explicit phonetics, @mentions and explicitly labelled player names are
-protected. Bare homonymous player names still require clear naming context.
-No model, network lookup, or Minecraft package is loaded by the speech service.
-Original input hashes, subtitles, reference audio/transcripts and operation IDs
-remain unchanged. Health reports catalog hashes/counts, never local paths.
-
-For Minecraft, `node scripts/export-minecraft-spoken-terms.mjs <packed-consumer-root>
-<output.json> [game-version]` consumes the independent core's public
-`agent-mc-world/extension#zhName` and that consumer's `minecraft-data` registry.
-It records package/game versions and excludes unknown translations or conflicting
-English aliases. It does not copy core source or modify the game's IDs. The
-generated data stays with deployment resources; it is not bundled into TTS as a
-Minecraft-specific default. Remove the voice's entry to roll back its catalog.
-
 ## Optional text delivery control
 
 Set `enable_style_instructions: true` only after comparing audio on the intended
