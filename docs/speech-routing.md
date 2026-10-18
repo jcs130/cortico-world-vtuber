@@ -23,7 +23,11 @@ Identical call IDs and identical strings can be deduplicated deterministically. 
 
 The host should consume its internal `vtuber.speech.submitted` events from **every** producer, merge them with transcript calls by `callId`, retain the original timestamps, and apply `vtuber.act.outcome` playback corrections. Accepted speech is not proof of delivery to a viewer. This shared record should enter the next main request and commentary draft. Speech candidates should use the same host-owned character and language guidance as main narration; a generic observation-only prompt produces a different speaking style even with the same voice.
 
-Keep the fixed identity/instructions at the request prefix and dynamic utterances/evidence at the tail. Do not copy the entire main session into short commentary or add an unbounded classification loop. A main model request already in flight cannot read a later commentary admission; shared history reduces repeats but does not guarantee semantic uniqueness. Live observation remains a separate acceptance step from offline contract tests.
+Keep the fixed identity/instructions at the request prefix and dynamic utterances/evidence at the tail. Do not copy the entire main session into short commentary or add an unbounded classification loop.
+
+`src/speech-context.ts` fences a main speech candidate against parallel admissions since its model request began. A candidate from the older context is withheld both from incremental output taps and tool execution, and its receipt supplies recent speech for the main model to decide whether to add anything. Pending commentary IPC also closes this race; rejected admissions do not invent spoken history. Only speech is withheld: body tools and the actual decision turn continue. Automatic commentary yields until that main follow-up is accepted or the real turn goes idle. No new model loop or word-similarity classifier is added. Direct older hosts without run-phase notifications retain their existing behavior.
+
+Shared context and admission ordering do not guarantee semantic uniqueness in future model output. Live observation remains a separate acceptance step from offline contract tests.
 
 ## Diagnostic procedure
 

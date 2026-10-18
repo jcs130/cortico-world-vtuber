@@ -30,6 +30,7 @@ import type {
 import { nowIso } from 'cortico/core/util.ts';
 import { emitLogNote } from 'cortico/core/ipc-logger.ts';
 import { childExecArgv } from 'cortico/extensions/runtime.ts';
+import { SpeechContextFence } from './speech-context.ts';
 import { loadProfiles, profileChoices } from './models/index.ts';
 import { EXAMPLE_PACK_DIR, loadPack, vocabTableRows, type PerformancePack } from './pack.ts';
 import {
@@ -152,6 +153,8 @@ export class VtuberWorldProxy implements World {
   private speechCache: SpeechAvailability | null = null;
   private readonly speechPlanning = new SpeechPlanningClock();
   private commentaryActive = false;
+  private speechContext = new SpeechContextFence();
+  private readonly deferredSpeechCalls = new Set<string>();
   private readonly commentary: CommentaryLane;
   private readonly commentaryRuntime: CommentaryRuntimeGate;
 
@@ -175,7 +178,7 @@ export class VtuberWorldProxy implements World {
     this.commentary = new CommentaryLane({
       config: () => ({ ...COMMENTARY_DEFAULTS, ...this.opts.commentary?.() }),
       availability: () => ({ live: this.live && !this.stopping && !!this.child?.connected,
-        active: this.commentaryRuntime.active(this.commentaryActive), speech: this.speechCache }),
+        active: !this.speechContext.holdCommentary && this.commentaryRuntime.active(this.commentaryActive), speech: this.speechCache }),
       request: brief => {
         // Context/kind are additive advisory hints understood by supporting
         // Personas. Hosts still own provider, context, usage and cancellation;
@@ -188,17 +191,23 @@ export class VtuberWorldProxy implements World {
         const callId = `commentary-${randomUUID()}`;
         const idleSince = this.speechCache?.idleSinceMs;
         if (idleSince == null) return '[vtuber_act 过期] 本次未提交';
-        const result = await this.rpc({ kind: 'tool', name: 'vtuber_act', args: { script },
-          role: 'commentary', callId, round: null, ifIdleSinceMs: idleSince }, RPC_TIMEOUT_MS);
-        const receipt = typeof result === 'string' ? result : JSON.stringify(result);
-        if (/已开演|已排入演出/.test(receipt)) this.recordSpeechSubmission(script, callId, 'commentary', evidence, requestId);
-        return receipt;
+        const settle = this.speechContext.beginCommentary();
+        try {
+          const result = await this.rpc({ kind: 'tool', name: 'vtuber_act', args: { script },
+            role: 'commentary', callId, round: null, ifIdleSinceMs: idleSince }, RPC_TIMEOUT_MS);
+          const receipt = typeof result === 'string' ? result : JSON.stringify(result);
+          const accepted = /已开演|已排入演出/.test(receipt);
+          settle(accepted);
+          if (accepted) this.recordSpeechSubmission(script, callId, 'commentary', evidence, requestId);
+          return receipt;
+        } finally { settle(false); }
       },
       log: (event, data) => this.host?.log.child('commentary').emit('info', event, { event, data }),
     });
   }
 
   private recordSpeechSubmission(script: string, callId: string | null, role: string, evidence: number[] = [], requestId?: number): void {
+    if (role === 'main') this.speechContext.foregroundAccepted();
     void this.host?.pushEvent({ ts: nowIso(this.opts.timezone ?? 'Asia/Shanghai'), source: this.id,
       type: 'vtuber.speech.submitted', origin: 'internal', ephemeral: true,
       text: `[最近提交演出；不是待播稿，不证明观众端已接收] ${script}`,
@@ -379,6 +388,14 @@ export class VtuberWorldProxy implements World {
       handler: async (args, ctx) => {
         if (['vtuber_act', 'vtuber_interrupt', 'vtuber_music'].includes(decl.name)) this.commentary.foregroundSpeech();
         if (decl.name === 'vtuber_act' && typeof args.script === 'string') {
+          if (ctx.role === 'main' && (this.speechContext.stale() || (ctx.callId && this.deferredSpeechCalls.has(ctx.callId)))) {
+            if (ctx.callId) this.deferredSpeechCalls.delete(ctx.callId);
+            this.speechContext.defer();
+            this.host?.log.emit('info', '口播上下文已变化，本次台本未提交', { event: 'speech-context-stale', data: { callId: ctx.callId } });
+            return '[vtuber_act 未提交] 生成这段台本期间，自动解说新增了口播或正在受理。本次没有进入合成或播放。'
+              + '请依据下面最近已提交台词及当前回执，再决定是否需要补充；同一件事换词也不用再说。其他行动照常继续，不表示本回合或游戏任务结束。\n'
+              + this.commentary.facts();
+          }
           const normalization = normalizeExternalActScript(args.script);
           if (!normalization.ok) {
             this.host?.log.child('script-shape').emit('warn', `${normalization.code}:代理拒绝外部容器形状`, {
@@ -413,16 +430,28 @@ export class VtuberWorldProxy implements World {
    * reasoning 增量不过界——演出链路不读它,省一半流量。
    */
   outputTap(): OutputTap {
+    const blockedItems = new Set<string>();
     return {
       externalizes: event => event.type === 'response.output_item.added' && event.item?.type === 'function_call'
-        && event.item.name === 'vtuber_act',
+        && event.item.name === 'vtuber_act' && !this.speechContext.stale(),
       onEvent: event => {
+        if (event.type === 'response.output_item.added' && event.item?.type === 'function_call'
+          && event.item.name === 'vtuber_act' && this.speechContext.stale()) {
+          if (event.item.id) blockedItems.add(event.item.id);
+          this.deferredSpeechCalls.add(event.item.call_id);
+          this.speechContext.defer();
+          this.commentary.foregroundSpeech();
+          return;
+        }
+        const itemId = 'item_id' in event ? event.item_id
+          : 'item' in event && event.item && 'id' in event.item ? event.item.id : undefined;
+        if (typeof itemId === 'string' && blockedItems.has(itemId)) return;
         if (event.type === 'response.output_item.added' && event.item?.type === 'function_call'
           && ['vtuber_act', 'vtuber_interrupt', 'vtuber_music'].includes(event.item.name)) this.commentary.foregroundSpeech();
         this.cast({ kind: 'tap', event });
       },
-      onRoundEnd: () => this.cast({ kind: 'tap-round-end' }),
-      onAbort: (reason) => this.cast({ kind: 'tap-abort', reason }),
+      onRoundEnd: () => { blockedItems.clear(); this.cast({ kind: 'tap-round-end' }); },
+      onAbort: (reason) => { blockedItems.clear(); this.cast({ kind: 'tap-abort', reason }); },
     };
   }
 
@@ -432,6 +461,8 @@ export class VtuberWorldProxy implements World {
   }
 
   onRunPhase(phase: RunPhase): void {
+    if (phase.state === 'model' && this.speechContext.beginModel(`${phase.enteredAt}:${phase.round ?? ''}`)) this.deferredSpeechCalls.clear();
+    if (phase.state === 'idle') { this.speechContext.idle(); this.deferredSpeechCalls.clear(); }
     // Idle/backoff cannot authorize another model call, including operator pause.
     this.commentaryActive = ['delivering', 'model', 'tools', 'handoff'].includes(phase.state);
     this.cast({ kind: 'run-phase', phase });
@@ -510,6 +541,8 @@ export class VtuberWorldProxy implements World {
 
   async start(host: WorldHost): Promise<void> {
     this.host = host;
+    this.speechContext = new SpeechContextFence();
+    this.deferredSpeechCalls.clear();
     this.stopping = false;
     this.commentary.resume();
     this.commentaryRuntime.resume();

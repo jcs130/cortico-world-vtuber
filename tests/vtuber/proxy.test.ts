@@ -302,6 +302,32 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
       expect(request).toHaveBeenCalledOnce();
       expect(request.mock.calls[0]?.[0]).toMatchObject({ tools: [], hint: { context: 'task', kind: 'vtuber-commentary', rounds: 1 } });
       expect(proxy.requestFacts()?.text).toContain('不是待播稿');
+      // The main request began before the parallel line. Neither its tap nor
+      // its completed tool may send a stale candidate to synthesis.
+      const oldScript = '前面的石壁还挡着呢，得换一条路。';
+      const output = proxy.outputTap();
+      let externalized = false;
+      const tap = legacyTap({ ...output, onEvent: event => {
+        externalized ||= output.externalizes?.(event) === true;
+        output.onEvent(event);
+      } });
+      tap.onDelta({ type: 'tool_call.begin', index: 0, id: 'stale-main', name: 'vtuber_act' });
+      tap.onDelta({ type: 'tool_call.delta', index: 0, argsFragment: JSON.stringify({ script: oldScript }) });
+      tap.onDelta({ type: 'tool_call.end', index: 0 });
+      tap.onRoundEnd?.();
+      const act = proxy.tools().find(tool => tool.name === 'vtuber_act')!;
+      const receipt = await act.handler({ script: oldScript }, { role: 'main', log: host.log, callId: 'stale-main' });
+      expect(receipt).toContain('未提交');
+      expect(receipt).toContain(line);
+      expect(receipt).toContain('不表示本回合或游戏任务结束');
+      expect(externalized).toBe(false);
+      expect(ttsInputs).not.toContain(oldScript);
+      expect(host.events.some(row => row.e.type === 'vtuber.speech.submitted' && row.e.meta?.callId === 'stale-main')).toBe(false);
+      expect(await act.handler({ script: '另一条基于旧上下文的候选。' }, { role: 'main', log: host.log, callId: 'direct-stale-main' })).toContain('未提交');
+      proxy.onRunPhase({ state: 'model', round: 2, running: [], enteredAt: new Date().toISOString() });
+      const followup = '右边有个台阶，我先核实一下。';
+      expect(await act.handler({ script: followup }, { role: 'main', log: host.log, callId: 'fresh-main' })).toContain('已排入演出');
+      await waitFor(() => ttsInputs.includes(followup));
       proxy.onRunPhase({ state: 'idle', running: [], enteredAt: new Date().toISOString() });
       await new Promise(resolve => setTimeout(resolve, 4300));
       expect(request).toHaveBeenCalledOnce();

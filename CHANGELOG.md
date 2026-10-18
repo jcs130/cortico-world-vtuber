@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fence main speech drafts against parallel commentary admitted during their model request, including incremental output taps. Return recent speech for an explicit main decision; body tools and the real turn remain active, with no extra model loop or semantic string filter.
 - Apply the Agent speech renderer to waiting clips, panel auditions and alignment synthesis as well as ordinary scripts; retain one selected voice and transport. Existing recorded-audio alignment remains read-only.
 - Share a bounded recent-speech projection with host cognition, and clarify that a new evidence cursor or paraphrase is not new commentary. The host remains responsible for personality and semantic decisions.
 - Use stable Agent prompt guidance for localized narration; retain exact IDs in tools and original calls in session evidence.
