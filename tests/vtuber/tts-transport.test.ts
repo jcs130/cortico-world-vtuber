@@ -29,6 +29,49 @@ function fixture() {
 }
 
 describe('OpenAI chunked WAV', () => {
+  it('forwards opted-in delivery metadata in synth and synthStream without changing speech or leaking a local reference', async () => {
+    const requests: Record<string, unknown>[] = [];
+    const urls: string[] = [];
+    const client = new TtsClient({ url: 'http://fixture.invalid', apiKey: 'fixture-secret',
+      transport: { ...config, supportsInstructions: true, defaultInstructions: '自然交谈，轻声收尾' },
+      profile: () => ({ seed: 99, referenceAudioB64: 'private-audio', refText: 'private-transcript' }),
+      fetchImpl: (async (url, init) => {
+        urls.push(String(url)); requests.push(JSON.parse(String(init?.body)));
+        return new Response(new Uint8Array(pcm16ToWav([pcm(100)], 48000)).buffer,
+          { headers: { 'x-tts-voice': config.voice, 'x-tts-prompt-mode': 'reference' } });
+      }) as typeof fetch });
+    const first = await client.synth('顺便带个路喵。');
+    await client.synthStream('接着走喵。', { pcm() {} }, { override: { instructions: '轻快带笑' } });
+    await client.synth('保持原文。', { instructions: '' });
+    expect(requests).toEqual([
+      { model: config.model, input: '顺便带个路喵。', voice: config.voice, speed: 1, response_format: 'wav', instructions: '自然交谈，轻声收尾' },
+      { model: config.model, input: '接着走喵。', voice: config.voice, speed: 1, response_format: 'wav', instructions: '轻快带笑' },
+      { model: config.model, input: '保持原文。', voice: config.voice, speed: 1, response_format: 'wav' },
+    ]);
+    expect(first.requestTrace?.promptMode).toBe('reference');
+    expect(urls).toEqual(Array(3).fill('http://fixture.invalid/v1/audio/speech'));
+    expect(JSON.stringify(requests)).not.toMatch(/private-audio|private-transcript|seed/);
+  });
+
+  it('keeps provider defaults when capability opt-in is enabled without a description', async () => {
+    let body: Record<string, unknown> | undefined;
+    const client = new TtsClient({ url: 'http://fixture.invalid', transport: { ...config, supportsInstructions: true },
+      fetchImpl: (async (_url, init) => {
+        body = JSON.parse(String(init?.body));
+        return new Response(new Uint8Array(pcm16ToWav([pcm(100)], 48000)).buffer);
+      }) as typeof fetch });
+    await client.synth('完整句子。');
+    expect(body).not.toHaveProperty('instructions');
+  });
+
+  it.each(['x'.repeat(65), '语气\n正文', '(轻声)'])('rejects invalid opted-in descriptions before sending or playing: %s', async instructions => {
+    let called = false;
+    const client = new TtsClient({ url: 'http://fixture.invalid', transport: { ...config, supportsInstructions: true },
+      fetchImpl: (async () => { called = true; throw Error('must not send'); }) as typeof fetch });
+    await expect(client.synth('正文。', { instructions })).rejects.toThrow('delivery instructions');
+    expect(called).toBe(false);
+  });
+
   it('reads an authenticated server catalog, caches it, and snapshots the selected voice for each request', async () => {
     const requests: { url: string; body?: Record<string, unknown> }[] = [];
     let speech = { ...TTS_SPEECH_DEFAULTS, enabled: true, voice: 'cormi-Q5' };

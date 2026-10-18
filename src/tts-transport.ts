@@ -8,11 +8,16 @@ export interface TtsTransportConfig {
   prebufferMs: number;
   timeoutMs: number;
   healthPath: string;
+  /** Explicit provider capability; standard speech endpoints need not accept instructions. */
+  supportsInstructions?: boolean;
+  /** Delivery only, never appended to input or used as a different voice. */
+  defaultInstructions?: string;
 }
 
 export const TTS_TRANSPORT_DEFAULTS: TtsTransportConfig = {
   protocol: 'legacy', model: '', voice: '', speed: 1, sessionId: '',
   prebufferMs: 480, timeoutMs: 180_000, healthPath: '/metrics/tts',
+  supportsInstructions: false, defaultInstructions: '',
 };
 export const TTS_API_KEY_SECRET = 'CORTICO_TTS_API_KEY';
 
@@ -55,6 +60,7 @@ export interface TtsRequestTrace {
   status?: number;
   voice?: string;
   referenceSha256?: string | null;
+  promptMode?: string | null;
   server?: Record<string, unknown> | null;
 }
 
@@ -147,6 +153,7 @@ export function ttsHeaders(apiKey: string, sessionId: string): Record<string, st
 
 export async function receiveSpeech(options: {
   url: string; config: TtsTransportConfig; apiKey: string; text: string;
+  instructions?: string;
   fetchImpl: typeof fetch; signal?: AbortSignal;
   begin: (sampleRate: number) => void; pcm: (chunk: Uint8Array) => void;
   abort?: () => void; trace?: (trace: TtsRequestTrace) => void;
@@ -155,6 +162,11 @@ export async function receiveSpeech(options: {
   const { config } = options;
   if (!config.model || !config.voice || !config.sessionId) throw new Error('TTS model, voice and stable session ID are required');
   if (!Number.isFinite(config.prebufferMs) || config.prebufferMs < 0 || config.prebufferMs > 5000) throw new Error('Invalid TTS prebuffer');
+  const instructions = config.supportsInstructions
+    ? (options.instructions ?? config.defaultInstructions ?? '').trim() : '';
+  if (instructions && (instructions.length > 64 || /[()（）\r\n<>\[\]【】]/u.test(instructions))) {
+    throw new Error('TTS delivery instructions must be a plain description of at most 64 characters');
+  }
   const controller = new AbortController();
   const onAbort = () => controller.abort(options.signal?.reason);
   if (options.signal?.aborted) onAbort();
@@ -181,12 +193,14 @@ export async function receiveSpeech(options: {
     const response = await options.fetchImpl(`${options.url.replace(/\/$/, '')}/v1/audio/speech`, {
       method: 'POST', headers: ttsHeaders(options.apiKey, config.sessionId),
       body: JSON.stringify({ model: config.model, input: options.text, voice: config.voice,
-        speed: config.speed, response_format: 'wav' }), signal: controller.signal,
+        speed: config.speed, response_format: 'wav',
+        ...(instructions ? { instructions } : {}) }), signal: controller.signal,
     });
     trace.status = response.status;
     trace.callId = response.headers.get('x-litellm-call-id');
     trace.requestId = response.headers.get('x-tts-request-id');
     trace.referenceSha256 = response.headers.get('x-tts-reference-sha256');
+    trace.promptMode = response.headers.get('x-tts-prompt-mode');
     trace.sessionId = response.headers.get('x-litellm-session-id') || config.sessionId;
     emit('headers');
     if (!response.ok || !response.body) {

@@ -413,6 +413,14 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
         type: 'string', title: '语音状态路径', 'x-hot': false,
         description: '相对服务根地址的路径；返回 tts-status-v1 状态。',
       },
+      'worlds.vtuber.ttsTransport.supportsInstructions': {
+        type: 'boolean', title: '远程模型支持文字语气控制', 'x-hot': false,
+        description: '确认服务商支持 instructions 后显式开启；关闭时不发送本地语气或生成参数，也不探测其他端点。',
+      },
+      'worlds.vtuber.ttsTransport.defaultInstructions': {
+        type: 'string', title: '远程默认说话语气', 'x-hot': false,
+        description: '可选，最多 64 字。只描述语速、情绪和收尾方式；独立传入 instructions，不拼进台词或参考转写。单段语气覆盖此值；留空沿用服务端默认。',
+      },
       'worlds.vtuber.ttsService.autoStart': {
         type: 'boolean', title: '随演出启动语音服务', 'x-hot': false,
         description: '开启后，演出扩展启动时检查语音端点；已存在的服务保持外部归属。',

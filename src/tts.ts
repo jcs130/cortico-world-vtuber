@@ -361,11 +361,12 @@ export class TtsClient {
 
   private async synthRemote(text: string, sink: TtsStreamSink, signal?: AbortSignal, override?: TtsSynthProfile): Promise<TtsPiece> {
     // Snapshot once: a saved selection affects the next request, never an active stream.
-    const speech = (override ?? this.profile?.())?.speech;
+    const profile = override ?? this.profile?.();
+    const speech = profile?.speech;
     const config = { ...this.transport, voice: speech?.enabled && speech.voice ? speech.voice : this.transport.voice };
     let envelope: StreamingEnvelope | undefined;
     const received = await receiveSpeech({ url: this.url, config, apiKey: this.apiKey,
-      text, signal, fetchImpl: this.fetchImpl, abort: sink.abort,
+      text, signal, instructions: profile?.instructions, fetchImpl: this.fetchImpl, abort: sink.abort,
       capture: this.capture,
       trace: trace => {
         this.requestTrace?.(trace);
