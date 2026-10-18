@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1-dev.20261018.2
+
+- Keep speech admission backpressure local to speech instead of ending the host decision turn.
+- Offer one configurable advance preparation window during playback, using actual engine queue identity and a fresh heartbeat. The host owns cognition, pause and body execution.
+- Preserve complete-utterance playback, cancellation, queue ordering and existing duplicate protection.
+
 ## 0.1.1-dev.20261018.1
 
 - Add optional complete-utterance playback for uneven OpenAI WAV delivery. Keep streaming as the compatible default.

@@ -19,6 +19,11 @@ export interface SpeechAvailability {
   idleSinceMs: number | null;
   busy: boolean;
   ttsReady: boolean;
+  /** Optional for older engines. Remaining audio includes estimated unsynthesized pieces. */
+  backlogMs?: number;
+  queueRevision?: number;
+  playing?: boolean;
+  musicPlaying?: boolean;
 }
 
 export interface CommentaryEvent {

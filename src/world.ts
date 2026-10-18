@@ -202,6 +202,8 @@ export const VTUBER_DEFAULTS = {
    * 心跳演出状态行报告队列是否为空。
    */
   speechCapSec: 20,
+  /** Advance notification only; the host still owns cognition and pauses. Zero disables it. */
+  speechPlanningLeadSec: 12,
   /**
    * 同一轮 LLM 回复里最多开的演出轮数(复读风暴保险)。同轮追加豁免积压闸,
    * 但按次数封顶;正常分段远用不满。取值依据见 maxActRounds() 上的注释。
@@ -700,6 +702,10 @@ export const VTUBER_CONFIG_GROUP: ConfigGroup = {
           '复读风暴保险:同一次 LLM 回复里最多开这么多演出轮,之后的 vtuber_act 拒收。' +
           '同轮追加豁免积压闸,失控回复靠这个次数上限兜住;正常分段远用不满。',
       },
+      'worlds.vtuber.speechPlanningLeadSec': {
+        type: 'number', title: '边播边想提前量(秒)', minimum: 0, maximum: 30, 'x-hot': true,
+        description: '语音正在播放且队列剩余时长降到此值时，给宿主一次准备机会。已有决策运行时只随下一批提供读数，空闲时唤醒；不自动追加台词、不另开主决策或身体任务。0关闭。未合成音频使用估计时长。',
+      },
       'worlds.vtuber.silenceRemindSec': {
         type: 'integer',
         title: '静默一级(秒)',
@@ -932,6 +938,7 @@ export const VTUBER_PANEL_DECLS: readonly WorldPanelDecl[] = [
 ];
 
 export interface VtuberWorldOptions {
+  speechPlanningLeadSec?: () => number;
   commentary?: () => CommentaryConfig;
   timezone?: string;
   botName?: string;
@@ -1372,7 +1379,7 @@ export const VTUBER_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
     name: 'vtuber_act',
     tags: ['speak'],
     description:
-      'Speak and perform for the audience. Put speech and performance tags (【】 blocking, <> inline, [] vocal) in the script argument; never put them in assistant message content (content is silent on stream). Singing requires a pre-generated track through vtuber_music; this TTS tool does not sing.',
+      'Queue speech and performance for the audience and return without waiting for playback. Thinking, observation and independent World tasks may continue while speech plays. A rejected speech admission does not stop those tasks; do not retry the same speech without a changed queue or new content. Put speech and performance tags (【】 blocking, <> inline, [] vocal) in the script argument; never put them in assistant message content (content is silent on stream). Singing requires a pre-generated track through vtuber_music; this TTS tool does not sing.',
     parameters: {
       type: 'object',
       properties: {
@@ -3421,7 +3428,11 @@ export class VtuberWorld implements World {
     const busy = !status || status.playing || status.queuedBeats > 0 || (this.performer?.audioBacklogMs() ?? 0) > 0;
     if (busy) this.audioIdleStartedAtMs = null;
     return { observedAtMs: Date.now(), idleSinceMs: busy ? null : this.audioIdleStartedAtMs,
-      busy, ttsReady: this.ttsOk !== false };
+      busy, ttsReady: this.ttsOk !== false,
+      backlogMs: this.performer?.speechBacklogMs() ?? 0,
+      queueRevision: this.performer?.roundFence() ?? 0,
+      playing: status?.playing ?? false,
+      musicPlaying: !!this.performer?.musicState().current };
   }
 
   /**
@@ -3441,9 +3452,9 @@ export class VtuberWorld implements World {
         handler: async (args, ctx) => {
           if (typeof args.script !== 'string') return '[vtuber_act 失败] script 必须是字符串，本轮没有播出。';
           const result = await this.handleAct(args.script, ctx.callId ?? null, ctx.signal, ctx.round ?? null);
-          // A rejected performance cannot become a new reason to keep speaking
-          // in the same model wake. The next real game event may start a turn.
-          if (result.startsWith('[未排入]')) return { text: result, failed: true, endsTurn: true };
+          // Backpressure belongs to speech. Ending the host turn here also
+          // discards unrelated game observations and decisions in that turn.
+          if (result.startsWith('[未排入]')) return { text: result, failed: true };
           return result;
         },
       },
@@ -4064,18 +4075,18 @@ export class VtuberWorld implements World {
         return receipt('[未排入] 这句台词刚才已经说过，这次没有送进 TTS。请先观察新的游戏结果或执行下一步行动，别重复播同一段。');
       }
       if (decision.reason === 'burst') {
-        return receipt('[未排入] 最近 10 秒已开演 2 次，这一段没有播出。先结束这轮回复；有新的游戏结果后再说。');
+        return receipt('[未排入] 最近 10 秒已开演 2 次，这一段没有播出。不要立即重试台词；可以继续思考、观察或处理其他任务，有新内容和队列余量后再说。');
       }
       if (decision.reason === 'turn-cap') {
         return receipt((
           `[未排入] 这一次回复里你已经连着开了 ${this.maxActRounds()} 次 vtuber_act,` +
           `这一段(约 ${selfSec} 秒)没有播出。一次回复把一段话说完就够了——` +
-          `先结束这轮回复,等观众听完再接着说。`
+          `这只限制新台词，思考、观察和其他任务可继续；不要立即重试。`
         ));
       }
       return receipt((
         `[未排入] 你上一段话还有约 ${backlogSec} 秒没说完,这一段(约 ${selfSec} 秒)没有播出。` +
-        `先听着,说完并安静一阵后我会提醒你;确实需要现在插话,就用 vtuber_interrupt 打断自己再说。`
+        `这只拒收新台词，思考、观察和其他任务可继续；不要立即重试这段台词。确实需要现在插话,再用 vtuber_interrupt 收住旧话。`
       ));
     }
     /*

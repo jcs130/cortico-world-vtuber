@@ -68,6 +68,7 @@ import { TTS_SERVICE_DEFAULTS } from './tts-service.ts';
 import { randomUUID } from 'node:crypto';
 import { CommentaryLane, COMMENTARY_DEFAULTS, type SpeechAvailability } from './commentary.ts';
 import { CommentaryRuntimeGate } from './commentary-runtime.ts';
+import { currentSpeechWindow, SpeechPlanningClock } from './speech-planning.ts';
 
 const ENV_PROMPT_FILE = fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url));
 const CHILD_ENTRY = fileURLToPath(new URL('./engine-child.ts', import.meta.url));
@@ -149,6 +150,7 @@ export class VtuberWorldProxy implements World {
   private eventTimer: ReturnType<typeof setInterval> | null = null;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private speechCache: SpeechAvailability | null = null;
+  private readonly speechPlanning = new SpeechPlanningClock();
   private commentaryActive = false;
   private readonly commentary: CommentaryLane;
   private readonly commentaryRuntime: CommentaryRuntimeGate;
@@ -444,7 +446,7 @@ export class VtuberWorldProxy implements World {
       ? `本地音频队列已空闲 ${Math.max(0, Math.floor((Date.now() - speech.idleSinceMs) / 1000))} 秒；这是当前状态，不是待播台词。` : '';
     return {
       text: `[演出当前读数；观察 ${this.statusObservedAt}]\n${this.statusCache}\n${clock}\n${this.commentary.facts()}`,
-      snapshotTypes: ['vtuber.status'],
+      snapshotTypes: ['vtuber.status', 'vtuber.speech.window'],
     };
   }
 
@@ -685,6 +687,7 @@ export class VtuberWorldProxy implements World {
     this.urls = null;
     this.statusCache = null;
     this.speechCache = null;
+    this.speechPlanning.reset();
     this.statusObservedAt = null;
     this.liveCache = false;
     this.statusArmedAt = null;
@@ -802,6 +805,21 @@ export class VtuberWorldProxy implements World {
         this.statusObservedAt = nowIso(this.opts.timezone ?? 'Asia/Shanghai');
         this.liveCache = note.live;
         this.declCache = note.decl;
+        const window = this.speechPlanning.observe(note.speech, note.live,
+          this.opts.speechPlanningLeadSec?.() ?? VTUBER_DEFAULTS.speechPlanningLeadSec);
+        if (window) {
+          const trigger = this.commentaryActive ? 'piggyback' : 'flush';
+          host.pushDeferred({ type: 'vtuber.speech.window', senderKey: 'speech-planning', origin: 'internal', tags: ['snapshot'],
+            meta: { queueRevision: window.queueRevision },
+            render: () => {
+              if (!this.ready || this.stopping || !this.child?.connected) return null;
+              const current = currentSpeechWindow(this.speechCache, this.liveCache,
+                this.opts.speechPlanningLeadSec?.() ?? VTUBER_DEFAULTS.speechPlanningLeadSec);
+              if (!current || current.queueRevision !== window.queueRevision) return null;
+              return `[演出准备窗口；观察 ${new Date(current.observedAtMs).toISOString()}] 本地语音仍在播放，在播及排队剩余约 ${Math.ceil(current.remainingMs / 1000)} 秒（未合成部分按估计）。可在播放期间继续思考、观察和处理独立任务；后续行动仍须依据最新现场和任务终态。此读数不是台词，不要求追加发言，不证明观众听完。`;
+            },
+          }, { trigger });
+        }
         // 状态推送 ~300ms 一次,顺路当演出状态挂单的驱动时钟
         this.armStatus();
         return;

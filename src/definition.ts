@@ -48,6 +48,7 @@ export interface VtuberConfigSection {
   streamEnabled: boolean;
   incrementalSpeech: boolean;
   speechCapSec: number;
+  speechPlanningLeadSec: number;
   maxActRoundsPerTurn: number;
   silenceRemindSec: number;
   silenceRemind2Sec: number;
@@ -80,6 +81,7 @@ export const VTUBER: WorldDefinition<VtuberConfigSection> = {
     events: [
       { type: 'worlds.note', description: { zh: '演出生命周期、交接或服务状态通知。', en: 'Performance lifecycle, handoff or service status.' } },
       { type: 'vtuber.status', description: { zh: '当前演出队列与播放状态。', en: 'Current performance queue and playback state.' } },
+      { type: 'vtuber.speech.window', tags: ['snapshot'], description: { zh: '语音播放期间的一次提前准备窗口；宿主决定是否继续思考，不表示播放结束或强制发言。', en: 'One advance preparation window during speech; the host owns cognition. Not playback completion or a request to force speech.' } },
       { type: 'vtuber.composition', description: { zh: '异步音乐创作的审核、生成或失败结果。', en: 'Review, generation or failure result of an asynchronous composition.' } },
       { type: 'vtuber.music', description: { zh: '实际音乐播放或停止的反馈。', en: 'Actual music playback or stop feedback.' } },
       { type: 'vtuber.waiting', description: { zh: '等待媒体的实际播放反馈。', en: 'Actual waiting-media playback feedback.' } },
@@ -136,6 +138,7 @@ export const VTUBER: WorldDefinition<VtuberConfigSection> = {
       streamEnabled: () => cfg.streamEnabled,
       incrementalSpeech: () => cfg.incrementalSpeech,
       speechCapSec: () => cfg.speechCapSec,
+      speechPlanningLeadSec: () => cfg.speechPlanningLeadSec ?? VTUBER_DEFAULTS.speechPlanningLeadSec,
       maxActRoundsPerTurn: () => cfg.maxActRoundsPerTurn,
       silenceRemindSec: () => cfg.silenceRemindSec,
       silenceRemind2Sec: () => cfg.silenceRemind2Sec,

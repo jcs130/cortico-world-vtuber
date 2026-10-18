@@ -30,6 +30,34 @@ function fixture() {
 afterEach(() => vi.useRealTimers());
 
 describe('演出请求的完整缓存读数', () => {
+  it('offers one advance window during playback, with one host decision lane and no engine RPC', () => {
+    vi.useFakeTimers(); vi.setSystemTime(100_000);
+    const { proxy, state, sent } = fixture();
+    const pushDeferred = vi.fn();
+    const windows = () => pushDeferred.mock.calls.filter(([spec]) => spec.type === 'vtuber.speech.window');
+    state.host = { pushDeferred } as unknown as WorldHost;
+    const speech = { observedAtMs: 100_000, idleSinceMs: null, busy: true, ttsReady: true,
+      playing: true, musicPlaying: false, backlogMs: 8000, queueRevision: 1 };
+    const observe = () => state.onNote({ kind: 'status', line: '[演出状态] 正在说话', live: true, decl: {}, speech });
+    proxy.onRunPhase({ state: 'model', running: [], enteredAt: new Date().toISOString() });
+    observe(); observe();
+    expect(windows()).toHaveLength(1);
+    expect(windows()[0]).toEqual([expect.objectContaining({ type: 'vtuber.speech.window',
+      tags: ['snapshot'], meta: { queueRevision: 1 } }), { trigger: 'piggyback' }]);
+    const first = windows()[0][0];
+    expect(first.render()).toContain('剩余约 8 秒');
+    vi.advanceTimersByTime(6000);
+    expect(first.render()).toBeNull();
+    speech.observedAtMs = Date.now();
+    proxy.onRunPhase({ state: 'idle', running: [], enteredAt: new Date().toISOString() });
+    speech.queueRevision = 2; observe();
+    expect(windows()[1]).toEqual([expect.objectContaining({ type: 'vtuber.speech.window' }), { trigger: 'flush' }]);
+    expect(first.render()).toBeNull();
+    expect(sent.every((message: any) => message.t === 'cast' && message.cast.kind === 'run-phase')).toBe(true);
+    state.stopping = true; speech.queueRevision = 3; observe();
+    expect(windows()).toHaveLength(2);
+    expect(windows()[1][0].render()).toBeNull();
+  });
   it('forwards model lifecycle changes without RPC and samples independent hot media configuration', () => {
     const { proxy, sent } = fixture();
     const phase = { state: 'model' as const, running: [], round: 2, enteredAt: new Date().toISOString() };
@@ -52,7 +80,7 @@ describe('演出请求的完整缓存读数', () => {
     state.ready = false;
     expect(proxy.requestFacts()).toBeNull();
     state.ready = true;
-    expect(proxy.requestFacts()?.snapshotTypes).toEqual(['vtuber.status']);
+    expect(proxy.requestFacts()?.snapshotTypes).toEqual(['vtuber.status', 'vtuber.speech.window']);
     observe(null);
     expect(proxy.requestFacts()).toBeNull();
   });
@@ -78,7 +106,7 @@ describe('演出请求的完整缓存读数', () => {
     expect(sent).toEqual([]);
     // 返回的列表不允许调用者污染下一次读取。
     (updated.snapshotTypes as string[]).push('其他状态');
-    expect(proxy.requestFacts()?.snapshotTypes).toEqual(['vtuber.status']);
+    expect(proxy.requestFacts()?.snapshotTypes).toEqual(['vtuber.status', 'vtuber.speech.window']);
   });
 
   it('连接失效、退出与下一次初始化之间不返回上一生命周期的读数', () => {
