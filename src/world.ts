@@ -2413,7 +2413,7 @@ export class VtuberWorld implements World {
         return { ...result, elapsedMs: Date.now() - t0 };
       },
       synth: async (text) => {
-        const piece = await this.ttsClient.synth(text.slice(0, 200));
+        const piece = await this.ttsClient.synth(this.prepareSpeechText(text).slice(0, 200));
         return { wav: Buffer.from(piece.wav).toString('base64'), durationMs: piece.durationMs };
       },
     };
@@ -2582,6 +2582,11 @@ export class VtuberWorld implements World {
       .catch(() => this.log.warn('歌曲状态事件投递失败', { trackId: playback.trackId }));
   }
 
+  /** Non-script entry points use the same Agent renderer as ScriptParser, exactly once. */
+  private prepareSpeechText(text: string): string {
+    return this.renderSpeech?.(text).text ?? text;
+  }
+
   private async prepareWaitingMedia(cfg: WaitingMediaConfig, signal: AbortSignal): Promise<WaitingMediaAsset[]> {
     const assets: WaitingMediaAsset[] = [];
     for (const trackId of [...new Set(cfg.musicIds.split(/\r?\n/u).map(id => id.trim()).filter(Boolean))].slice(0, 3)) {
@@ -2606,7 +2611,7 @@ export class VtuberWorld implements World {
     }
     for (const line of [...new Set(cfg.lines.split(/\r?\n/u).map(text => text.trim()).filter(Boolean))].slice(0, 6)) {
       signal.throwIfAborted();
-      const text = line.trim();
+      const text = this.prepareSpeechText(line.trim());
       if (!text || text.length > 80 || /[\u0000-\u001f<>【】]/u.test(text) || this.mutedTexts().some(word => text.includes(word))) continue;
       try {
         const audio = await this.ttsClient.synth(text, undefined, signal);
@@ -3013,7 +3018,7 @@ export class VtuberWorld implements World {
         if (this.performer && (this.performer.status().playing || this.performer.status().queuedBeats > 0)) {
           return { message: '演出队列正在使用音频，空闲后再试听。', wav: null };
         }
-        const line = (text ?? '').trim().slice(0, 200) || '语音链路测试,一二三。';
+        const line = this.prepareSpeechText((text ?? '').trim() || '语音链路测试,一二三。').slice(0, 200);
         // 试听 profile 仅用于本次合成，不写回生效档案。
         const audition = profile ? this.clampProfile({ ...this.ttsProfile, ...profile }) : null;
         const t0 = Date.now();

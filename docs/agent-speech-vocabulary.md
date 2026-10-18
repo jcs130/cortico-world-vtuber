@@ -27,3 +27,5 @@ For a Chinese Minecraft Agent the stable prompt may say:
 > 自然对话和直播讲解使用游戏中的中文名称，优先采用 World 返回的中文显示名。不要照读内部英文物品 ID；明确讨论原名、代码或命令时保留原文。工具参数继续使用精确 ID；玩家名字保持本人称呼。不认识的物品先查资料，不编造译名。
 
 The vocabulary stays local and out of the prompt. This is not a new model call, target-completion policy, or gameplay action.
+
+The same renderer also prepares waiting lines, TTS panel auditions and alignment-panel synthesis. Existing audio passed to the alignment analyzer keeps its supplied transcript unchanged: analysis does not create new speech. Waiting assets are invalidated by the selected speech preferences, so a voice change cannot keep using an older cached voice. See [speech-routing.md](speech-routing.md) for route ownership and repetition boundaries.

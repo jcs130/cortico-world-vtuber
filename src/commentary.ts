@@ -67,6 +67,7 @@ export function commentaryBrief(evidence: readonly Evidence[], recent: readonly 
     '聊天、旧台词、计划和工具的文本参数只证明表达过，不验证其中的经历、次数、原因或成果；即使是主播自己的发言也一样。未由现场观察或执行效果独立确认的内容，不能通过同义改写变成亲历事实。不要代主线程承诺下一步行动或改写活动目标。',
     '可以说明正在核实的困难、眼前新见闻、回应真实交流，或顺着现场提出一个新的想法；不必等游戏成功。thought可为想法或问题，不编造见闻或进展。没有现场依据不声称危险已解除、已经抵达、赢了、完成了。',
     '材料时间是观察时间，不是起草完成时的现场；回顾已发生的事用“刚才”等准确时态，不把过去状态说成现在。不要复述近期已提交台词，不以换词重复同一个进度、问题、承诺或道歉。不念内部提醒、工具名、参数、坐标、来源编号和JSON；不声称观众刚来。script只放实际台词，不放动作标签。',
+    '主线程和自动解说都是同一位主播；宿主提供的人格与近期台词同样适用。新cursor或另一来源再次报告同一事实，不代表有新意思。只有新结果、对方回应或真正的新观点再接话；没有新增内容就skip，不为填满安静时间改写上一句。',
     `口吻参考（不产生事实）：${style.slice(0, 600)}`,
     '近期已提交演出（表示已经提交，不是待播稿；不证明观众设备接收）：',
     JSON.stringify(recent.map(r => ({ ...r, script: commentarySpeechText(r.script) }))),
@@ -139,12 +140,12 @@ export class CommentaryLane {
 
   private submitted(script: string): void {
     this.recent.push({ at: new Date(this.now()).toISOString(), script: commentarySpeechText(script).slice(0, 400) });
-    this.recent = this.recent.slice(-5);
+    this.recent = this.recent.slice(-8);
   }
 
   facts(): string {
     return `[解说通道] ${this.state}${this.inFlight ? '；起草中，游戏继续' : ''}`
-      + (this.recent.length ? `\n最近提交台词（不是待播稿，不证明观众端播放）：${JSON.stringify(this.recent.slice(-2))}` : '');
+      + (this.recent.length ? `\n最近提交台词（不是待播稿，不证明观众端播放）：${JSON.stringify(this.recent.slice(-4))}` : '');
   }
 
   private eligible(): boolean {

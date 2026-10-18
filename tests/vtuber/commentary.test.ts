@@ -31,11 +31,27 @@ describe('bounded commentary cognition lane', () => {
     expect(brief).toContain('刚才那条小路');
     expect(brief).toContain('不同source');
     expect(brief).toContain('即使是主播自己的发言也一样');
+    expect(brief).toContain('新cursor或另一来源再次报告同一事实，不代表有新意思');
     expect(brief.length).toBeLessThan(5000);
     f.resolve(); await f.settle();
     expect(f.perform).toHaveBeenCalledWith(expect.stringContaining('石头'), 1, [12]);
     expect(f.lane.facts()).toContain('不是待播稿');
     expect(f.log).toHaveBeenCalledWith('commentary-submitted', expect.any(Object));
+  });
+
+  it('keeps bounded speech from both producers and permits skipping a repeated fact with a new cursor', async () => {
+    const f = fixture();
+    for (let index = 0; index < 9; index++) f.lane.foregroundSpeech(`之前的发言${index}。`);
+    f.lane.observe({ cursor: 42, ts: new Date(100_000).toISOString(), source: 'game', type: 'world.snapshot', origin: 'external', text: '同一块石头仍挡路。' });
+    f.lane.tick();
+    const brief = f.request.mock.calls[0][0];
+    expect(brief).not.toContain('之前的发言0。');
+    expect(brief).toContain('之前的发言1。');
+    expect(brief).toContain('之前的发言8。');
+    f.resolve({ text: JSON.stringify({ skip: '同一事实已经说过，只是观察编号不同。' }) });
+    await f.settle();
+    expect(f.perform).not.toHaveBeenCalled();
+    expect(f.lane.facts()).toContain('skipped');
   });
 
   it.each(['disabled', 'not-live', 'paused-or-idle', 'busy', 'tts-failed', 'stale-engine', 'not-due'])(

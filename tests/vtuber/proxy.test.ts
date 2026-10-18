@@ -250,6 +250,34 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     } finally { await freshProxy(); }
   }, 20_000);
 
+  it('uses the same Agent text renderer and selected remote voice for alignment synthesis and panel audition', async () => {
+    const path = join(serverDir, 'panel-vocabulary.json');
+    writeFileSync(path, JSON.stringify({ schema: 'speech-vocabulary-v1', terms: { domain_item_id: '测试物品' } }));
+    const requests: Array<Record<string, unknown>> = [];
+    const remote = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => {
+        requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        res.writeHead(200, { 'Content-Type': 'audio/wav' });
+        res.end(Buffer.from(makeWav(new Array(48000).fill(.4), 48000)));
+      });
+    });
+    await new Promise<void>(resolve => remote.listen(0, '127.0.0.1', resolve));
+    try {
+      await freshProxy({ speechVocabularyFile: path, ttsService: { kind: 'external' },
+        ttsUrl: `http://127.0.0.1:${(remote.address() as { port: number }).port}`,
+        ttsTransport: { protocol: 'openai-chunked', model: 'fixture-model', voice: 'fixture-voice', sessionId: 'fixture-session' } });
+      expect((await proxy.alignConsole().synth('找到domain_item_id。')).wav).toBeTruthy();
+      expect((await proxy.ttsConsole().test('拿起domain_item_id。')).wav).toBeTruthy();
+      expect(requests).toEqual([
+        expect.objectContaining({ input: '找到测试物品。', model: 'fixture-model', voice: 'fixture-voice' }),
+        expect.objectContaining({ input: '拿起测试物品。', model: 'fixture-model', voice: 'fixture-voice' }),
+      ]);
+      expect(requests.every(body => !('terms' in body))).toBe(true);
+    } finally { await freshProxy(); await new Promise<void>(resolve => remote.close(() => resolve())); }
+  }, 20_000);
+
   it('opt-in task cognition submits through the real engine and TTS; idle foreground cannot keep generating', async () => {
     const originalStore = host.store;
     host.store = { ...originalStore,
@@ -350,16 +378,21 @@ describe('VtuberWorldProxy(演出引擎子进程)', () => {
     });
     await new Promise<void>(resolve => classifier.listen(0, '127.0.0.1', resolve));
     let response: Response | undefined;
-    const line = '让我把这个想清楚呀。';
+    const path = join(serverDir, 'waiting-vocabulary.json');
+    writeFileSync(path, JSON.stringify({ schema: 'speech-vocabulary-v1', terms: { domain_item_id: '测试物品' } }));
+    const line = '让我看看测试物品呀。';
+    let speech = { ...TTS_SPEECH_DEFAULTS, enabled: true, voice: 'prepared-voice' };
     try {
-      await freshProxy({ ttsService: { kind: 'indextts' },
-        ttsSpeech: () => ({ ...TTS_SPEECH_DEFAULTS, enabled: true, voice: 'prepared-voice' }),
+      await freshProxy({ speechVocabularyFile: path, ttsService: { kind: 'indextts' },
+        ttsSpeech: () => speech,
         waitingMedia: () => ({ ...WAITING_MEDIA_DEFAULTS, enabled: true,
           endpoint: `http://127.0.0.1:${(classifier.address() as { port: number }).port}`,
-          lines: line, afterMs: 200, maxPerRequest: 1, timeoutMs: 250 }),
+          lines: '让我看看domain_item_id呀。', afterMs: 200, maxPerRequest: 1, timeoutMs: 250 }),
       });
       await waitFor(() => ttsInputs.includes(line));
       expect(ttsBodies.find(body => body.input === line)?.voice).toBe('prepared-voice');
+      speech = { ...speech, voice: 'changed-voice' };
+      await waitFor(() => ttsBodies.some(body => body.input === line && body.voice === 'changed-voice'));
       const synthCount = ttsInputs.filter(text => text === line).length;
       const eventStart = host.events.length;
       response = await fetch(proxy.streamUrl, { headers: { Accept: 'text/event-stream' } });

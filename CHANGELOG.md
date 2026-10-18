@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Apply the Agent speech renderer to waiting clips, panel auditions and alignment synthesis as well as ordinary scripts; retain one selected voice and transport. Existing recorded-audio alignment remains read-only.
+- Share a bounded recent-speech projection with host cognition, and clarify that a new evidence cursor or paraphrase is not new commentary. The host remains responsible for personality and semantic decisions.
 - Use stable Agent prompt guidance for localized narration; retain exact IDs in tools and original calls in session evidence.
 - Add an opt-in Agent-local vocabulary fallback before subtitles, alignment and synthesis, including inline anchor remapping and versioned local source hashes. No extra model call or remote vocabulary upload.
 - Export an optional Minecraft vocabulary through the independent core public naming API. Keep the speech service generic; withdraw the unshipped per-voice game vocabulary implementation while preserving approved voice/pronunciation fixes.
